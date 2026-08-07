@@ -69,6 +69,11 @@ static int32_t linux_uart_init(struct no_os_uart_desc **desc,
 	char path[64];
 	int ret;
 
+	/* The device node name is only carried in the platform-specific extra
+	   parameters, so there is no usable default to fall back on. */
+	if (!param || !param->extra)
+		return -EINVAL;
+
 	descriptor = no_os_malloc(sizeof(*descriptor));
 	if (!descriptor)
 		return -ENOMEM;
@@ -92,7 +97,7 @@ static int32_t linux_uart_init(struct no_os_uart_desc **desc,
 	ret = snprintf(path, sizeof(path), "/dev/%s", linux_init->device_id);
 	if (ret < 0 || ret >= (int)sizeof(path)) {
 		ret = -ENOMEM;
-		goto free_linux_desc;
+		goto free_terminal;
 	}
 
 	linux_desc->fd = open(path, O_RDWR | O_NOCTTY | O_NONBLOCK);
@@ -151,6 +156,21 @@ static int32_t linux_uart_init(struct no_os_uart_desc **desc,
 		break;
 	case 38400:
 		speed = B38400;
+		break;
+	case 57600:
+		speed = B57600;
+		break;
+	case 115200:
+		speed = B115200;
+		break;
+	case 230400:
+		speed = B230400;
+		break;
+	case 460800:
+		speed = B460800;
+		break;
+	case 921600:
+		speed = B921600;
 		break;
 	default:
 		ret = -EINVAL;

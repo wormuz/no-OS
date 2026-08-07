@@ -87,8 +87,9 @@ int32_t linux_gpio_get(struct no_os_gpio_desc **desc,
 
 	descriptor->extra = linux_desc;
 	descriptor->number = param->number;
+	descriptor->port = param->port;
 
-	sprintf(path, "/dev/gpiochip%d", descriptor->port);
+	snprintf(path, sizeof(path), "/dev/gpiochip%d", descriptor->port);
 	timeout = GPIO_TIMEOUT_MS;
 	while (--timeout) {
 		linux_desc->chip_fd = open(path, O_RDONLY);
@@ -98,7 +99,7 @@ int32_t linux_gpio_get(struct no_os_gpio_desc **desc,
 	}
 	if (linux_desc->chip_fd < 0) {
 		printf("%s: Can't open %s\n\r", __func__, path);
-		goto close_dir;
+		goto free_linux_desc;
 	}
 
 	/* Get Chip Info */
@@ -149,9 +150,11 @@ free_desc:
 int32_t linux_gpio_get_optional(struct no_os_gpio_desc **desc,
 				const struct no_os_gpio_init_param *param)
 {
-	linux_gpio_get(desc, param);
-
-	return 0;
+	/* no_os_gpio_get_optional() already returns early with *desc = NULL for
+	   an absent pin, so reaching here means the pin is expected to exist.
+	   Propagate the failure instead of leaving *desc uninitialised: the
+	   caller dereferences it whenever 0 is returned. */
+	return linux_gpio_get(desc, param);
 }
 
 /**

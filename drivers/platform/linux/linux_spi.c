@@ -36,6 +36,7 @@
 #include "no_os_alloc.h"
 #include "linux_spi.h"
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -142,10 +143,12 @@ int32_t linux_spi_write_and_read(struct no_os_spi_desc *desc,
 
 	linux_desc = desc->extra;
 
+	/* SPI_IOC_MESSAGE() returns the number of bytes transferred on success
+	   and -1 on failure, so only a negative return is an error. */
 	ret = ioctl(linux_desc->spidev_fd, SPI_IOC_MESSAGE(1), &tr);
-	if (ret == 1) {
+	if (ret < 0) {
 		printf("%s: Can't send spi message\n\r", __func__);
-		return -1;
+		return -errno;
 	}
 
 	return 0;
