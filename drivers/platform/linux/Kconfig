@@ -1,0 +1,54 @@
+menuconfig LINUX
+	bool "Linux Platform Drivers"
+	default n
+	help
+	  Enable support for the Linux user-space platform drivers.
+
+	  This is the only native no-OS platform: the application is built as an
+	  ordinary Linux user-space program that talks to the hardware through
+	  the kernel's user-space interfaces -- spidev, the GPIO character
+	  device, i2c-dev and termios -- rather than through registers. It is
+	  used on Linux-capable boards such as the Raspberry Pi.
+
+if LINUX
+
+config GPIO_LINUX
+	bool "Enable Linux GPIO driver"
+	depends on GPIO
+	default n
+	help
+	  Enable the Linux GPIO driver, implemented on the GPIO character
+	  device (/dev/gpiochipN, GPIO_V2_* ioctls). The deprecated sysfs
+	  interface is not used.
+
+config I2C_LINUX
+	bool "Enable Linux I2C driver"
+	depends on I2C
+	default n
+	help
+	  Enable the Linux I2C driver, implemented on i2c-dev (/dev/i2c-N).
+
+config SPI_LINUX
+	bool "Enable Linux SPI driver"
+	depends on SPI
+	default n
+	help
+	  Enable the Linux SPI driver, implemented on spidev
+	  (/dev/spidev<device_id>.<chip_select>).
+
+config UART_LINUX
+	bool "Enable Linux UART driver"
+	depends on UART
+	default n
+	help
+	  Enable the Linux UART driver, implemented on a termios tty
+	  (/dev/<device_id>).
+
+config TIMER_LINUX
+	bool "Enable Linux Timer driver"
+	depends on TIMER
+	default n
+	help
+	  Enable the Linux Timer driver, implemented on POSIX clocks.
+
+endif # LINUX

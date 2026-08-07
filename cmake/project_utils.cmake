@@ -33,7 +33,11 @@ function(post_build_config PROJECT_TARGET)
         # file"), and `objcopy -O binary` pads the gap between low and high
         # sections with zeros, producing multi-GB files on MicroBlaze. So on
         # xilinx emit only the ELF (already built) and the size summary.
-        if(PLATFORM STREQUAL "xilinx")
+        #
+        # The linux platform is native: the deployment artifact is the executable
+        # itself, and a raw dump of a dynamically linked ELF is not runnable, so
+        # it takes the same size-only path.
+        if(PLATFORM STREQUAL "xilinx" OR PLATFORM STREQUAL "linux")
                 add_custom_command(
                         TARGET ${PROJECT_TARGET}
                         POST_BUILD

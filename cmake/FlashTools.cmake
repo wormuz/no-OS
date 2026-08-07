@@ -113,6 +113,14 @@ function(add_openocd_flash_target TARGET_NAME)
 endfunction()
 
 function(add_flash_target TARGET_NAME)
+	# The linux platform is native: the application is an ordinary user-space
+	# executable run directly on the target, so there is nothing to flash and
+	# no probe to attach. Return before the PROBE checks below, which would
+	# otherwise warn about the deliberately empty PROBE.
+	if(PLATFORM STREQUAL "linux")
+		return()
+	endif()
+
 	# Xilinx uses its own JTAG flow (Vitis Python API), not OpenOCD/J-Link.
 	if(PLATFORM STREQUAL "xilinx")
 		include(${NO_OS_DIR}/cmake/xilinx/xilinx_flash.cmake)
