@@ -32,7 +32,11 @@
  *******************************************************************************/
 
 #ifdef LINUX_PLATFORM
+/* The linux platform toolchain file already puts -D_GNU_SOURCE on the command
+   line, so only define it here for builds that do not. */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 #include "linux_socket.h"
 

@@ -37,7 +37,19 @@
 
 #include "iio_types.h"
 #include "no_os_uart.h"
-#if defined(NO_OS_NETWORKING) || defined(NO_OS_LWIP_NETWORKING) || defined(NO_OS_W5500_NETWORKING)
+
+/*
+ * Set when the IIOD server talks over a socket rather than a UART. The linux
+ * platform always does: it has no serial transport of its own, and iio_app
+ * unconditionally routes it through linux_net and tcp_socket. The other three
+ * are opt-in network stacks.
+ */
+#if defined(NO_OS_NETWORKING) || defined(NO_OS_LWIP_NETWORKING) || \
+	defined(NO_OS_W5500_NETWORKING) || defined(LINUX_PLATFORM)
+#define IIO_NETWORK_BACKEND
+#endif
+
+#ifdef IIO_NETWORK_BACKEND
 #include "tcp_socket.h"
 #endif
 
@@ -97,7 +109,7 @@ struct iio_init_param {
 	enum physical_link_type	phy_type;
 	union {
 		struct no_os_uart_desc *uart_desc;
-#if defined(NO_OS_NETWORKING) || defined(NO_OS_LWIP_NETWORKING) || defined(NO_OS_W5500_NETWORKING)
+#ifdef IIO_NETWORK_BACKEND
 		struct tcp_socket_init_param *tcp_socket_init_param;
 #endif
 	};

@@ -59,3 +59,17 @@ config WIFI_PWD
 	default "******"
 	help
 	  Password for the WIFI_SSID access point.
+
+# BSD-socket networking for the linux platform. Kept outside the menu above
+# because that menu is gated on the LWIP/W5500 stacks, neither of which is used
+# here: on Linux the kernel already provides the TCP/IP stack, so the socket
+# backend is a thin wrapper over socket()/bind()/accept().
+config LINUX_SOCKET
+	bool "Enable Linux BSD socket networking"
+	depends on LINUX
+	default y if IIO
+	default n
+	help
+	  Build the BSD-socket network backend (network/linux_socket) and the
+	  shared TCP socket layer. Required for iio_app on the linux platform,
+	  where the IIOD server is served over TCP (port 30431) instead of UART.
