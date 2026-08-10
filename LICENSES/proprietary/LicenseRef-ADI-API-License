@@ -3,12 +3,14 @@ Usage-Guide:
   PROPRIETARY. Do NOT use for new files. This is the Analog Devices
   "Source Code Software License Agreement" (also referred to as the ADI
   "API license" or CTSLA) that governs the vendor RF-transceiver device
-  API code (for example drivers/rf-transceiver/talise, navassa, madura
-  and parts of koror, plus the matching projects). It is NOT permissive:
-  among other conditions it forbids combining or merging the software in
-  a way that would subject it to differing terms.
-  Some of these files also carry a GPL-2.0 SPDX tag; where the two appear
-  together the per-file header governs. This code is confined to its
+  API code (for example drivers/rf-transceiver/talise and navassa, plus
+  the matching projects). It is NOT permissive: among other conditions
+  it forbids combining or merging the software in a way that would
+  subject it to differing terms. Related ADI "Software License
+  Agreement" variants, carried by their own LicenseRef identifiers,
+  govern other RF-transceiver subtrees: LicenseRef-ADI-ADRV904X-SLA
+  (koror) and LicenseRef-ADI-ADRV9025-SLA (madura).
+  This code is confined to its
   vendor driver subtrees and is only built for those projects.
   This is a repository-local LicenseRef identifier; there is no SPDX-URL
   for it. The canonical copy of this text is
