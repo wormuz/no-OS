@@ -1,3 +1,15 @@
+/***************************************************************************//**
+ *   @file   led.h
+ *   @brief  LED control header for the wethlink project.
+ *   @author Darius Berghe (darius.berghe@analog.com)
+********************************************************************************
+ * Copyright 2023(c) Analog Devices, Inc.
+ *
+ * SPDX-License-Identifier: BSD-3-Clause
+*******************************************************************************/
+#ifndef __LED_H__
+#define __LED_H__
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -16,3 +28,5 @@ void led_rx_det_green(bool on);
 void led_rx_det_red(bool on);
 void led_rj45(enum rj45_led state);
 void led_blink_all(unsigned int times, unsigned int duration);
+
+#endif /* __LED_H__ */
