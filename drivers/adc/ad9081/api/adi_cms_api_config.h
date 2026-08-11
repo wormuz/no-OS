@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*!
  * @brief     API configuration header file.
  *            This file contains API configuration parameters.

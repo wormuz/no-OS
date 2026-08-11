@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*!
  * @brief     API header file
  *            This file contains all the publicly exposed methods and data

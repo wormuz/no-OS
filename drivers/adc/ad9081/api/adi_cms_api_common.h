@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*!
  * @brief     Common API definitions header file.
  *            This file contains all common API definitions.
