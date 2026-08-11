@@ -4,11 +4,8 @@
 ********************************************************************************
 * Copyright (c) 2024 Analog Devices, Inc.
 * Copyright (c) 2024 BayLibre, SAS.
-* All rights reserved.
 *
-* This software is proprietary to Analog Devices, Inc. and its licensors.
-* By using this software you agree to the terms of the associated
-* Analog Devices Software License Agreement.
+* SPDX-License-Identifier: BSD-3-Clause
 *******************************************************************************/
 #ifndef _AD7606_IIO_H_
 #define _AD7606_IIO_H_
