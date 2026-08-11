@@ -1,14 +1,20 @@
 Valid-License-Identifier: GPL-2.0
 Valid-License-Identifier: GPL-2.0-only
+Valid-License-Identifier: GPL-2.0+
+Valid-License-Identifier: GPL-2.0-or-later
 SPDX-URL: https://spdx.org/licenses/GPL-2.0.html
 Usage-Guide:
   GPL-2.0 is a copyleft license and is NOT permissive. Do NOT use it for
   new general-purpose no-OS code (see doc/sphinx/source/contributing.rst).
-  It is present only in the optional ADI RF-transceiver driver families
+  It is present in the optional ADI RF-transceiver driver families
   (for example drivers/rf-transceiver/madura and parts of koror) and
-  their example projects; note that those files also carry an ADI
+  their example projects -- note that those files also carry an ADI
   proprietary API license header (see
-  LICENSES/proprietary/LicenseRef-ADI-API-License).
+  LICENSES/proprietary/LicenseRef-ADI-API-License) -- in the AD9081
+  vendor device API (drivers/adc/ad9081/api), and in the JESD204
+  framework (jesd204/ and include/jesd204.h), which is ported from the
+  Linux kernel and, like the kernel original, is GPL-2.0+ (GPL-2.0 or
+  any later version).
   Where a file is genuinely under GPL-2.0, put the following SPDX
   tag/value pair into a comment according to the placement guidelines in
   the licensing rules documentation
@@ -16,6 +22,8 @@ Usage-Guide:
     SPDX-License-Identifier: GPL-2.0
   or
     SPDX-License-Identifier: GPL-2.0-only
+  or, for "version 2 or any later version",
+    SPDX-License-Identifier: GPL-2.0+
 License-Text:
 
 		    GNU GENERAL PUBLIC LICENSE
