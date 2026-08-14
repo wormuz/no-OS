@@ -94,6 +94,359 @@ def _build_filter(name_pattern, jtagtarget=None):
 
 
 # ---------------------------------------------------------------------------
+# Fabric interrupt macro generation
+# ---------------------------------------------------------------------------
+
+# GIC IRQ base for PS platforms. The concat output connects to pl_ps_irq,
+# which maps to these GIC IRQ IDs based on the platform.
+# Zynq-7000: sys_concat_intc[15:0] -> IRQ_F2P[15:0] -> GIC 61-68 (0-7), 84-91 (8-15)
+# ZynqMP: sys_concat_intc_0[7:0] -> pl_ps_irq0 -> GIC 121-128
+#         sys_concat_intc_1[7:0] -> pl_ps_irq1 -> GIC 136-143
+# Versal: sys_cips/pl_ps_irq[15:0] -> GIC 116-131
+FABRIC_IRQ_BASE = {
+    "ps7_cortexa9_0": {
+        "sys_concat_intc": lambda idx: 61 + idx if idx < 8 else 84 + (idx - 8),
+    },
+    "psu_cortexa53_0": {
+        "sys_concat_intc_0": lambda idx: 121 + idx,
+        "sys_concat_intc_1": lambda idx: 136 + idx,
+    },
+}
+
+
+def _generate_fabric_irq_macros(xsa_path, cpu):
+    """Extract PL interrupt connections and generate XPAR_FABRIC_* macros.
+
+    The Vitis 2025+ Python API (create_platform_component) does not generate
+    XPAR_FABRIC_*_INTR macros for PL peripherals. This function replicates what
+    the old HSI generate_bsp command did by tracing interrupt signals from
+    peripheral IRQ pins through the concat blocks to the PS interrupt ports.
+
+    For MicroBlaze, generates XPAR_AXI_INTC_*_INTR macros instead.
+
+    Returns a list of C #define lines.
+    """
+    hw_design = HwManager.open_hw_design(xsa_path)
+    defines = []
+
+    # MicroBlaze uses AXI interrupt controller with different naming
+    # Check for any MicroBlaze CPU (sys_mb, or custom names like IOP1_IOP1_mb)
+    if cpu == "sys_mb" or "_mb" in cpu.lower():
+        defines = _generate_mb_irq_macros(hw_design)
+        hw_design.close()
+        return defines
+
+    # Versal has a different interrupt topology (direct pl_ps_irq connections)
+    if "psv_cortexa72" in cpu:
+        defines = _generate_versal_irq_macros(hw_design)
+        hw_design.close()
+        return defines
+
+    # PS platforms (Zynq-7000, ZynqMP): trace through concat blocks
+    irq_base = FABRIC_IRQ_BASE.get(cpu)
+    if not irq_base:
+        hw_design.close()
+        return defines
+
+    # Find all interrupt concat blocks and their input connections
+    cells = hw_design.get_cells(hierarchical='true')
+    concat_map = {}  # concat_name -> {input_idx -> net_name}
+
+    for cell in cells:
+        cell_name = cell.get('NAME')
+        if cell_name not in irq_base:
+            continue
+
+        concat_map[cell_name] = {}
+        pins = hw_design.get_pins(of_objects=cell)
+        if not pins:
+            continue
+
+        for pin in pins:
+            pin_name = pin.get('NAME')
+            if not pin_name.startswith('In'):
+                continue
+            try:
+                idx = int(pin_name[2:])
+            except ValueError:
+                continue
+
+            nets = hw_design.get_nets(of_objects=pin)
+            if nets:
+                concat_map[cell_name][idx] = nets[0].get('NAME')
+
+    # Find all PL peripherals with IRQ outputs and trace to concat inputs
+    for cell in cells:
+        cell_name = cell.get('NAME')
+        pins = hw_design.get_pins(of_objects=cell)
+        if not pins:
+            continue
+
+        for pin in pins:
+            # Detect interrupt outputs via TYPE property, with fallback to
+            # common pin names for custom IPs that don't set TYPE properly
+            pin_type = pin.get('TYPE')
+            pin_dir = pin.get('DIRECTION')
+            pin_name = pin.get('NAME')
+            is_irq_output = (pin_type == 'INTERRUPT' and pin_dir == 'O')
+            if not is_irq_output and pin_dir == 'O':
+                is_irq_output = pin_name.lower() in ('irq', 'interrupt')
+            if not is_irq_output:
+                continue
+
+            nets = hw_design.get_nets(of_objects=pin)
+            if not nets:
+                continue
+            net_name = nets[0].get('NAME')
+
+            # Find which concat input this net connects to
+            for concat_name, inputs in concat_map.items():
+                for idx, input_net in inputs.items():
+                    if input_net == net_name:
+                        irq_id = irq_base[concat_name](idx)
+                        macro = f"XPAR_FABRIC_{cell_name.upper()}_{pin_name.upper()}_INTR"
+                        defines.append(f"#define {macro} {irq_id}U")
+
+    hw_design.close()
+    return defines
+
+
+def _generate_mb_irq_macros(hw_design):
+    """Generate XPAR_AXI_INTC_*_INTR macros for MicroBlaze designs."""
+    defines = []
+    cells = hw_design.get_cells(hierarchical='true')
+
+    # Find the AXI interrupt controller by VLNV (more reliable than name)
+    intc_cell = None
+    for cell in cells:
+        vlnv = cell.get('VLNV') or ''
+        if 'axi_intc' in vlnv:
+            intc_cell = cell
+            break
+
+    if not intc_cell:
+        return defines
+
+    # Trace the intc's intr pin to find the connected concat block
+    intr_net_name = None
+    pins = hw_design.get_pins(of_objects=intc_cell)
+    if pins:
+        for pin in pins:
+            if pin.get('NAME') == 'intr':
+                nets = hw_design.get_nets(of_objects=pin)
+                if nets:
+                    intr_net_name = nets[0].get('NAME')
+                break
+
+    if not intr_net_name:
+        return defines
+
+    # Find the concat block whose dout drives the intc's intr pin
+    concat_cell = None
+    for cell in cells:
+        vlnv = cell.get('VLNV') or ''
+        if 'xlconcat' in vlnv:
+            pins = hw_design.get_pins(of_objects=cell)
+            for pin in pins:
+                if pin.get('NAME') == 'dout':
+                    nets = hw_design.get_nets(of_objects=pin)
+                    if nets and nets[0].get('NAME') == intr_net_name:
+                        concat_cell = cell
+                        break
+            if concat_cell:
+                break
+
+    if not concat_cell:
+        return defines
+
+    # Build map of concat inputs to connected nets
+    concat_map = {}
+    concat_pins = hw_design.get_pins(of_objects=concat_cell)
+    if concat_pins:
+        for pin in concat_pins:
+            pin_name = pin.get('NAME')
+            if pin_name.startswith('In') and pin.get('DIRECTION') == 'I':
+                try:
+                    idx = int(pin_name[2:])
+                except ValueError:
+                    continue
+                nets = hw_design.get_nets(of_objects=pin)
+                if nets:
+                    concat_map[idx] = nets[0].get('NAME')
+
+    # Find peripherals and match their IRQ nets to concat inputs
+    for cell in cells:
+        cell_name = cell.get('NAME')
+        pins = hw_design.get_pins(of_objects=cell)
+        if not pins:
+            continue
+
+        for pin in pins:
+            # Detect interrupt outputs via TYPE property, with fallback to
+            # common pin names for custom IPs that don't set TYPE properly
+            pin_type = pin.get('TYPE')
+            pin_dir = pin.get('DIRECTION')
+            pin_name = pin.get('NAME')
+            is_irq_output = (pin_type == 'INTERRUPT' and pin_dir == 'O')
+            if not is_irq_output and pin_dir == 'O':
+                is_irq_output = pin_name.lower() in ('irq', 'interrupt')
+            if not is_irq_output:
+                continue
+
+            nets = hw_design.get_nets(of_objects=pin)
+            if not nets:
+                continue
+            net_name = nets[0].get('NAME')
+
+            for idx, input_net in concat_map.items():
+                if input_net == net_name:
+                    macro = f"XPAR_AXI_INTC_{cell_name.upper()}_{pin_name.upper()}_INTR"
+                    defines.append(f"#define {macro} {idx}U")
+
+    return defines
+
+
+def _generate_versal_irq_macros(hw_design):
+    """Generate XPAR_FABRIC_*_INTR macros for Versal designs.
+
+    Versal uses direct pl_ps_irq connections to the CIPS block rather than
+    concat blocks. The GIC mapping is pl_ps_irq[N] -> GIC IRQ 116+N.
+    """
+    defines = []
+
+    # Use non-hierarchical lookup for the top-level CIPS block to get correct
+    # net names. The hierarchical lookup returns internal cells with different
+    # net names that don't match peripheral IRQ outputs.
+    top_cells = hw_design.get_cells()  # Non-hierarchical
+
+    # Find the top-level CIPS block and its pl_ps_irq inputs
+    cips_irq_map = {}  # irq_index -> net_name
+    for cell in top_cells:
+        cell_name = cell.get('NAME')
+        if 'cips' not in cell_name.lower():
+            continue
+
+        pins = hw_design.get_pins(of_objects=cell)
+        if not pins:
+            continue
+
+        for pin in pins:
+            pin_name = pin.get('NAME')
+            if not pin_name.startswith('pl_ps_irq'):
+                continue
+            try:
+                idx = int(pin_name[9:])  # Extract number after 'pl_ps_irq'
+            except ValueError:
+                continue
+
+            nets = hw_design.get_nets(of_objects=pin)
+            if nets:
+                cips_irq_map[idx] = nets[0].get('NAME')
+
+    # Find peripherals (need hierarchical to find all IP) and match IRQs
+    cells = hw_design.get_cells(hierarchical='true')
+    for cell in cells:
+        cell_name = cell.get('NAME')
+        pins = hw_design.get_pins(of_objects=cell)
+        if not pins:
+            continue
+
+        for pin in pins:
+            # Detect interrupt outputs via TYPE property, with fallback to
+            # common pin names for custom IPs that don't set TYPE properly
+            pin_type = pin.get('TYPE')
+            pin_dir = pin.get('DIRECTION')
+            pin_name = pin.get('NAME')
+            is_irq_output = (pin_type == 'INTERRUPT' and pin_dir == 'O')
+            if not is_irq_output and pin_dir == 'O':
+                is_irq_output = pin_name.lower() in ('irq', 'interrupt')
+            if not is_irq_output:
+                continue
+
+            nets = hw_design.get_nets(of_objects=pin)
+            if not nets:
+                continue
+            net_name = nets[0].get('NAME')
+
+            for idx, input_net in cips_irq_map.items():
+                if input_net == net_name:
+                    irq_id = 116 + idx  # Versal GIC mapping
+                    macro = f"XPAR_FABRIC_{cell_name.upper()}_{pin_name.upper()}_INTR"
+                    defines.append(f"#define {macro} {irq_id}U")
+
+    return defines
+
+
+def _generate_ddr_macros(xsa_path, cpu):
+    """Generate DDR memory base address macros for MicroBlaze designs.
+
+    Vitis 2025+ doesn't generate the XPAR_AXI_DDR_CNTRL_* macros that projects
+    expect. This function extracts DDR controller information from the XSA
+    and generates compatible macros.
+
+    Returns a list of C #define lines.
+    """
+    # Check for any MicroBlaze CPU (sys_mb, or custom names like IOP1_IOP1_mb)
+    if cpu != "sys_mb" and "_mb" not in cpu.lower():
+        return []
+
+    hw_design = HwManager.open_hw_design(xsa_path)
+    defines = []
+    seen = set()
+
+    # Find MicroBlaze processor
+    mb_cell = None
+    cells = hw_design.get_cells()
+    for cell in cells:
+        vlnv = cell.get('VLNV') or ''
+        if 'microblaze' in vlnv.lower():
+            mb_cell = cell
+            break
+
+    if not mb_cell:
+        hw_design.close()
+        return defines
+
+    # Get memory ranges from MicroBlaze's perspective
+    mem_ranges = hw_design.get_mem_ranges(of_objects=mb_cell)
+    for mem in mem_ranges:
+        instance_obj = mem.get('INSTANCE')
+        # INSTANCE returns an HwCell object, get its NAME
+        instance = instance_obj.get('NAME') if instance_obj else ''
+        base = mem.get('BASE_VALUE')
+        high = mem.get('HIGH_VALUE')
+
+        if base is None or not instance:
+            continue
+
+        # Check if this is a DDR/MIG controller by looking at the instance name
+        instance_lower = instance.lower()
+        if 'ddr' not in instance_lower and 'mig' not in instance_lower:
+            continue
+
+        # Skip duplicates (same instance can appear multiple times)
+        if instance in seen:
+            continue
+        seen.add(instance)
+
+        # Generate the old-style macro that projects expect
+        # Format: XPAR_AXI_DDR_CNTRL_C0_DDR4_MEMORY_MAP_BASEADDR
+        old_macro = f"XPAR_{instance.upper()}_C0_DDR4_MEMORY_MAP_BASEADDR"
+        defines.append(f"#define {old_macro} {base}")
+
+        # Also generate simpler macros
+        simple_macro = f"XPAR_{instance.upper()}_BASEADDR"
+        defines.append(f"#define {simple_macro} {base}")
+
+        if high is not None:
+            simple_high = f"XPAR_{instance.upper()}_HIGHADDR"
+            defines.append(f"#define {simple_high} {high}")
+
+    hw_design.close()
+    return defines
+
+
+# ---------------------------------------------------------------------------
 # get_arch
 # ---------------------------------------------------------------------------
 
@@ -200,6 +553,28 @@ def create_project(ws, hw_path, hw_file, target):
         with open(xpar_h, "a") as f:
             f.write('\n/* Vitis 2025+ compatibility defines */\n')
             f.write('#include "xilinx_compat.h"\n')
+
+    # Generate XPAR_FABRIC_*_INTR macros for PL interrupts.
+    # Vitis 2025+ create_platform_component does not generate these, but the
+    # old HSI generate_bsp did.  Extract interrupt connections from the XSA
+    # and append the defines to xparameters.h.
+    fabric_irq_defines = _generate_fabric_irq_macros(xsa, cpu)
+    if fabric_irq_defines and os.path.exists(xpar_h):
+        with open(xpar_h, "a") as f:
+            f.write('\n/* Fabric interrupt defines (generated from XSA) */\n')
+            for define in fabric_irq_defines:
+                f.write(define + '\n')
+        print(f"INFO: Generated {len(fabric_irq_defines)} fabric IRQ macros")
+
+    # Generate DDR memory base address macros for MicroBlaze.
+    # Vitis 2025+ doesn't generate XPAR_AXI_DDR_CNTRL_* macros.
+    ddr_defines = _generate_ddr_macros(xsa, cpu)
+    if ddr_defines and os.path.exists(xpar_h):
+        with open(xpar_h, "a") as f:
+            f.write('\n/* DDR memory defines (generated from XSA) */\n')
+            for define in ddr_defines:
+                f.write(define + '\n')
+        print(f"INFO: Generated {len(ddr_defines)} DDR macros")
 
     print(f"INFO: BSP copied to bsp/{cpu}/")
 
@@ -472,6 +847,9 @@ def _cpu_reset(session, cpu, jtagtarget):
 
     if "cortexa9" in cpu:
         session.rst()
+        # rst releases the A9; halt it again so the bitstream download and
+        # ps7_init run against a stopped core (Zynq-7000 JTAG boot flow).
+        session.stop()
     elif "cortexa53" in cpu:
         session.rst(type='system')
 

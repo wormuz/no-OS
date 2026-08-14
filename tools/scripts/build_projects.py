@@ -253,6 +253,9 @@ def configfile_and_download_all_hw(_platform, noos, _builds_dir, hdl_branch):
 			sys.exit(1)
 	return (builds_dir, blacklist)
 
+# Xilinx BSP freshness is validated per-build-dir via xsa_work/.bsp_stamp
+# in config_xilinx_sdk (cmake/xilinx/xilinx_platform_sdk.cmake).
+
 def get_hardware(hardware, platform, builds_dir):
 	if platform == 'xilinx':
 		ext = 'xsa'
@@ -271,7 +274,7 @@ def get_hardware(hardware, platform, builds_dir):
 		if filecmp.cmp(filename, tmp_filename):
 			log("Same hardware from last build, use existing bsp")
 			return (filename, 0, 0)
-	
+
 	err = run_cmd('cp %s %s' % (tmp_filename, filename))
 	if err != 0:
 		return ('', 1, err)
