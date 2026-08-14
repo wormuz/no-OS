@@ -118,12 +118,13 @@
 #define XPAR_INTC_SINGLE_DEVICE_ID	0
 #endif
 
-/* Note: XPAR_INTC_MAX_NUM_INTR_INPUTS is intentionally NOT provided here.
- * On Vitis 2025+ the BSP's xintc.h pulls in xintc_drv_config.h, which always
- * defines this macro.  Providing a fallback from xparameters.h (which only
- * exposes XPAR_XINTC_0_NUM_INTR_INPUTS) would be redefined later by
- * xintc_drv_config.h, triggering a redefinition warning.  No no-OS code uses
- * this macro outside the xintc.h include chain, so the BSP definition suffices. */
+/* xintc.h only pulls in xintc_drv_config.h (which defines
+ * XPAR_INTC_MAX_NUM_INTR_INPUTS) under the SDT flow.  no-OS builds the classic
+ * flow (SDT undefined), so xintc.h falls back to xparameters.h, which exposes
+ * the input count only under its canonical name.  Provide the alias. */
+#ifndef XPAR_INTC_MAX_NUM_INTR_INPUTS
+#define XPAR_INTC_MAX_NUM_INTR_INPUTS	XPAR_XINTC_0_NUM_INTR_INPUTS
+#endif
 
 /* Interrupt ID renames: old XPAR_AXI_INTC_<periph>_INTERRUPT_INTR
  * became XPAR_FABRIC_<periph>_INTR in Vitis 2025+. */
