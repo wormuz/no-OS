@@ -203,11 +203,14 @@ int no_os_tone_coherence(const uint16_t *buf, uint32_t samples,
 
 /*
  * Write a complex tone into an interleaved transmit buffer, as signed
- * two's-complement 16-bit samples.
+ * two's-complement 16-bit samples. num_ch complex channels are written: channel
+ * 0 on the pair layout names, each further one two converters higher, and every
+ * other converter zeroed.
  */
 int no_os_tone_fill_iq(uint16_t *buf, uint32_t samples,
 		       const struct no_os_tone_layout *layout,
-		       int64_t freq_hz, uint64_t rate_hz, int32_t amplitude);
+		       int64_t freq_hz, uint64_t rate_hz, int32_t amplitude,
+		       uint8_t num_ch);
 
 /* Report one measurement and return whether it passes. */
 bool no_os_tone_report(const struct no_os_tone_test *test,

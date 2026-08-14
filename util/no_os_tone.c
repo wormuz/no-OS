@@ -342,54 +342,81 @@ int no_os_tone_coherence(const uint16_t *buf, uint32_t samples,
 }
 
 /**
- * @brief Fill a transmit buffer with a complex tone.
+ * @brief Fill a transmit buffer with a complex tone on one or more channels.
  *
  * Uses the same phase accumulator and table as no_os_tone_coherence(), so a
  * transmitted frequency and the frequency it is scored at cannot disagree about
- * what a given rate means. Converters beyond the I/Q pair are zeroed so an
- * unrelated datapath cannot contribute to a capture.
+ * what a given rate means. Converters outside the channels written are zeroed
+ * so an unrelated datapath cannot contribute to a capture.
+ *
+ * Channel 0 is the pair @p layout names; each further channel sits two
+ * converters higher, which is how a JESD204 link carrying several complex
+ * channels interleaves them. Every channel gets the same tone from one shared
+ * phase accumulator, so they leave the buffer in phase with each other -- an
+ * important property when a capture is used to compare channels rather than to
+ * measure one.
  *
  * Samples are written as signed two's complement. A transmit path expecting
  * offset binary needs them re-biased after this returns.
  *
  * @param buf - Destination buffer, layout->num_conv interleaved converters.
  * @param samples - Samples per converter to write.
- * @param layout - Where the I/Q pair sits in the buffer.
+ * @param layout - Where channel 0's I/Q pair sits in the buffer.
  * @param freq_hz - Tone frequency, may be negative.
  * @param rate_hz - Transmit sample rate in Hz.
  * @param amplitude - Peak amplitude in LSB.
+ * @param num_ch - Complex channels to fill, at least one. Every channel's pair
+ *                 has to fit inside layout->num_conv.
  * @return 0 on success, negative error code otherwise.
  */
 int no_os_tone_fill_iq(uint16_t *buf, uint32_t samples,
 		       const struct no_os_tone_layout *layout,
-		       int64_t freq_hz, uint64_t rate_hz, int32_t amplitude)
+		       int64_t freq_hz, uint64_t rate_hz, int32_t amplitude,
+		       uint8_t num_ch)
 {
 	uint32_t phase = 0;
+	uint16_t re;
+	uint16_t im;
 	uint32_t step;
+	uint32_t base;
 	uint32_t idx;
 	uint32_t i;
+	uint8_t ch;
 	uint8_t c;
 
-	if (!buf || !rate_hz)
+	if (!buf || !rate_hz || !num_ch)
 		return -EINVAL;
 
 	if (!no_os_tone_layout_valid(layout))
+		return -EINVAL;
+
+	/*
+	 * The last channel's pair is the furthest either index reaches, so
+	 * checking it covers every channel below it too.
+	 */
+	c = 2 * (num_ch - 1);
+	if (layout->conv_i + c >= layout->num_conv ||
+	    layout->conv_q + c >= layout->num_conv)
 		return -EINVAL;
 
 	step = no_os_tone_phase_step(freq_hz, rate_hz);
 
 	for (i = 0; i < samples; i++) {
 		idx = phase >> SIN_TABLE_PHASE_SHIFT;
+		base = i * layout->num_conv;
 
 		for (c = 0; c < layout->num_conv; c++)
-			buf[i * layout->num_conv + c] = 0;
+			buf[base + c] = 0;
 
-		buf[i * layout->num_conv + layout->conv_i] = (uint16_t)(int16_t)
-				((amplitude * no_os_tone_cos_q15(idx))
-				 >> SIN_TABLE_SHIFT);
-		buf[i * layout->num_conv + layout->conv_q] = (uint16_t)(int16_t)
-				((amplitude * no_os_tone_sin_q15(idx))
-				 >> SIN_TABLE_SHIFT);
+		re = (uint16_t)(int16_t)((amplitude * no_os_tone_cos_q15(idx))
+					 >> SIN_TABLE_SHIFT);
+		im = (uint16_t)(int16_t)((amplitude * no_os_tone_sin_q15(idx))
+					 >> SIN_TABLE_SHIFT);
+
+		for (ch = 0; ch < num_ch; ch++) {
+			buf[base + layout->conv_i + 2 * ch] = re;
+			buf[base + layout->conv_q + 2 * ch] = im;
+		}
 
 		phase += step;
 	}
