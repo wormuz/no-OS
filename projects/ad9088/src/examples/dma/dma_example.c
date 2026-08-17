@@ -31,6 +31,38 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 *******************************************************************************/
 
+/*
+ * What this example does, in the order dma_example_main() does it:
+ *
+ *   1-10.  Bring up the board -- three clock chips, both transceivers, both
+ *          AXI JESD204 cores and the AD9088 -- then run the JESD204 FSM until
+ *          the link carries data.
+ *   11-13. Derive the capture geometry and the sample rates from the profile
+ *          the FSM populated rather than hardcoding them, and put every NCO on
+ *          a common default so a tone arrives where it was sent.
+ *   14.    Three measurements, weakest claim first:
+ *
+ *          a) Noise floor, datapath idle. First on purpose: coherence here
+ *             should collapse to roughly NO_OS_TONE_SCALE/N, which is what
+ *             shows the estimator rejects noise instead of scoring whatever it
+ *             is handed. Without (a), a pass in (b) proves nothing.
+ *          b) RX FNCO test tone. Test mode injects a constant ahead of the
+ *             FDDC mixer, so this covers the receive datapath alone -- the
+ *             tone never reaches the DAC or the cables.
+ *          c) Cabled DAC -> ADC loopback. Drives the DAC from DMA and captures
+ *             what comes back, the first measurement covering the whole chain,
+ *             scored on every channel both links can carry.
+ *
+ *   15.    Park in a busy loop.
+ *
+ * HARDWARE: (c) needs a physical cable from a DAC output to an ADC input. With
+ * no cable it fails, and that failure is not a bug.
+ *
+ * The example deliberately never returns on success. It parks at step 15 so
+ * tools/scripts/platform/xilinx/capture.tcl can read adc_buffer_dma back over
+ * JTAG; returning would let the startup code re-zero .bss and wipe the capture.
+ */
+
 #include "dma_example.h"
 #include "common_data.h"
 #include "no_os_delay.h"
@@ -133,6 +165,67 @@ __attribute__((aligned(DMA_BUFFER_ALIGN)));
 /* Sized to the whole TX offload BRAM, see TX_OFFLOAD_BRAM_BYTES. */
 static uint16_t dac_buffer_dma[TX_OFFLOAD_BRAM_BYTES / sizeof(uint16_t)]
 __attribute__((aligned(DMA_BUFFER_ALIGN)));
+
+/*
+ * Shared by all three measurements: only the fields that distinguish them are
+ * set at the call site, so a threshold cannot drift between tests.
+ */
+static const struct no_os_tone_limits dma_example_limits = {
+	.coherence_min	= NO_OS_TONE_COHERENCE_PASS,
+	.spread_max	= NO_OS_TONE_SPREAD_MAX,
+};
+
+/**
+ * @struct dma_example_meas
+ * @brief What the measurements need, gathered once after bring-up.
+ *
+ * Inputs only. dma_example_main() keeps ownership of every handle in here and
+ * stays responsible for removing them; nothing in this struct is allocated or
+ * freed, and no measurement writes to a field another one reads. It exists so
+ * each measurement takes a short argument list instead of the nine or more
+ * parameters the values would otherwise have to travel as.
+ */
+struct dma_example_meas {
+	/** AD9088 device. */
+	struct ad9088_phy		*phy;
+	/** RX DMA controller, source of every capture. */
+	struct axi_dmac			*rx_dmac;
+	/** TX DMA controller, replays the loopback tone. */
+	struct axi_dmac			*tx_dmac;
+	/** TX TPL core, switched between zero and DMA. */
+	struct axi_dac			*tx_dac;
+
+	/* Receive geometry, derived from the link the FSM brought up. */
+	/** Converter pair the captured tone lands on. */
+	struct no_os_tone_layout	rx_layout;
+	/** Converters the receive link carries. */
+	uint8_t				num_conv;
+	/** Sample width the receive link reports. */
+	uint8_t				np;
+	/** Samples captured per converter. */
+	uint32_t			samples;
+	/** Capture transfer size in bytes. */
+	uint32_t			transfer_size;
+	/** Rate the captured samples arrive at, in Hz. */
+	uint64_t			capture_rate;
+
+	/* Transmit geometry -- the transmit link carries its own M. */
+	/** Converter pair the transmitted tone is written to. */
+	struct no_os_tone_layout	tx_layout;
+	/** Converters the transmit link carries. */
+	uint8_t				tx_num_conv;
+	/** Rate the transmitted samples leave at, in Hz. */
+	uint64_t			tx_rate;
+	/** Samples per converter in the replay buffer. */
+	uint32_t			tx_samples;
+	/** Replay transfer size in bytes. */
+	uint32_t			tx_size;
+
+	/** Complex channels both links can carry end to end. */
+	uint8_t				num_ch;
+	/** Frequency every measurement is scored at, in Hz. */
+	int64_t				tone_hz;
+};
 
 /**
  * @brief Capture one buffer from the RX DMAC into DDR.
@@ -399,6 +492,79 @@ static int dma_example_get_tx_rate(struct ad9088_phy *phy,
 }
 
 /**
+ * @brief Work out the buffer layout from the link the FSM brought up.
+ *
+ * Everything here is derived from the profile rather than hardcoded, so a
+ * profile change cannot silently corrupt the buffer layout -- it fails the
+ * range checks instead. The capture depth is clamped to what the static buffer
+ * holds, so more converters shorten the capture rather than overrun it.
+ *
+ * @param m - Measurement inputs, with phy already set. Fills in the geometry.
+ * @return 0 on success, negative error code otherwise.
+ */
+static int dma_example_derive_geometry(struct dma_example_meas *m)
+{
+	adi_apollo_jesd_tx_link_cfg_t *frm =
+		&m->phy->profile.jtx[TEST_TONE_SIDE].tx_link_cfg[0];
+	adi_apollo_jesd_rx_link_cfg_t *dfrm =
+		&m->phy->profile.jrx[TEST_TONE_SIDE].rx_link_cfg[0];
+
+	m->num_conv = frm->m_minus1 + 1;
+	m->np = frm->np_minus1 + 1;
+
+	if (!m->num_conv || m->num_conv > MAX_LINK_CONVERTERS) {
+		pr_err("Unexpected converter count M=%u\n", m->num_conv);
+		return -EINVAL;
+	}
+
+	m->tx_num_conv = dfrm->m_minus1 + 1;
+
+	if (!m->tx_num_conv || m->tx_num_conv > MAX_LINK_CONVERTERS) {
+		pr_err("Unexpected transmit converter count M=%u\n",
+		       m->tx_num_conv);
+		return -EINVAL;
+	}
+
+	/*
+	 * Complex channels the loopback can carry end to end: an I/Q pair per
+	 * channel on each link, and a channel is only usable if both links have
+	 * a pair for it. Every one of them is transmitted on and captured, so
+	 * the whole buffer holds signal rather than just its first pair.
+	 */
+	m->num_ch = (m->num_conv < m->tx_num_conv ?
+		     m->num_conv : m->tx_num_conv) / 2;
+
+	if (!m->num_ch) {
+		pr_err("Links carry no complex channel: M rx=%u tx=%u\n",
+		       m->num_conv, m->tx_num_conv);
+		return -EINVAL;
+	}
+
+	/* Clamp the capture depth to what the static buffer can hold. */
+	m->samples = ADC_BUFFER_SAMPLES;
+	if (m->samples * m->num_conv > NO_OS_ARRAY_SIZE(adc_buffer_dma))
+		m->samples = NO_OS_ARRAY_SIZE(adc_buffer_dma) / m->num_conv;
+
+	m->transfer_size = m->samples * m->num_conv * sizeof(adc_buffer_dma[0]);
+
+	m->rx_layout.num_conv = m->num_conv;
+	m->rx_layout.conv_i = TONE_CONV_I;
+	m->rx_layout.conv_q = TONE_CONV_Q;
+
+	/* The transmit link carries its own M, so it needs its own layout. */
+	m->tx_layout.num_conv = m->tx_num_conv;
+	m->tx_layout.conv_i = TONE_CONV_I;
+	m->tx_layout.conv_q = TONE_CONV_Q;
+
+	pr_info("Capture geometry: M=%u NP=%u samples/conv=%lu bytes=%lu "
+		"channels=%u\n", m->num_conv, m->np,
+		(unsigned long)m->samples, (unsigned long)m->transfer_size,
+		m->num_ch);
+
+	return 0;
+}
+
+/**
  * @brief Put both sides' NCOs on a known default frequency.
  *
  * A CDUC/FDUC upconverts and a CDDC/FDDC downconverts, so a tone written at
@@ -510,7 +676,337 @@ static int dma_example_set_default_nco(struct ad9088_phy *phy)
 	return 0;
 }
 
-int dma_example_main()
+/**
+ * @brief Measurement (a): score an idle datapath and expect nothing.
+ *
+ * The baseline the other two are read against. Coherence here should collapse
+ * to roughly NO_OS_TONE_SCALE/N, which is what shows the estimator rejects
+ * noise instead of scoring anything handed to it -- without that, a high
+ * coherence in the tone test would not mean much.
+ *
+ * Test mode is already off after bring-up, but it is disabled explicitly so the
+ * floor measures a state this function guarantees rather than one it assumes.
+ *
+ * @param m - Measurement inputs.
+ * @param pass - Returns the verdict.
+ * @return 0 on success, negative error code otherwise.
+ */
+static int dma_example_measure_noise_floor(const struct dma_example_meas *m,
+		bool *pass)
+{
+	struct no_os_tone_result measured;
+	struct no_os_tone_test test = {
+		.name = "Noise floor, datapath idle",
+		.sense = NO_OS_TONE_SENSE_QUIET,
+		.conjugate = NULL,
+		.tx_amplitude = 0,
+		.full_scale = 0,
+		.limits = dma_example_limits,
+	};
+	int ret;
+
+	ret = ad9088_set_fnco_test_tone(m->phy, ADI_APOLLO_RX, TEST_TONE_SIDE,
+					TEST_TONE_FDDC, false, 0);
+	if (ret) {
+		pr_err("Disabling the RX FNCO test tone failed (%d)\n", ret);
+		return ret;
+	}
+
+	no_os_mdelay(10);
+
+	ret = dma_example_capture(m->rx_dmac, m->transfer_size);
+	if (ret)
+		return ret;
+
+	ret = no_os_tone_coherence(adc_buffer_dma, m->samples, &m->rx_layout,
+				   -m->tone_hz, m->capture_rate, &measured);
+	if (ret) {
+		pr_err("Scoring the idle capture failed (%d)\n", ret);
+		return ret;
+	}
+
+	test.freq_hz = -m->tone_hz;
+	test.samples = m->samples;
+
+	*pass = no_os_tone_report(&test, &measured);
+
+	return 0;
+}
+
+/**
+ * @brief Measurement (b): inject a tone inside the RX datapath and find it.
+ *
+ * Test mode replaces the FDDC mixer input with a constant which the NCO then
+ * rotates, so the FDDC emits a complex tone at the FNCO frequency. Nothing
+ * leaves the chip, so this validates the receive datapath only -- the tone
+ * never passes through the DAC, the cables or the ADC.
+ *
+ * Scored at -tone_hz: an RX FDDC downconverts, multiplying by exp(-jwn) so that
+ * a signal at +f_nco lands at DC. The test tone is a constant injected ahead of
+ * that mixer, so it comes out rotating at -f_nco. Verified on hardware -- a
+ * positive programmed frequency captures as a rotation of the same magnitude in
+ * the negative direction. A TX FDUC upconverts and needs the opposite sign.
+ *
+ * Both perturbations are undone before returning, on every path. Test mode
+ * discards the FDDC mixer input and would swallow the loopback signal exactly
+ * as it discards everything else upstream, and the retuned FNCO would translate
+ * it.
+ *
+ * @param m - Measurement inputs.
+ * @param pass - Returns the verdict.
+ * @return 0 on success, negative error code otherwise.
+ */
+static int dma_example_measure_rx_tone(const struct dma_example_meas *m,
+				       bool *pass)
+{
+	struct no_os_tone_result measured;
+	struct no_os_tone_test test = {
+		.name = "RX FNCO test tone",
+		.sense = NO_OS_TONE_SENSE_TONE,
+		.conjugate = NULL,
+		/*
+		 * A constant of magnitude TEST_TONE_OFFSET rotated by the NCO
+		 * arrives as a complex tone of sqrt(2) times it, so that is the
+		 * level to reference the measurement against. The integer
+		 * sqrt(2) is why the reported ratio lands near rather than
+		 * exactly at its predicted value.
+		 */
+		.tx_amplitude = TEST_TONE_OFFSET * 2828 / 1000,
+		.full_scale = SAMPLE_FULL_SCALE,
+		.limits = dma_example_limits,
+	};
+	int restore;
+	int disable;
+	int ret;
+
+	ret = ad9088_set_fnco_test_tone(m->phy, ADI_APOLLO_RX, TEST_TONE_SIDE,
+					TEST_TONE_FDDC, true, TEST_TONE_OFFSET);
+	if (ret) {
+		pr_err("Enabling the RX FNCO test tone failed (%d)\n", ret);
+		return ret;
+	}
+
+	ret = ad9088_set_fnco_freq(m->phy, ADI_APOLLO_RX, TEST_TONE_SIDE,
+				   TEST_TONE_FDDC, m->tone_hz);
+	if (ret) {
+		pr_err("Setting the RX FNCO frequency failed (%d)\n", ret);
+		goto undo;
+	}
+
+	no_os_mdelay(10);
+
+	ret = dma_example_capture(m->rx_dmac, m->transfer_size);
+	if (ret)
+		goto undo;
+
+	ret = no_os_tone_coherence(adc_buffer_dma, m->samples, &m->rx_layout,
+				   -m->tone_hz, m->capture_rate, &measured);
+	if (ret) {
+		pr_err("Scoring the tone capture failed (%d)\n", ret);
+		goto undo;
+	}
+
+	test.freq_hz = -m->tone_hz;
+	test.samples = m->samples;
+
+	*pass = no_os_tone_report(&test, &measured);
+	ret = 0;
+
+undo:
+	/* Keep the first error: the undo must not mask what went wrong. */
+	disable = ad9088_set_fnco_test_tone(m->phy, ADI_APOLLO_RX,
+					    TEST_TONE_SIDE, TEST_TONE_FDDC,
+					    false, 0);
+	if (disable)
+		pr_err("Disabling the RX FNCO test tone failed (%d)\n", disable);
+	if (!ret)
+		ret = disable;
+
+	restore = dma_example_set_default_nco(m->phy);
+	if (!ret)
+		ret = restore;
+
+	return ret;
+}
+
+/**
+ * @brief Start replaying a tone out of the DAC, for measurement (c).
+ *
+ * The offload replays its whole BRAM whatever was written into it, so all of it
+ * is filled rather than leaving the tail to come back as noise. Every channel
+ * is filled too, not just the first pair: the fill zeroes what it does not
+ * write, so a channel left out would have its DAC driven with silence and come
+ * back empty in the capture.
+ *
+ * The tone is at the same frequency the tone test uses. With both sides' NCOs
+ * on the same default it comes back where it was sent, on a capture bin, and a
+ * whole number of cycles fits the transmit buffer, so the cyclic wrap leaves no
+ * phase discontinuity for a capture to straddle -- which matters because the
+ * capture is shorter than the replay and can start anywhere in it.
+ *
+ * @param m - Measurement inputs. Fills in the replay size.
+ * @return 0 on success, negative error code otherwise.
+ */
+static int dma_example_start_tx_tone(struct dma_example_meas *m)
+{
+	struct axi_dma_transfer tx_transfer;
+	uint32_t tx_bram_size = 0;
+	int ret;
+
+	no_os_axi_io_read(TX_DATA_OFFLOAD_BASEADDR, AXI_DO_REG_MEMORY_SIZE_LSB,
+			  &tx_bram_size);
+
+	m->tx_size = sizeof(dac_buffer_dma);
+	if (tx_bram_size && tx_bram_size < m->tx_size)
+		m->tx_size = tx_bram_size;
+
+	/* The DMAC rejects a source address off its data path width. */
+	m->tx_size &= ~(uint32_t)(DMA_SRC_WIDTH_BYTES - 1);
+	m->tx_samples = m->tx_size /
+			(m->tx_num_conv * sizeof(dac_buffer_dma[0]));
+	m->tx_size = m->tx_samples * m->tx_num_conv * sizeof(dac_buffer_dma[0]);
+
+	pr_info("Transmitting: M=%u, %u channels, %lu samples/conv, %lu bytes "
+		"cyclic\n", m->tx_num_conv, m->num_ch,
+		(unsigned long)m->tx_samples, (unsigned long)m->tx_size);
+
+	ret = no_os_tone_fill_iq(dac_buffer_dma, m->tx_samples, &m->tx_layout,
+				 m->tone_hz, m->tx_rate, LOOPBACK_TX_AMPLITUDE,
+				 m->num_ch);
+	if (ret) {
+		pr_err("Filling the transmit buffer failed (%d)\n", ret);
+		return ret;
+	}
+
+	/* MEM_TO_DEV reads DDR, so dirty lines have to land there first. */
+	Xil_DCacheFlushRange((uintptr_t)dac_buffer_dma, m->tx_size);
+
+	ret = axi_dac_set_datasel(m->tx_dac, -1, AXI_DAC_DATA_SEL_DMA);
+	if (ret) {
+		pr_err("Selecting the DMA data source failed (%d)\n", ret);
+		return ret;
+	}
+
+	tx_transfer.size = m->tx_size;
+	tx_transfer.transfer_done = 0;
+	tx_transfer.cyclic = CYCLIC;
+	tx_transfer.src_addr = (uintptr_t)dac_buffer_dma;
+	tx_transfer.dest_addr = 0;
+
+	/*
+	 * Cyclic keeps the tone running for the whole capture. It is a build
+	 * option of the DMAC rather than a guarantee, so fall back to a single
+	 * pass if the core rejects it. Never wait for completion either way: a
+	 * cyclic transfer raises no end-of-transfer and would only time out.
+	 */
+	ret = axi_dmac_transfer_start(m->tx_dmac, &tx_transfer);
+	if (ret) {
+		pr_info("  cyclic transfer unavailable, using a single pass\n");
+		tx_transfer.cyclic = NO;
+		ret = axi_dmac_transfer_start(m->tx_dmac, &tx_transfer);
+	}
+
+	if (ret) {
+		pr_err("TX DMA transfer start failed (%d)\n", ret);
+		/* Same unwind main's error_tx_stream does, next to its cause. */
+		axi_dmac_transfer_stop(m->tx_dmac);
+		axi_dac_set_datasel(m->tx_dac, -1, AXI_DAC_DATA_SEL_ZERO);
+		return ret;
+	}
+
+	return 0;
+}
+
+/**
+ * @brief Measurement (c): capture what came back through the cable.
+ *
+ * The only measurement covering the whole chain. Scored at +tone_hz rather than
+ * the tone test's -tone_hz: that one injects a constant ahead of a
+ * downconverting mixer, whereas this transmits a real +tone_hz and the aligned
+ * mixers cancel, so it arrives where it was sent.
+ *
+ * The second probe covers the transmitted I/Q ordering, the one convention in
+ * this path no other measurement confirms: a swapped pair sends -f. Either sign
+ * passes and the report names a swap rather than failing on it.
+ *
+ * Scored once per channel over the one capture. Every channel is transmitted on
+ * and cabled, so a flat one is a real fault rather than an idle datapath.
+ *
+ * @param m - Measurement inputs.
+ * @param pass - Returns the verdict, false if any channel fails.
+ * @return 0 on success, negative error code otherwise.
+ */
+static int dma_example_measure_loopback(const struct dma_example_meas *m,
+					bool *pass)
+{
+	/* Reused per channel by the loopback measurement. */
+	struct no_os_tone_layout ch_layout;
+	struct no_os_tone_result conjugate;
+	struct no_os_tone_result measured;
+	struct no_os_tone_test test = {
+		.name = "Cabled DAC -> ADC loopback",
+		.sense = NO_OS_TONE_SENSE_EITHER,
+		.conjugate = &conjugate,
+		.tx_amplitude = LOOPBACK_TX_AMPLITUDE,
+		.full_scale = SAMPLE_FULL_SCALE,
+		.limits = dma_example_limits,
+	};
+	uint8_t ch;
+	int ret;
+
+	no_os_mdelay(10);
+
+	ret = dma_example_capture(m->rx_dmac, m->transfer_size);
+	if (ret)
+		return ret;
+
+	test.freq_hz = m->tone_hz;
+	test.samples = m->samples;
+
+	*pass = true;
+
+	for (ch = 0; ch < m->num_ch; ch++) {
+		ch_layout.num_conv = m->num_conv;
+		ch_layout.conv_i = TONE_CONV_I + 2 * ch;
+		ch_layout.conv_q = TONE_CONV_Q + 2 * ch;
+
+		ret = no_os_tone_coherence(adc_buffer_dma, m->samples,
+					   &ch_layout, m->tone_hz,
+					   m->capture_rate, &measured);
+		if (ret) {
+			pr_err("Scoring the loopback capture failed (%d)\n",
+			       ret);
+			return ret;
+		}
+
+		ret = no_os_tone_coherence(adc_buffer_dma, m->samples,
+					   &ch_layout, -m->tone_hz,
+					   m->capture_rate, &conjugate);
+		if (ret) {
+			pr_err("Probing the loopback conjugate failed (%d)\n",
+			       ret);
+			return ret;
+		}
+
+		pr_info("Channel %u, conv %u/%u\n", ch, ch_layout.conv_i,
+			ch_layout.conv_q);
+
+		if (!no_os_tone_report(&test, &measured))
+			*pass = false;
+	}
+
+	return 0;
+}
+
+/**
+ * @brief Bring up the board, then run the three measurements.
+ *
+ * See the roadmap at the top of this file for what each step is for. Does not
+ * return on success -- step 15 parks so the capture buffer stays readable.
+ *
+ * @return Negative error code on failure, never returns on success.
+ */
+int dma_example_main(void)
 {
 	struct adf4382_dev *adf4382_dev;
 	struct hmc7044_dev *hmc7044_dev;
@@ -523,62 +1019,44 @@ int dma_example_main()
 	struct jesd204_clk tx_jesd_clk = {0};
 	struct no_os_clk_desc rx_lane_clk = {0};
 	struct no_os_clk_desc tx_lane_clk = {0};
+	struct jesd204_topology *topology;
 	struct axi_dmac *rx_dmac;
 	struct axi_dmac *tx_dmac;
 	struct ad9088_phy *ad9088_phy;
 	struct axi_adc *rx_adc;
 	struct axi_dac *tx_dac;
-	uint32_t samples_per_conv;
-	uint32_t transfer_size;
-	uint8_t num_conv;
-	uint8_t num_ch;
-	uint8_t np;
-	int64_t tone_hz;
-	uint64_t capture_rate;
-	struct no_os_tone_layout rx_layout;
-	/* Reused per channel by the loopback measurement. */
-	struct no_os_tone_layout ch_layout;
-	struct no_os_tone_layout tx_layout;
-	struct no_os_tone_result measured;
-	struct no_os_tone_result conjugate;
+	struct dma_example_meas meas = {0};
 	/*
-	 * Reused across the three measurements: every field that distinguishes
-	 * them is set at the call site, and the thresholds are common.
+	 * Held in their own flags rather than ret, since the measurements issue
+	 * device calls that overwrite ret and the verdicts are combined only
+	 * once every one of them has run.
 	 */
-	struct no_os_tone_test test = {
-		.limits = {
-			.coherence_min = NO_OS_TONE_COHERENCE_PASS,
-			.spread_max = NO_OS_TONE_SPREAD_MAX,
-		},
-	};
-	bool tone_pass;
-	bool floor_pass;
-	struct axi_dma_transfer tx_transfer;
-	uint64_t tx_rate;
-	uint32_t tx_bram_size = 0;
-	uint32_t tx_samples;
-	uint32_t tx_size;
-	uint8_t tx_num_conv;
-	uint8_t ch;
 	bool loopback_pass;
+	bool floor_pass;
+	bool tone_pass;
 
 	int ret = 0;
 
 	pr_info("Enter DMA example\n");
 
+	/* Step 1: reference synthesizer. */
 	ret = adf4382_init(&adf4382_dev, &adf4382_ip);
 	if (ret) {
 		pr_info("ADF4382 initialization failed\n");
 		goto error;
 	}
 
+	/* Step 2: clock distribution. */
 	ret = hmc7044_init(&hmc7044_dev, &hmc7044_ip);
 	if (ret) {
 		pr_info("HMC7044 initialization failed\n");
 		goto error_adf4382;
 	}
 
-	/* After the HMC7044: the ADF4030's reference comes from HMC7044 ch1. */
+	/*
+	 * Step 3: SYSREF provider. After the HMC7044: the ADF4030's reference
+	 * comes from HMC7044 ch1.
+	 */
 	ret = adf4030_init(&adf4030_dev, &adf4030_ip);
 	if (ret) {
 		pr_info("ADF4030 initialization failed\n");
@@ -586,8 +1064,9 @@ int dma_example_main()
 	}
 
 	/*
-	 * Enables MCS calibration, which trims the AD9088's internal SYSREF onto
-	 * the external edge. Needs both clock chips probed, so it goes here.
+	 * Step 4: enables MCS calibration, which trims the AD9088's internal
+	 * SYSREF onto the external edge. Needs both clock chips probed, so it
+	 * goes here.
 	 */
 	ret = ad9088_mcs_ops_bind(adf4030_dev, adf4382_dev);
 	if (ret) {
@@ -595,6 +1074,7 @@ int dma_example_main()
 		goto error_adf4030;
 	}
 
+	/* Step 5: DMA controllers. */
 	ret = axi_dmac_init(&rx_dmac, &rx_dmac_ip);
 	if (ret) {
 		pr_info("RX DMAC initialization failed\n");
@@ -607,6 +1087,7 @@ int dma_example_main()
 		goto error_rx_dmac;
 	}
 
+	/* Step 6: serial transceivers. */
 	ret = adxcvr_init(&tx_adxcvr, &tx_adxcvr_ip);
 	if (ret) {
 		pr_info("TX ADXCVR initialization failed\n");
@@ -621,6 +1102,7 @@ int dma_example_main()
 	}
 	rx_jesd_clk.xcvr = rx_adxcvr;
 
+	/* Step 7: lane clocks, which the JESD204 cores drive through. */
 	rx_lane_clk.platform_ops = &jesd204_clk_ops;
 	rx_lane_clk.dev_desc = &rx_jesd_clk;
 	rx_jesd204_ip.lane_clk = &rx_lane_clk;
@@ -629,6 +1111,7 @@ int dma_example_main()
 	tx_lane_clk.dev_desc = &tx_jesd_clk;
 	tx_jesd204_ip.lane_clk = &tx_lane_clk;
 
+	/* Step 8: AXI JESD204 link layer cores. */
 	ret = axi_jesd204_rx_init(&rx_jesd, &rx_jesd204_ip);
 	if (ret) {
 		pr_info("JESD RX initialization failed\n");
@@ -643,19 +1126,20 @@ int dma_example_main()
 	}
 	tx_jesd_clk.jesd_tx = tx_jesd;
 
+	/* Step 9: the transceiver itself, profile and firmware included. */
 	ret = ad9088_init(&ad9088_phy, &ad9088_ip);
 	if (ret) {
 		pr_info("AD9088 initialization failed\n");
 		goto error_tx_jesd;
 	}
 
-	struct jesd204_topology *topology;
 	/*
-	 * The ADF4030 is the SYSREF provider: it drives both the Apollo's SYSREF
-	 * pin and the FPGA's sysref_in. It must be listed before the top device -
-	 * jesd204_topology_init() reads is_sysref_provider from this array but
-	 * takes the jdev pointer from the top-device-filtered copy, so the two
-	 * indices only agree while the provider precedes the top device.
+	 * Step 10: the ADF4030 is the SYSREF provider: it drives both the
+	 * Apollo's SYSREF pin and the FPGA's sysref_in. It must be listed
+	 * before the top device - jesd204_topology_init() reads
+	 * is_sysref_provider from this array but takes the jdev pointer from
+	 * the top-device-filtered copy, so the two indices only agree while the
+	 * provider precedes the top device.
 	 */
 	struct jesd204_topology_dev devs[] = {
 		{
@@ -712,72 +1196,28 @@ int dma_example_main()
 	axi_jesd204_tx_status_read(tx_jesd);
 	axi_jesd204_rx_status_read(rx_jesd);
 
-	/*
-	 * Derive the capture geometry from the link the FSM just brought up
-	 * rather than hardcoding it, so a profile change cannot silently
-	 * corrupt the buffer layout.
-	 */
-	num_conv = ad9088_phy->profile.jtx[TEST_TONE_SIDE].tx_link_cfg[0].m_minus1 + 1;
-	np = ad9088_phy->profile.jtx[TEST_TONE_SIDE].tx_link_cfg[0].np_minus1 + 1;
+	/* Step 11: everything the measurements need, from here on. */
+	meas.phy = ad9088_phy;
+	meas.rx_dmac = rx_dmac;
+	meas.tx_dmac = tx_dmac;
 
-	if (!num_conv || num_conv > MAX_LINK_CONVERTERS) {
-		pr_err("Unexpected converter count M=%u\n", num_conv);
-		ret = -EINVAL;
+	ret = dma_example_derive_geometry(&meas);
+	if (ret)
 		goto error_topology;
-	}
 
-	tx_num_conv = ad9088_phy->profile.jrx[TEST_TONE_SIDE]
-		      .rx_link_cfg[0].m_minus1 + 1;
+	dma_example_dump_datapath(meas.phy, meas.num_conv, meas.tx_num_conv);
 
-	if (!tx_num_conv || tx_num_conv > MAX_LINK_CONVERTERS) {
-		pr_err("Unexpected transmit converter count M=%u\n",
-		       tx_num_conv);
-		ret = -EINVAL;
-		goto error_topology;
-	}
-
-	/*
-	 * Complex channels the loopback can carry end to end: an I/Q pair per
-	 * channel on each link, and a channel is only usable if both links have
-	 * a pair for it. Every one of them is transmitted on and captured, so
-	 * the whole buffer holds signal rather than just its first pair.
-	 */
-	num_ch = (num_conv < tx_num_conv ? num_conv : tx_num_conv) / 2;
-
-	if (!num_ch) {
-		pr_err("Links carry no complex channel: M rx=%u tx=%u\n",
-		       num_conv, tx_num_conv);
-		ret = -EINVAL;
-		goto error_topology;
-	}
-
-	/* Clamp the capture depth to what the static buffer can hold. */
-	samples_per_conv = ADC_BUFFER_SAMPLES;
-	if (samples_per_conv * num_conv > NO_OS_ARRAY_SIZE(adc_buffer_dma))
-		samples_per_conv = NO_OS_ARRAY_SIZE(adc_buffer_dma) / num_conv;
-
-	transfer_size = samples_per_conv * num_conv * sizeof(adc_buffer_dma[0]);
-
-	rx_layout.num_conv = num_conv;
-	rx_layout.conv_i = TONE_CONV_I;
-	rx_layout.conv_q = TONE_CONV_Q;
-
-	pr_info("Capture geometry: M=%u NP=%u samples/conv=%lu bytes=%lu "
-		"channels=%u\n", num_conv, np, (unsigned long)samples_per_conv,
-		(unsigned long)transfer_size, num_ch);
-
-	dma_example_dump_datapath(ad9088_phy, num_conv, tx_num_conv);
-
+	/* Step 12: transport layer cores, sized to the link. */
 	struct axi_adc_init rx_adc_init = {
 		.name = "rx_adc",
 		.base = RX_CORE_BASEADDR,
-		.num_channels = num_conv,
+		.num_channels = meas.num_conv,
 	};
 
 	struct axi_dac_init tx_dac_init = {
 		.name = "tx_dac",
 		.base = TX_CORE_BASEADDR,
-		.num_channels = num_conv,
+		.num_channels = meas.num_conv,
 	};
 
 	ret = axi_adc_init(&rx_adc, &rx_adc_init);
@@ -791,290 +1231,45 @@ int dma_example_main()
 		pr_err("TX TPL core init failed (%d)\n", ret);
 		goto error_rx_adc;
 	}
+	meas.tx_dac = tx_dac;
 
 	/* Leave the TX datapath idle: the FNCO tone is injected inside RX. */
 	axi_dac_set_datasel(tx_dac, -1, AXI_DAC_DATA_SEL_ZERO);
 	pr_info("Project configured\n\n");
 
-	ret = dma_example_get_capture_rate(ad9088_phy, rx_adc, &capture_rate);
+	/* Step 13: the operating point every measurement runs from. */
+	ret = dma_example_get_capture_rate(meas.phy, rx_adc,
+					   &meas.capture_rate);
 	if (ret)
 		goto error_tx_dac;
 
-	tone_hz = (int64_t)no_os_div_u64(capture_rate, TEST_TONE_RATE_DIV);
+	meas.tone_hz = (int64_t)no_os_div_u64(meas.capture_rate,
+					      TEST_TONE_RATE_DIV);
 
-	/*
-	 * Every measurement below runs from this operating point rather than
-	 * wherever the profile happened to leave the NCOs.
-	 */
-	ret = dma_example_set_default_nco(ad9088_phy);
+	ret = dma_example_set_default_nco(meas.phy);
 	if (ret)
 		goto error_tx_dac;
 
-	/*
-	 * Baseline first, with the datapath idle. Test mode is off after
-	 * bring-up, but disable it explicitly so the floor measures a state this
-	 * block guarantees rather than one it assumes. Coherence here should
-	 * collapse to roughly NO_OS_TONE_SCALE/N, which is what shows the
-	 * estimator rejects noise instead of scoring anything handed to it.
-	 */
-	ret = ad9088_set_fnco_test_tone(ad9088_phy, ADI_APOLLO_RX,
-					TEST_TONE_SIDE, TEST_TONE_FDDC, false,
-					0);
-	if (ret) {
-		pr_err("Disabling the RX FNCO test tone failed (%d)\n", ret);
-		goto error_tx_dac;
-	}
-
-	no_os_mdelay(10);
-
-	ret = dma_example_capture(rx_dmac, transfer_size);
+	/* Step 14: the three measurements, weakest claim first. */
+	ret = dma_example_measure_noise_floor(&meas, &floor_pass);
 	if (ret)
 		goto error_tx_dac;
 
-	ret = no_os_tone_coherence(adc_buffer_dma, samples_per_conv, &rx_layout,
-				   -tone_hz, capture_rate, &measured);
-	if (ret) {
-		pr_err("Scoring the idle capture failed (%d)\n", ret);
+	ret = dma_example_measure_rx_tone(&meas, &tone_pass);
+	if (ret)
 		goto error_tx_dac;
-	}
 
-	/*
-	 * Held in its own flag rather than ret, since the tone block below issues
-	 * device calls that overwrite ret and the verdicts are combined only once
-	 * every block has run.
-	 */
-	test.name = "Noise floor, datapath idle";
-	test.freq_hz = -tone_hz;
-	test.samples = samples_per_conv;
-	test.sense = NO_OS_TONE_SENSE_QUIET;
-	test.conjugate = NULL;
-	test.tx_amplitude = 0;
-	test.full_scale = 0;
-
-	floor_pass = no_os_tone_report(&test, &measured);
-
-	/*
-	 * Test mode replaces the mixer input with a constant which the NCO then
-	 * rotates, so the FDDC emits a complex tone at the FNCO frequency.
-	 */
-	ret = ad9088_set_fnco_test_tone(ad9088_phy, ADI_APOLLO_RX,
-					TEST_TONE_SIDE, TEST_TONE_FDDC, true,
-					TEST_TONE_OFFSET);
-	if (ret) {
-		pr_err("Enabling the RX FNCO test tone failed (%d)\n", ret);
+	ret = dma_example_get_tx_rate(meas.phy, tx_dac, &meas.tx_rate);
+	if (ret)
 		goto error_tx_dac;
-	}
 
-	ret = ad9088_set_fnco_freq(ad9088_phy, ADI_APOLLO_RX, TEST_TONE_SIDE,
-				   TEST_TONE_FDDC, tone_hz);
-	if (ret) {
-		pr_err("Setting the RX FNCO frequency failed (%d)\n", ret);
-		goto error_tone;
-	}
-
-	no_os_mdelay(10);
-
-	ret = dma_example_capture(rx_dmac, transfer_size);
+	ret = dma_example_start_tx_tone(&meas);
 	if (ret)
-		goto error_tone;
+		goto error_tx_dac;
 
-	/*
-	 * An RX FDDC downconverts: it multiplies by exp(-jwn) so that a signal
-	 * at +f_nco lands at DC. The test tone is a constant injected ahead of
-	 * that mixer, so it comes out rotating at -f_nco. Verified on HW -- a
-	 * positive programmed frequency captures as a rotation of the same
-	 * magnitude in the negative direction. A TX FDUC upconverts and would
-	 * need the opposite sign here.
-	 */
-	ret = no_os_tone_coherence(adc_buffer_dma, samples_per_conv, &rx_layout,
-				   -tone_hz, capture_rate, &measured);
-	if (ret) {
-		pr_err("Scoring the tone capture failed (%d)\n", ret);
-		goto error_tone;
-	}
-
-	/*
-	 * A constant of magnitude TEST_TONE_OFFSET rotated by the NCO arrives as
-	 * a complex tone of sqrt(2) times it, so that is the level to reference
-	 * the measurement against. The integer sqrt(2) is why the reported
-	 * ratio lands near rather than exactly at its predicted value.
-	 */
-	test.name = "RX FNCO test tone";
-	test.freq_hz = -tone_hz;
-	test.samples = samples_per_conv;
-	test.sense = NO_OS_TONE_SENSE_TONE;
-	test.conjugate = NULL;
-	test.tx_amplitude = TEST_TONE_OFFSET * 2828 / 1000;
-	test.full_scale = SAMPLE_FULL_SCALE;
-
-	tone_pass = no_os_tone_report(&test, &measured);
-
-	/*
-	 * Everything above validates the RX datapath only: test mode discards
-	 * the FDDC mixer input, so the tone never passes through the DAC, the
-	 * cables or the ADC. Drive the DAC from DMA instead and capture what
-	 * comes back, which is the first measurement that covers the whole
-	 * chain. Test mode has to go first -- it would discard the loopback
-	 * signal exactly as it discards everything else upstream.
-	 */
-	ret = ad9088_set_fnco_test_tone(ad9088_phy, ADI_APOLLO_RX,
-					TEST_TONE_SIDE, TEST_TONE_FDDC, false,
-					0);
-	if (ret) {
-		pr_err("Disabling the RX FNCO test tone failed (%d)\n", ret);
-		goto error_tone;
-	}
-
-	ret = dma_example_get_tx_rate(ad9088_phy, tx_dac, &tx_rate);
-	if (ret)
-		goto error_tone;
-
-	/*
-	 * The tone test retuned the RX FNCO, which stays where it was left and
-	 * would otherwise translate the loopback signal by that much.
-	 */
-	ret = dma_example_set_default_nco(ad9088_phy);
-	if (ret)
-		goto error_tone;
-
-	/* The transmit link carries its own M, so it needs its own layout. */
-	tx_layout.num_conv = tx_num_conv;
-	tx_layout.conv_i = TONE_CONV_I;
-	tx_layout.conv_q = TONE_CONV_Q;
-
-	/*
-	 * The offload replays its whole BRAM whatever was written into it, so
-	 * fill all of it rather than leaving the tail to come back as noise.
-	 */
-	no_os_axi_io_read(TX_DATA_OFFLOAD_BASEADDR, AXI_DO_REG_MEMORY_SIZE_LSB,
-			  &tx_bram_size);
-
-	tx_size = sizeof(dac_buffer_dma);
-	if (tx_bram_size && tx_bram_size < tx_size)
-		tx_size = tx_bram_size;
-
-	/* The DMAC rejects a source address off its data path width. */
-	tx_size &= ~(uint32_t)(DMA_SRC_WIDTH_BYTES - 1);
-	tx_samples = tx_size / (tx_num_conv * sizeof(dac_buffer_dma[0]));
-	tx_size = tx_samples * tx_num_conv * sizeof(dac_buffer_dma[0]);
-
-	pr_info("Transmitting: M=%u, %u channels, %lu samples/conv, %lu bytes "
-		"cyclic\n", tx_num_conv, num_ch, (unsigned long)tx_samples,
-		(unsigned long)tx_size);
-
-	/*
-	 * The same frequency the tone test uses. With both sides' NCOs on the
-	 * same default it comes back where it was sent, on a capture bin, and a
-	 * whole number of cycles fits the transmit buffer, so the cyclic wrap
-	 * leaves no phase discontinuity for a capture to straddle -- which
-	 * matters because the capture is shorter than the replay and can start
-	 * anywhere in it.
-	 *
-	 * Every channel is filled, not just the first pair: the fill zeroes what
-	 * it does not write, so a channel left out would have its DAC driven with
-	 * silence and come back empty in the capture.
-	 */
-	ret = no_os_tone_fill_iq(dac_buffer_dma, tx_samples, &tx_layout, tone_hz,
-				 tx_rate, LOOPBACK_TX_AMPLITUDE, num_ch);
-	if (ret) {
-		pr_err("Filling the transmit buffer failed (%d)\n", ret);
-		goto error_tone;
-	}
-
-	/* MEM_TO_DEV reads DDR, so dirty lines have to land there first. */
-	Xil_DCacheFlushRange((uintptr_t)dac_buffer_dma, tx_size);
-
-	ret = axi_dac_set_datasel(tx_dac, -1, AXI_DAC_DATA_SEL_DMA);
-	if (ret) {
-		pr_err("Selecting the DMA data source failed (%d)\n", ret);
-		goto error_tone;
-	}
-
-	tx_transfer.size = tx_size;
-	tx_transfer.transfer_done = 0;
-	tx_transfer.cyclic = CYCLIC;
-	tx_transfer.src_addr = (uintptr_t)dac_buffer_dma;
-	tx_transfer.dest_addr = 0;
-
-	/*
-	 * Cyclic keeps the tone running for the whole capture. It is a build
-	 * option of the DMAC rather than a guarantee, so fall back to a single
-	 * pass if the core rejects it. Never wait for completion either way: a
-	 * cyclic transfer raises no end-of-transfer and would only time out.
-	 */
-	ret = axi_dmac_transfer_start(tx_dmac, &tx_transfer);
-	if (ret) {
-		pr_info("  cyclic transfer unavailable, using a single pass\n");
-		tx_transfer.cyclic = NO;
-		ret = axi_dmac_transfer_start(tx_dmac, &tx_transfer);
-	}
-
-	if (ret) {
-		pr_err("TX DMA transfer start failed (%d)\n", ret);
-		goto error_tx_stream;
-	}
-
-	no_os_mdelay(10);
-
-	ret = dma_example_capture(rx_dmac, transfer_size);
+	ret = dma_example_measure_loopback(&meas, &loopback_pass);
 	if (ret)
 		goto error_tx_stream;
-
-	/*
-	 * The tone test scores -tone_hz because test mode injects a constant
-	 * ahead of a downconverting mixer. This one transmits a real +tone_hz
-	 * and the aligned mixers cancel, so it arrives at +tone_hz. The second
-	 * probe covers the transmitted I/Q ordering, the one convention in this
-	 * path no measurement has confirmed yet: a swapped pair sends -f.
-	 *
-	 * Scored once per channel, over the one capture: every channel is
-	 * transmitted on and cabled, so a flat one is a real fault rather than
-	 * an idle datapath.
-	 */
-	loopback_pass = true;
-
-	for (ch = 0; ch < num_ch; ch++) {
-		ch_layout.num_conv = num_conv;
-		ch_layout.conv_i = TONE_CONV_I + 2 * ch;
-		ch_layout.conv_q = TONE_CONV_Q + 2 * ch;
-
-		ret = no_os_tone_coherence(adc_buffer_dma, samples_per_conv,
-					   &ch_layout, tone_hz, capture_rate,
-					   &measured);
-		if (ret) {
-			pr_err("Scoring the loopback capture failed (%d)\n",
-			       ret);
-			goto error_tx_stream;
-		}
-
-		ret = no_os_tone_coherence(adc_buffer_dma, samples_per_conv,
-					   &ch_layout, -tone_hz, capture_rate,
-					   &conjugate);
-		if (ret) {
-			pr_err("Probing the loopback conjugate failed (%d)\n",
-			       ret);
-			goto error_tx_stream;
-		}
-
-		/*
-		 * Either sign passes: the conjugate probe is what covers the
-		 * transmitted I/Q ordering, and the report names a swap rather
-		 * than failing on it.
-		 */
-		pr_info("Channel %u, conv %u/%u\n", ch, ch_layout.conv_i,
-			ch_layout.conv_q);
-
-		test.name = "Cabled DAC -> ADC loopback";
-		test.freq_hz = tone_hz;
-		test.samples = samples_per_conv;
-		test.sense = NO_OS_TONE_SENSE_EITHER;
-		test.conjugate = &conjugate;
-		test.tx_amplitude = LOOPBACK_TX_AMPLITUDE;
-		test.full_scale = SAMPLE_FULL_SCALE;
-
-		if (!no_os_tone_report(&test, &measured))
-			loopback_pass = false;
-	}
 
 	/*
 	 * Sample count is the total across converters, not per converter, which
@@ -1083,23 +1278,21 @@ int dma_example_main()
 	 */
 	pr_info("RX buffer address: 0x%08lx samples=%lu channels=%u bits=%u\n",
 		(unsigned long)adc_buffer_dma,
-		(unsigned long)samples_per_conv * num_conv,
-		num_conv, np);
+		(unsigned long)meas.samples * meas.num_conv,
+		meas.num_conv, meas.np);
 
 	ret = (floor_pass && tone_pass && loopback_pass) ? 0 : -EIO;
 	if (ret)
 		goto error_tx_stream;
 
+	/* Step 15: park, so the capture survives for capture.tcl to read. */
 	pr_info("Parked for JTAG capture; reset the board to continue\n");
 	while (1)
-      		no_os_mdelay(1000);
+		no_os_mdelay(1000);
 
 error_tx_stream:
 	axi_dmac_transfer_stop(tx_dmac);
 	axi_dac_set_datasel(tx_dac, -1, AXI_DAC_DATA_SEL_ZERO);
-error_tone:
-	ad9088_set_fnco_test_tone(ad9088_phy, ADI_APOLLO_RX, TEST_TONE_SIDE,
-				  TEST_TONE_FDDC, false, 0);
 error_tx_dac:
 	axi_dac_remove(tx_dac);
 error_rx_adc:
