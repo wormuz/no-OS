@@ -8,8 +8,8 @@ Usage-Guide:
   it forbids combining or merging the software in a way that would
   subject it to differing terms. Related ADI "Software License
   Agreement" variants, carried by their own LicenseRef identifiers,
-  govern other RF-transceiver subtrees: LicenseRef-ADI-ADRV904X-SLA
-  (koror) and LicenseRef-ADI-ADRV9025-SLA (madura).
+  govern other RF-transceiver subtrees: LicenseRef-ADI-ADRV9025-SLA
+  (madura).
   This code is confined to its
   vendor driver subtrees and is only built for those projects.
   This is a repository-local LicenseRef identifier; there is no SPDX-URL
