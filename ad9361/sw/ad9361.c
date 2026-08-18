@@ -1130,11 +1130,28 @@ static int32_t ad9361_check_cal_done(struct ad9361_rf_phy *phy, uint32_t reg,
 	uint32_t mask, uint32_t done_state)
 {
 	uint32_t timeout = 5000; /* RFDC_CAL can take long */
-	uint32_t state;
+	int32_t state;
+	uint32_t polls = 0, spi_err = 0;
+	int32_t first = -1, last = -1;
 
 	do {
 		state = ad9361_spi_readf(phy->spi, reg, mask);
-		if (state == done_state)
+		polls++;
+		if (first < 0)
+			first = state;
+		last = state;
+
+		/* A failed read returns a negative errno, which can never equal
+		 * done_state. Treating it as "not done yet" spins the full
+		 * 5000-iteration loop on a dead transport and then reports a
+		 * calibration timeout, hiding the real fault.
+		 */
+		if (state < 0) {
+			spi_err++;
+			return state;
+		}
+
+		if ((uint32_t)state == done_state)
 			return 0;
 
 		if (reg == REG_CALIBRATION_CTRL)
@@ -1143,7 +1160,17 @@ static int32_t ad9361_check_cal_done(struct ad9361_rf_phy *phy, uint32_t reg,
 			udelay(120);
 	} while (timeout--);
 
-	dev_err(&phy->spi->dev, "Calibration TIMEOUT (0x%"PRIX32", 0x%"PRIX32")", reg, mask);
+	/* Report what actually happened, not just that time ran out. On a
+	 * remotely attached part each poll is a bus round trip, so the loop
+	 * cannot complete quickly: 5000 reads at the measured 0.34 ms USB
+	 * round trip of a bladeRF 2.0 micro is ~1.7 s at minimum. A burst of
+	 * timeouts arriving within milliseconds therefore cannot be this
+	 * loop, and the counters say which case it was.
+	 */
+	dev_err(&phy->spi->dev,
+		"Calibration TIMEOUT (0x%"PRIX32", 0x%"PRIX32") polls=%"PRIu32
+		" spi_err=%"PRIu32" first=0x%"PRIX32" last=0x%"PRIX32,
+		reg, mask, polls, spi_err, (uint32_t)first, (uint32_t)last);
 
 	return -ETIMEDOUT;
 }
