@@ -1126,10 +1126,65 @@ void ad9361_get_bist_tone(struct ad9361_rf_phy *phy,
  * @param done_state The done state [0,1].
  * @return 0 in case of success, negative error code otherwise.
  */
+/* Wait budgets are per condition, not global. One helper serves seven
+ * different waits here, and they are not the same kind of event: an RFDC
+ * calibration legitimately takes a long time, while an RF PLL either
+ * locks within microseconds or does not lock at all.
+ *
+ * The distinction only becomes expensive on a remotely attached part. On
+ * a directly wired SPI master a poll costs microseconds, so an oversized
+ * budget is invisible. On a bladeRF 2.0 micro every poll is a USB round
+ * trip, measured at 0.304 ms, so 5000 polls of a lock bit that will never
+ * be set cost seconds per failed tune.
+ *
+ * Measured on that board, over 428 recorded RX VCO lock failures:
+ *
+ *   successful retune, whole command   9.9 - 77.3 ms  (p50 13.9)
+ *   failed retune, whole command       2218 - 3829 ms (p50 3219)
+ *   samples between 100 and 2000 ms    none
+ *
+ * The distribution is strictly bimodal: the lock is either there almost
+ * immediately or it never appears, and the seconds are the poll budget
+ * running out, not a synthesiser slowly settling.
+ */
+enum ad9361_wait_kind {
+	AD9361_WAIT_GENERIC,		/* legacy budget, unchanged */
+	AD9361_WAIT_RFPLL_LOCK,		/* RX/TX VCO lock: bounded */
+};
+
+struct ad9361_wait_policy {
+	uint32_t max_polls;
+};
+
+/* The per-poll delay is left where it was, keyed off the register: this
+ * change is about how long to keep waiting, not how fast to poll.
+ */
+static const struct ad9361_wait_policy ad9361_wait_policies[] = {
+	[AD9361_WAIT_GENERIC]     = { .max_polls = 5000 },
+	/* 100 polls at the measured 0.304 ms transport plus the existing
+	 * 120 us delay is a ~42 ms window. That is deliberately diagnostic-
+	 * safe rather than minimal: a lock that needs tens of microseconds
+	 * has three orders of magnitude of head room, while a tune that
+	 * legitimately spans a gain table boundary (measured p50 63.4 ms for
+	 * the whole command) is not misjudged as a failure on the strength
+	 * of transport latency alone.
+	 */
+	[AD9361_WAIT_RFPLL_LOCK]  = { .max_polls = 100 },
+};
+
+static enum ad9361_wait_kind ad9361_wait_kind_for(uint32_t reg)
+{
+	if (reg == REG_RX_CP_OVERRANGE_VCO_LOCK ||
+	    reg == REG_TX_CP_OVERRANGE_VCO_LOCK)
+		return AD9361_WAIT_RFPLL_LOCK;
+	return AD9361_WAIT_GENERIC;
+}
+
 static int32_t ad9361_check_cal_done(struct ad9361_rf_phy *phy, uint32_t reg,
 	uint32_t mask, uint32_t done_state)
 {
-	uint32_t timeout = 5000; /* RFDC_CAL can take long */
+	enum ad9361_wait_kind kind = ad9361_wait_kind_for(reg);
+	uint32_t timeout = ad9361_wait_policies[kind].max_polls;
 	int32_t state;
 	uint32_t polls = 0, spi_err = 0;
 	int32_t first = -1, last = -1;
@@ -1167,10 +1222,21 @@ static int32_t ad9361_check_cal_done(struct ad9361_rf_phy *phy, uint32_t reg,
 	 * timeouts arriving within milliseconds therefore cannot be this
 	 * loop, and the counters say which case it was.
 	 */
+	/* Name what actually timed out. This helper serves several waits, and
+	 * "Calibration TIMEOUT" for a synthesiser that failed to lock sends
+	 * the reader after the calibration engine instead of the PLL: 0x247
+	 * is REG_RX_CP_OVERRANGE_VCO_LOCK, so (0x247, 0x2) is the RX VCO lock
+	 * bit, not a calibration status at all.
+	 */
 	dev_err(&phy->spi->dev,
-		"Calibration TIMEOUT (0x%"PRIX32", 0x%"PRIX32") polls=%"PRIu32
-		" spi_err=%"PRIu32" first=0x%"PRIX32" last=0x%"PRIX32,
-		reg, mask, polls, spi_err, (uint32_t)first, (uint32_t)last);
+		"%s TIMEOUT (0x%"PRIX32", 0x%"PRIX32") polls=%"PRIu32"/%"PRIu32
+		" budget=%s spi_err=%"PRIu32" first=0x%"PRIX32" last=0x%"PRIX32,
+		(reg == REG_RX_CP_OVERRANGE_VCO_LOCK) ? "RX VCO lock" :
+		(reg == REG_TX_CP_OVERRANGE_VCO_LOCK) ? "TX VCO lock" :
+		"Calibration",
+		reg, mask, polls, ad9361_wait_policies[kind].max_polls,
+		(kind == AD9361_WAIT_RFPLL_LOCK) ? "rfpll_lock" : "generic",
+		spi_err, (uint32_t)first, (uint32_t)last);
 
 	return -ETIMEDOUT;
 }
