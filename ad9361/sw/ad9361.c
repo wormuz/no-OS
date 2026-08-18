@@ -5345,25 +5345,33 @@ int32_t ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
 
 	ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
 
+	/* Early returns below would leave the part stuck in ALERT with
+	 * tracking disabled: every later calibration then fails against a
+	 * corrupted state, which is why a single fault produces an endless
+	 * run of "Calibration TIMEOUT (0x247, 0x2)" rather than one error.
+	 * ad9361_do_calib_run() in this same file gets it right; follow it.
+	 */
 	ret = __ad9361_update_rf_bandwidth(phy, rf_rx_bw, rf_tx_bw);
-	if (ret < 0)
-		return ret;
+	if (ret == 0) {
+		phy->current_rx_bw_Hz = rf_rx_bw;
+		phy->current_tx_bw_Hz = rf_tx_bw;
 
-	phy->current_rx_bw_Hz = rf_rx_bw;
-	phy->current_tx_bw_Hz = rf_tx_bw;
+		ret = ad9361_tx_quad_calib(phy, rf_rx_bw / 2, rf_tx_bw / 2, -1);
+	}
 
-	ret = ad9361_tx_quad_calib(phy, rf_rx_bw / 2, rf_tx_bw / 2, -1);
-	if (ret < 0)
-		return ret;
-
-	ret = ad9361_tracking_control(phy, phy->bbdc_track_en,
-		phy->rfdc_track_en, phy->quad_track_en);
-	if (ret < 0)
-		return ret;
+	/* Restore tracking and the previous state unconditionally, but do
+	 * not let a successful restore mask an earlier failure.
+	 */
+	if (ret == 0)
+		ret = ad9361_tracking_control(phy, phy->bbdc_track_en,
+			phy->rfdc_track_en, phy->quad_track_en);
+	else
+		(void)ad9361_tracking_control(phy, phy->bbdc_track_en,
+			phy->rfdc_track_en, phy->quad_track_en);
 
 	ad9361_ensm_restore_prev_state(phy);
 
-	return 0;
+	return ret;
 }
 
 /**
