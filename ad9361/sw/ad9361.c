@@ -1249,10 +1249,26 @@ static int32_t ad9361_load_gt(struct ad9361_rf_phy *phy, uint64_t freq, uint32_t
 		RECEIVER_SELECT(dest)); /* Start Gain Table Clock */
 
 	for (i = 0; i < index_max; i++) {
-		ad9361_spi_write(spi, REG_GAIN_TABLE_ADDRESS, i); /* Gain Table Index */
-		ad9361_spi_write(spi, REG_GAIN_TABLE_WRITE_DATA1, tab[i][0] | lna); /* Ext LNA, Int LNA, & Mixer Gain Word */
-		ad9361_spi_write(spi, REG_GAIN_TABLE_WRITE_DATA2, tab[i][1]); /* TIA & LPF Word */
-		ad9361_spi_write(spi, REG_GAIN_TABLE_WRITE_DATA3, tab[i][2]); /* DC Cal bit & Dig Gain Word */
+		/* Index and the three data words are consecutive registers
+		 * (0x130..0x133), so one multibyte transaction replaces four
+		 * single-byte ones. Multibyte writes address the highest
+		 * register first and descend, hence DATA3..ADDRESS order.
+		 *
+		 * This matters far beyond the SPI bus itself: on USB-attached
+		 * parts every ad9361_spi_write() is one bus round trip, so a
+		 * 77-row table costs ~545 of them. Measured on a bladeRF 2.0
+		 * micro xA4, that is 162-186 ms of stall on every RX LO move
+		 * across 1.3 or 4.0 GHz, against 2.4 ms for a retune that
+		 * stays inside one region.
+		 */
+		uint8_t row[4];
+
+		row[0] = tab[i][2];		/* 0x133 DC Cal bit & Dig Gain */
+		row[1] = tab[i][1];		/* 0x132 TIA & LPF Word */
+		row[2] = tab[i][0] | lna;	/* 0x131 Ext/Int LNA & Mixer */
+		row[3] = i;			/* 0x130 Gain Table Index */
+		ad9361_spi_writem(spi, REG_GAIN_TABLE_WRITE_DATA3, row, 4);
+
 		ad9361_spi_write(spi, REG_GAIN_TABLE_CONFIG,
 			START_GAIN_TABLE_CLOCK |
 			WRITE_GAIN_TABLE |
