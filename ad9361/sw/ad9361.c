@@ -4932,6 +4932,67 @@ static int32_t ad9361_fastlock_prepare(struct ad9361_rf_phy *phy, bool tx,
 }
 
 /**
+ * Leave fastlock mode when it was entered outside this driver.
+ *
+ * A fast lock profile can be recalled by an agent this driver does not
+ * see: on a bladeRF 2.0 micro the FPGA's Nios core performs the recall
+ * itself, writing REG_RX_FAST_LOCK_SETUP directly. The recall leaves the
+ * part in fastlock mode with FORCE_ALC_ENABLE asserted, but
+ * phy->fastlock.current_profile stays zero, so ad9361_fastlock_prepare()
+ * takes its "not prepared" path and the exit sequence never runs.
+ *
+ * Host tuning then programs the RFPLL as if ALC were automatic while it
+ * is still forced. Measured on that board, interleaving a profile recall
+ * with ordinary tuning every fifth stop of a 242-point sweep:
+ *
+ *   leaked state left in place   49 lock failures in 643 tunes
+ *   this sequence after recall    1 lock failure  in 702 tunes
+ *
+ * The failures are not isolated: without the exit they form a series
+ * that never recovers, and 0x247 reads 0x40 throughout, meaning the
+ * charge pump has saturated low. Three independent runs with the exit in
+ * place gave zero consecutive failures and confirmed the leak is present
+ * on every single recall (145/145, 146/146, 146/146).
+ *
+ * @param phy The AD9361 state structure.
+ * @param tx  True for TX, false for RX.
+ * @return 0 in case of success, negative error code otherwise.
+ */
+int32_t ad9361_fastlock_exit_foreign(struct ad9361_rf_phy *phy, bool tx)
+{
+	uint32_t offs = tx ? REG_TX_FAST_LOCK_SETUP - REG_RX_FAST_LOCK_SETUP : 0;
+	uint32_t ready_mask = tx ? TX_SYNTH_READY_MASK : RX_SYNTH_READY_MASK;
+	int32_t setup;
+
+	setup = ad9361_spi_read(phy->spi, REG_RX_FAST_LOCK_SETUP + offs);
+	if (setup < 0)
+		return setup;
+
+	/* Nothing to do unless the part is actually in fastlock mode. */
+	if (!(setup & RX_FAST_LOCK_MODE_ENABLE))
+		return 0;
+
+	ad9361_spi_write(phy->spi, REG_RX_FAST_LOCK_SETUP + offs, 0);
+
+	/* Workaround: Exiting Fastlock Mode. Same sequence as the one in
+	 * ad9361_fastlock_prepare(); it is repeated rather than shared
+	 * because that function is gated on this driver's own bookkeeping,
+	 * which by definition does not cover a foreign recall.
+	 */
+	ad9361_spi_writef(phy->spi, REG_RX_FORCE_ALC + offs, FORCE_ALC_ENABLE, 1);
+	ad9361_spi_writef(phy->spi, REG_RX_FORCE_VCO_TUNE_1 + offs, FORCE_VCO_TUNE, 1);
+	ad9361_spi_writef(phy->spi, REG_RX_FORCE_ALC + offs, FORCE_ALC_ENABLE, 0);
+	ad9361_spi_writef(phy->spi, REG_RX_FORCE_VCO_TUNE_1 + offs, FORCE_VCO_TUNE, 0);
+
+	ad9361_trx_vco_cal_control(phy, tx, true);
+	ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2, ready_mask, 0);
+
+	phy->fastlock.current_profile[tx] = 0;
+
+	return 0;
+}
+
+/**
  * Fastlock recall.
  * @param phy The AD9361 state structure.
  * @param tx

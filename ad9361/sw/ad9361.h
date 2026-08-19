@@ -3478,6 +3478,9 @@ int32_t ad9361_mcs(struct ad9361_rf_phy *phy, int32_t step);
 int32_t ad9361_do_calib_run(struct ad9361_rf_phy *phy, uint32_t cal, int32_t arg);
 int32_t ad9361_fastlock_store(struct ad9361_rf_phy *phy, bool tx, uint32_t profile);
 int32_t ad9361_fastlock_recall(struct ad9361_rf_phy *phy, bool tx, uint32_t profile);
+/* Leave fastlock mode entered by an agent outside this driver, e.g. an
+ * FPGA that recalls profiles on its own. */
+int32_t ad9361_fastlock_exit_foreign(struct ad9361_rf_phy *phy, bool tx);
 int32_t ad9361_fastlock_load(struct ad9361_rf_phy *phy, bool tx,
 	uint32_t profile, uint8_t *values);
 int32_t ad9361_fastlock_save(struct ad9361_rf_phy *phy, bool tx,
