@@ -4954,6 +4954,17 @@ static int32_t ad9361_fastlock_prepare(struct ad9361_rf_phy *phy, bool tx,
  * place gave zero consecutive failures and confirmed the leak is present
  * on every single recall (145/145, 146/146, 146/146).
  *
+ * The pump can saturate either way, so both readings of 0x247 point here:
+ * 0x80 (CP overrange high, no lock) is what the failing tune itself
+ * reports, and 0x40 is what a later read finds. Callers should therefore
+ * invoke this on every path that programs the synthesizer, not only right
+ * after a recall they performed: a recall issued asynchronously by
+ * separate hardware surfaces on the next ordinary tune, which may be far
+ * away in the caller's control flow. Measured on the same board with a
+ * sweep that mixes asynchronous recalls with ordinary tuning, 360 s per
+ * run: 190/327/587/330/667 lock failures with the ordinary tuning path
+ * left uncovered, 0 and 0 once it calls this too.
+ *
  * @param phy The AD9361 state structure.
  * @param tx  True for TX, false for RX.
  * @return 0 in case of success, negative error code otherwise.
