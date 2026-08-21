@@ -3060,6 +3060,17 @@ struct port_control {
 	uint8_t			digital_io_ctrl;
 	uint8_t			lvds_bias_ctrl;
 	uint8_t			lvds_invert[2];
+	/* Slew rate and drive strength of the digital interface output
+	 * buffers. ad9361_pp_port_setup() only writes lvds_bias_ctrl by
+	 * itself, which leaves these at their reset values; a board whose
+	 * interface needs a faster edge or a stronger driver has no way to
+	 * ask for one. Zero keeps the reset behaviour. */
+	uint8_t			clk_out_drive;
+	uint8_t			dataclk_drive;
+	uint8_t			data_port_drive;
+	uint8_t			clk_out_slew;
+	uint8_t			dataclk_slew;
+	uint8_t			data_port_slew;
 };
 
 struct ctrl_outs_control {
@@ -3538,6 +3549,10 @@ int32_t ad9361_rf_port_setup(struct ad9361_rf_phy *phy, bool is_out,
 int32_t ad9361_mcs(struct ad9361_rf_phy *phy, int32_t step);
 int32_t ad9361_do_calib_run(struct ad9361_rf_phy *phy, uint32_t cal,
 			    int32_t arg);
+/* Leave a fastlock mode that was entered outside this driver; see the
+ * definition for the measurement that motivates it. */
+int32_t ad9361_fastlock_exit_foreign(struct ad9361_rf_phy *phy, bool tx);
+
 int32_t ad9361_fastlock_store(struct ad9361_rf_phy *phy, bool tx,
 			      uint32_t profile);
 int32_t ad9361_fastlock_recall(struct ad9361_rf_phy *phy, bool tx,

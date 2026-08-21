@@ -976,12 +976,20 @@ int32_t ad9361_validate_rfpll(struct ad9361_rf_phy *phy, bool is_tx,
 int32_t ad9361_find_opt(uint8_t *field, uint32_t size, uint32_t *ret_start)
 {
 	int32_t i, cnt = 0, max_cnt = 0, start, max_start = 0;
+	/* A field that is entirely zeroes, or entirely non-zeroes, carries no
+	 * optimum: the caller is looking for the widest run of zeroes bounded
+	 * by non-zeroes. Without this the function returns max_cnt = 0 with
+	 * max_start = 0, which the caller cannot tell apart from a genuine
+	 * one-sample window at index 0. */
+	bool found_0 = false;
+	bool found_1 = false;
 
 	for (i = 0, start = -1; i < (int64_t)size; i++) {
 		if (field[i] == 0) {
 			if (start == -1)
 				start = i;
 			cnt++;
+			found_0 = true;
 		} else {
 			if (cnt > max_cnt) {
 				max_cnt = cnt;
@@ -989,6 +997,7 @@ int32_t ad9361_find_opt(uint8_t *field, uint32_t size, uint32_t *ret_start)
 			}
 			start = -1;
 			cnt = 0;
+			found_1 = true;
 		}
 	}
 
@@ -998,6 +1007,9 @@ int32_t ad9361_find_opt(uint8_t *field, uint32_t size, uint32_t *ret_start)
 	}
 
 	*ret_start = max_start;
+
+	if (!found_0 || !found_1)
+		return -1;
 
 	return max_cnt;
 }
@@ -3097,6 +3109,14 @@ static int32_t ad9361_tx_quad_phase_search(struct ad9361_rf_phy *phy,
 	}
 
 	ret = ad9361_find_opt(field, NO_OS_ARRAY_SIZE(field), &start);
+	if (ret < 0) {
+		/* The sweep produced a uniform field, so it holds no optimum.
+		 * Deriving a phase from it would just pick index 0 and look
+		 * like a successful calibration. */
+		dev_err(&phy->spi->dev,
+			"%s: no usable TX quadrature phase found", __func__);
+		return ret;
+	}
 
 	phy->last_tx_quad_cal_phase = (start + ret / 2) & 0x1F;
 
@@ -3689,7 +3709,23 @@ static int32_t ad9361_pp_port_setup(struct ad9361_rf_phy *phy, bool restore_c3)
 	ad9361_spi_write(spi, REG_RX_CLOCK_DATA_DELAY, pd->port_ctrl.rx_clk_data_delay);
 	ad9361_spi_write(spi, REG_TX_CLOCK_DATA_DELAY, pd->port_ctrl.tx_clk_data_delay);
 
-	ad9361_spi_write(spi, REG_LVDS_BIAS_CTRL, pd->port_ctrl.lvds_bias_ctrl);
+	/* Slew rate and drive strength of the digital interface outputs. Both
+	 * registers hold other fields too, so the slew values go in with the
+	 * write that carries them and the single-bit drive strengths follow as
+	 * read-modify-write. All six default to zero, which reproduces the
+	 * previous behaviour of writing lvds_bias_ctrl alone. */
+	ad9361_spi_write(spi, REG_LVDS_BIAS_CTRL,
+			 pd->port_ctrl.lvds_bias_ctrl |
+			 CLK_OUT_SLEW(pd->port_ctrl.clk_out_slew));
+	ad9361_spi_write(spi, REG_DIGITAL_IO_CTRL,
+			 DATACLK_SLEW(pd->port_ctrl.dataclk_slew) |
+			 DATA_PORT_SLEW(pd->port_ctrl.data_port_slew));
+	ad9361_spi_writef(spi, REG_DIGITAL_IO_CTRL, DATACLK_DRIVE,
+			  pd->port_ctrl.dataclk_drive);
+	ad9361_spi_writef(spi, REG_DIGITAL_IO_CTRL, DATA_PORT_DRIVE,
+			  pd->port_ctrl.data_port_drive);
+	ad9361_spi_writef(spi, REG_DIGITAL_IO_CTRL, CLK_OUT_DRIVE,
+			  pd->port_ctrl.clk_out_drive);
 	//	ad9361_spi_write(spi, REG_DIGITAL_IO_CTRL, pd->port_ctrl.digital_io_ctrl);
 	ad9361_spi_write(spi, REG_LVDS_INVERT_CTRL1, pd->port_ctrl.lvds_invert[0]);
 	ad9361_spi_write(spi, REG_LVDS_INVERT_CTRL2, pd->port_ctrl.lvds_invert[1]);
@@ -5033,6 +5069,69 @@ int32_t ad9361_fastlock_load(struct ad9361_rf_phy *phy, bool tx,
 	phy->fastlock.entry[tx][profile].alc_written = values[15];
 
 	return ret;
+}
+
+/**
+ * Leave fastlock mode when it was entered outside this driver.
+ *
+ * A fast lock profile can be recalled by an agent this driver does not see: on
+ * a bladeRF 2.0 micro the FPGA's Nios core performs the recall itself, writing
+ * REG_RX_FAST_LOCK_SETUP directly. The recall leaves the part in fastlock mode
+ * with FORCE_ALC_ENABLE asserted, but phy->fastlock.current_profile stays
+ * zero, so ad9361_fastlock_prepare() takes its "not prepared" path and the
+ * exit sequence never runs.
+ *
+ * Host tuning then programs the RFPLL as if ALC were automatic while it is
+ * still forced. Measured on that board, interleaving a profile recall with
+ * ordinary tuning every fifth stop of a 242-point sweep:
+ *
+ *   leaked state left in place   49 lock failures in 643 tunes
+ *   this sequence after recall    1 lock failure  in 702 tunes
+ *
+ * The failures are not isolated: without the exit they form a series that
+ * never recovers, and 0x247 reads 0x40 throughout, meaning the charge pump has
+ * saturated low. Three independent runs with the exit in place gave zero
+ * consecutive failures and confirmed the leak is present on every single
+ * recall (145/145, 146/146, 146/146).
+ *
+ * @param phy The AD9361 state structure.
+ * @param tx  True for TX, false for RX.
+ * @return 0 in case of success, negative error code otherwise.
+ */
+int32_t ad9361_fastlock_exit_foreign(struct ad9361_rf_phy *phy, bool tx)
+{
+	uint32_t offs = tx ? REG_TX_FAST_LOCK_SETUP - REG_RX_FAST_LOCK_SETUP : 0;
+	uint32_t ready_mask = tx ? TX_SYNTH_READY_MASK : RX_SYNTH_READY_MASK;
+	int32_t setup;
+
+	setup = ad9361_spi_read(phy->spi, REG_RX_FAST_LOCK_SETUP + offs);
+	if (setup < 0)
+		return setup;
+
+	/* Nothing to do unless the part is actually in fastlock mode. */
+	if (!(setup & RX_FAST_LOCK_MODE_ENABLE))
+		return 0;
+
+	ad9361_spi_write(phy->spi, REG_RX_FAST_LOCK_SETUP + offs, 0);
+
+	/* Workaround: Exiting Fastlock Mode. Same sequence as the one in
+	 * ad9361_fastlock_prepare(); it is repeated rather than shared because
+	 * that function is gated on this driver's own bookkeeping, which by
+	 * definition does not cover a foreign recall.
+	 */
+	ad9361_spi_writef(phy->spi, REG_RX_FORCE_ALC + offs, FORCE_ALC_ENABLE, 1);
+	ad9361_spi_writef(phy->spi, REG_RX_FORCE_VCO_TUNE_1 + offs, FORCE_VCO_TUNE,
+			  1);
+	ad9361_spi_writef(phy->spi, REG_RX_FORCE_ALC + offs, FORCE_ALC_ENABLE, 0);
+	ad9361_spi_writef(phy->spi, REG_RX_FORCE_VCO_TUNE_1 + offs, FORCE_VCO_TUNE,
+			  0);
+
+	ad9361_trx_vco_cal_control(phy, tx, true);
+	ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2, ready_mask, 0);
+
+	phy->fastlock.current_profile[tx] = 0;
+
+	return 0;
 }
 
 /**

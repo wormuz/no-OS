@@ -498,6 +498,12 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 	phy->pdata->port_ctrl.digital_io_ctrl = 0;
 	phy->pdata->port_ctrl.lvds_invert[0] = init_param->lvds_invert1_control;
 	phy->pdata->port_ctrl.lvds_invert[1] = init_param->lvds_invert2_control;
+	phy->pdata->port_ctrl.clk_out_drive = init_param->clk_out_drive;
+	phy->pdata->port_ctrl.dataclk_drive = init_param->dataclk_drive;
+	phy->pdata->port_ctrl.data_port_drive = init_param->data_port_drive;
+	phy->pdata->port_ctrl.clk_out_slew = init_param->clk_out_slew;
+	phy->pdata->port_ctrl.dataclk_slew = init_param->dataclk_slew;
+	phy->pdata->port_ctrl.data_port_slew = init_param->data_port_slew;
 
 	if (AD9364_DEVICE) {
 		phy->pdata->rx2tx2 = false;

@@ -229,6 +229,15 @@ typedef struct {
 	uint8_t		rx1rx2_phase_inversion_en;	/* adi,rx1-rx2-phase-inversion-enable */
 	uint8_t		lvds_invert1_control;	/* adi,lvds-invert1-control */
 	uint8_t		lvds_invert2_control;	/* adi,lvds-invert2-control */
+	/* Digital interface output buffers: drive strength (one bit each) and
+	 * slew rate (two bits each). All default to zero, which leaves the
+	 * reset values in place. */
+	uint8_t		clk_out_drive;
+	uint8_t		dataclk_drive;
+	uint8_t		data_port_drive;
+	uint8_t		clk_out_slew;
+	uint8_t		dataclk_slew;
+	uint8_t		data_port_slew;
 	/* GPO Control */
 	uint8_t		gpo_manual_mode_enable;			/* adi,gpo-manual-mode-enable */
 	uint32_t	gpo_manual_mode_enable_mask;	/* adi,gpo-manual-mode-enable-mask */
