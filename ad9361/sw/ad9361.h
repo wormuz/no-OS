@@ -3324,6 +3324,13 @@ struct ad9361_rf_phy {
 	uint8_t			cached_tx_rfpll_div;
 	struct rx_gain_info rx_gain[RXGAIN_TBLS_END];
 	enum rx_gain_table_name current_table;
+	/* Last value written to REG_INPUT_SELECT, so that re-selecting the
+	 * same RF port does not rewrite it. A same-value rewrite was measured
+	 * to leave the receive path in one of two stable level states about
+	 * 2.9 dB apart; see ad9361_rf_port_setup(). The register is write-only
+	 * on some revisions, hence a cache rather than a read-back. */
+	uint32_t		input_select_cached;
+	bool			input_select_cached_valid;
 	bool 			ensm_pin_ctl_en;
 
 	bool			auto_cal_en;
