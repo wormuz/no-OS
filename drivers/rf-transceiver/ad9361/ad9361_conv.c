@@ -622,7 +622,9 @@ int32_t ad9361_post_setup(struct ad9361_rf_phy *phy)
 	}
 
 #ifdef ALTERA_PLATFORM
-	axiadc_write(st, 0x404c, 1);
+	/* Stale old-API call upstream (axiadc_write(st, ...)); same register,
+	 * same value through the current API. */
+	axi_adc_write(rx_adc, 0x404c, 1);
 #endif
 
 	for (i = 0; i < num_chan; i++) {
