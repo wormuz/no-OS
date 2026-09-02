@@ -3597,7 +3597,7 @@ static int32_t ad9361_txmon_setup(struct ad9361_rf_phy *phy,
  * @param en_mask The enable mask.
  * @return 0 in case of success, negative error code otherwise.
  */
-static int32_t ad9361_txmon_control(struct ad9361_rf_phy *phy,
+int32_t ad9361_txmon_control(struct ad9361_rf_phy *phy,
 				    int32_t en_mask)
 {
 	dev_dbg(&phy->spi->dev, "%s: mask 0x%"PRIx32, __func__, en_mask);

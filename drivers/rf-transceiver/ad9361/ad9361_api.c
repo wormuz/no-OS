@@ -1693,6 +1693,28 @@ int32_t ad9361_get_tx_fir_en_dis(struct ad9361_rf_phy *phy,
 }
 
 /**
+ * Enable or disable the TX power monitor.
+ *
+ * The monitor powers the measurement block behind REG_TX_RSSI. Until it
+ * is enabled those registers read zero, so ad9361_get_tx_rssi() reports
+ * 0 dBm at every gain setting - indistinguishable from a transmitter
+ * that is producing no output.
+ *
+ * ad9361_txmon_control() already existed but was static and reachable
+ * only through ad9361_rf_port_setup(), that is, only when an RX input is
+ * switched to the TX monitor port. Reading TX RSSI during ordinary
+ * transmit had no way to turn the block on.
+ *
+ * @param phy The AD9361 current state structure.
+ * @param en_mask Bitmask of TX_1 and TX_2; 0 disables both.
+ * @return 0 in case of success, negative error code otherwise.
+ */
+int32_t ad9361_txmon_enable(struct ad9361_rf_phy *phy, int32_t en_mask)
+{
+	return ad9361_txmon_control(phy, en_mask);
+}
+
+/**
  * Get the TX RSSI for the selected channel (TX_MON should be enabled).
  * @param phy The AD9361 current state structure.
  * @param ch The desired channel (TX1, TX2).

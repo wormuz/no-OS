@@ -486,7 +486,19 @@ int32_t ad9361_get_tx_fir_config(struct ad9361_rf_phy *phy, uint8_t tx_ch,
 int32_t ad9361_set_tx_fir_en_dis(struct ad9361_rf_phy *phy, uint8_t en_dis);
 /* Get the status of the TX FIR filter. */
 int32_t ad9361_get_tx_fir_en_dis(struct ad9361_rf_phy *phy, uint8_t *en_dis);
-/* Get the TX RSSI for the selected channel. */
+/* Enable or disable the TX power monitor.
+ *
+ * The monitor powers the TX RSSI measurement block. Without it the
+ * REG_TX_RSSI registers stay at zero and ad9361_get_tx_rssi() reports
+ * 0 dBm for every gain setting, which reads as "no output" rather than
+ * "not measured".
+ *
+ * en_mask is a bitmask of TX_1 and TX_2; 0 disables both. */
+int32_t ad9361_txmon_enable(struct ad9361_rf_phy *phy, int32_t en_mask);
+/* Get the TX RSSI for the selected channel.
+ *
+ * Requires the TX power monitor to be enabled first; see
+ * ad9361_txmon_enable(). Returns 0 dBm when it is not. */
 int32_t ad9361_get_tx_rssi(struct ad9361_rf_phy *phy, uint8_t ch,
 			   uint32_t *rssi_db_x_1000);
 /* Set the TX RF output port. */
