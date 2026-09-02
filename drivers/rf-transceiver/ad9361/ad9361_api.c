@@ -573,6 +573,12 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 	 * bin or its image, while the TX LO leakage sat at +38 dB throughout.
 	 * Swapping I and Q - which must move the tone to the mirror bin if the
 	 * payload plays at all - changed nothing either. */
+	/* CNTRL_2 (R1_MODE) and RATECNTRL of this half are not set here on
+	 * purpose: ad9361_post_setup() below writes both, reaching the DAC
+	 * half through the ADC handle at 0x4048 and 0x404c. Setting them here
+	 * as the old in-tree dac_init() did only duplicates that and hides
+	 * which write is the effective one - verified by reading the core
+	 * back after init: cntrl_2 = 0, ratecntrl = 1 on this 2R2T board. */
 	if (init_param->tx_dac_init)
 		axi_dac_init(&phy->tx_dac, init_param->tx_dac_init);
 
