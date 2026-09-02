@@ -561,6 +561,21 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 #ifndef AXI_ADC_NOT_PRESENT
 	axi_adc_init(&phy->rx_adc, init_param->rx_adc_init);
 	axi_adc_read(phy->rx_adc, ADI_REG_VERSION, &phy->adc_state->pcore_version);
+
+	/* The TX half of the same core. init_param carries tx_dac_init and
+	 * nothing here ever used it, so the DAC side stayed in whatever state
+	 * power-up left it in - data source DDS, not DMA. Everything upstream
+	 * of it works: control plane, sync_tx(), USB completions, TX LO. The
+	 * submitted samples simply are not what the DAC plays.
+	 *
+	 * Measured on a bladeRF 2.0 micro before this call was added: a 960 kHz
+	 * tone transmitted into a cabled loopback produced nothing in its own
+	 * bin or its image, while the TX LO leakage sat at +38 dB throughout.
+	 * Swapping I and Q - which must move the tone to the mirror bin if the
+	 * payload plays at all - changed nothing either. */
+	if (init_param->tx_dac_init)
+		axi_dac_init(&phy->tx_dac, init_param->tx_dac_init);
+
 	/* platform specific wrapper to call ad9361_post_setup() */
 	ret = ad9361_post_setup(phy);
 	if (ret < 0)

@@ -33,6 +33,7 @@
 #ifndef AXI_DAC_CORE_H_
 #define AXI_DAC_CORE_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 
 enum axi_iface {
