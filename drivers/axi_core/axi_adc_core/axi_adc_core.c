@@ -646,9 +646,18 @@ int32_t axi_adc_init(struct axi_adc **adc_core,
 	if (ret)
 		return ret;
 
+#ifndef BLADERF_NIOS_BUILD
 	axi_adc_write(adc, AXI_ADC_REG_RSTN, 0);
 	axi_adc_write(adc, AXI_ADC_REG_RSTN,
 		      AXI_ADC_MMCM_RSTN | AXI_ADC_RSTN);
+#else
+	/* The host already took this core out of reset over
+	 * NIOS_PKT_32x32_TARGET_ADI_AXI during bladerf_open. Pulsing RSTN here
+	 * would drop MMCM_RSTN - the clock manager that regenerates l_clk from
+	 * the AD9361's data clock - while the chip is not yet driving its
+	 * interface, and the STATUS read below would then stall the Nios on a
+	 * clock-domain handshake that never completes. */
+#endif
 
 	for (ch = 0; ch < adc->num_channels; ch++)
 		axi_adc_write(adc, AXI_ADC_REG_CHAN_CNTRL(ch),
@@ -657,9 +666,19 @@ int32_t axi_adc_init(struct axi_adc **adc_core,
 
 	no_os_mdelay(100);
 
+#ifndef BLADERF_NIOS_BUILD
 	ret = axi_adc_init_finish(adc);
 	if (ret)
 		goto error;
+#else
+	/* axi_adc_init_finish() reads AXI_ADC_REG_STATUS, which crosses into
+	 * the l_clk domain with a handshake (up_xfer_cntrl.v). With the AD9361
+	 * not yet clocking that read never returns and the Nios stops
+	 * mid-instruction - the board then answers nothing, bladerf_open()
+	 * included, until the bitstream is reloaded. The rate is only used for
+	 * reporting. */
+	adc->clock_hz = 0;
+#endif
 
 	*adc_core = adc;
 

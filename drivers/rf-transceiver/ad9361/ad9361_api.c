@@ -93,7 +93,7 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 		no_os_free(phy);
 		return -ENOMEM;
 	}
-#ifndef AXI_ADC_NOT_PRESENT
+#if !defined(AXI_ADC_NOT_PRESENT) && !defined(BLADERF_NIOS_BUILD)
 	phy->adc_conv = (struct axiadc_converter *)no_os_calloc(1,
 			sizeof(*phy->adc_conv));
 	if (!phy->adc_conv) {
@@ -511,7 +511,7 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 		phy->pdata->rx1tx1_mode_use_tx_num = 1;
 	}
 
-#ifndef AXI_ADC_NOT_PRESENT
+#if !defined(AXI_ADC_NOT_PRESENT) && !defined(BLADERF_NIOS_BUILD)
 	phy->adc_conv->chip_info = &axiadc_chip_info_tbl[phy->pdata->rx2tx2 ?
 						      ID_AD9361 : ID_AD9364];
 #endif
@@ -558,7 +558,7 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 	if (ret < 0)
 		goto out_clk;
 
-#ifndef AXI_ADC_NOT_PRESENT
+#if !defined(AXI_ADC_NOT_PRESENT) && !defined(BLADERF_NIOS_BUILD)
 	axi_adc_init(&phy->rx_adc, init_param->rx_adc_init);
 	axi_adc_read(phy->rx_adc, ADI_REG_VERSION, &phy->adc_state->pcore_version);
 
@@ -587,6 +587,19 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 	if (ret < 0)
 		goto out_clk;
 #endif
+	/* Everything above reaches the FPGA's AXI ad9361 core over the Avalon
+	 * bus, and parts of that core live in the l_clk domain - the clock the
+	 * AD9361 itself supplies. On the Nios this runs during
+	 * set_tuning_mode(FPGA), before the chip drives its interface, so the
+	 * domain-crossing handshakes never complete: the processor stalls
+	 * mid-instruction and the board stops answering anything, bladerf_open()
+	 * included, until the bitstream is reloaded. No C-level timeout can see
+	 * a stall that happens below the code.
+	 *
+	 * The host has already initialised this core during bladerf_open (over
+	 * NIOS_PKT_32x32_TARGET_ADI_AXI), so there is nothing here for the Nios
+	 * to redo. Measured: compiling these accesses out turns the wedge into
+	 * an ordinary error return with the board still responding. */
 
 	printf("%s : AD936x Rev %d successfully initialized\n", __func__, (int)rev);
 
@@ -2003,7 +2016,7 @@ int32_t ad9361_set_no_ch_mode(struct ad9361_rf_phy *phy, uint8_t no_ch_mode)
 		return -EINVAL;
 	}
 
-#ifndef AXI_ADC_NOT_PRESENT
+#if !defined(AXI_ADC_NOT_PRESENT) && !defined(BLADERF_NIOS_BUILD)
 	phy->adc_conv->chip_info = &axiadc_chip_info_tbl[phy->pdata->rx2tx2 ?
 						      ID_AD9361 : ID_AD9364];
 #endif
@@ -2057,7 +2070,7 @@ int32_t ad9361_set_no_ch_mode(struct ad9361_rf_phy *phy, uint8_t no_ch_mode)
 					    phy->ref_clk_scale[TX_RFPLL]);
 
 	ad9361_setup(phy);
-#ifndef AXI_ADC_NOT_PRESENT
+#if !defined(AXI_ADC_NOT_PRESENT) && !defined(BLADERF_NIOS_BUILD)
 	/* platform specific wrapper to call ad9361_post_setup() */
 	ad9361_post_setup(phy);
 #endif
