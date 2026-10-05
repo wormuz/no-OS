@@ -1463,17 +1463,41 @@ static int32_t ad9361_load_gt(struct ad9361_rf_phy *phy, uint64_t freq,
 
 	tab = phy->gt_info[band].tab;
 	index_max = phy->gt_info[band].max_index;
+	if (tab == NULL || index_max == 0 || index_max > SIZE_FULL_TABLE)
+		return -EINVAL;
 
-	ad9361_spi_writef(spi, REG_AGC_CONFIG_2,
-			  AGC_USE_FULL_GAIN_TABLE, !phy->pdata->split_gt);
+	/* Do not report an LO transition as successful after a partial gain
+	 * table write.  Each indirect table operation is a separate SPI
+	 * transaction on remote-SPI platforms, so every result matters. */
+#define GT_WRITE(_expr) \
+	do { \
+		ret = (_expr); \
+		if (ret < 0) \
+			goto failed; \
+	} while (0)
 
-	ad9361_spi_write(spi, REG_MAX_LMT_FULL_GAIN,
-			 index_max - 1); /* Max Full/LMT Gain Table Index */
+	GT_WRITE(ad9361_spi_writef(spi, REG_AGC_CONFIG_2,
+				   AGC_USE_FULL_GAIN_TABLE,
+				   !phy->pdata->split_gt));
 
-	set_gain = ad9361_spi_readf(spi, REG_RX1_MANUAL_LMT_FULL_GAIN,
-				    RX_FULL_TBL_IDX_MASK);
+	GT_WRITE(ad9361_spi_write(spi, REG_MAX_LMT_FULL_GAIN,
+				   index_max - 1)); /* Max Full/LMT Gain Table Index */
+
+	ret = ad9361_spi_readf(spi, REG_RX1_MANUAL_LMT_FULL_GAIN,
+			       RX_FULL_TBL_IDX_MASK);
+	if (ret < 0)
+		goto failed;
+	set_gain = (uint32_t)ret;
 
 	if (phy->current_table != NO_GAIN_TABLE) {
+		if (phy->current_table >= RXGAIN_TBLS_END) {
+			ret = -EINVAL;
+			goto failed;
+		}
+		if (set_gain >= phy->gt_info[phy->current_table].max_index) {
+			ret = -EINVAL;
+			goto failed;
+		}
 		rx1_gain = phy->gt_info[phy->current_table].abs_gain_tbl[set_gain];
 	} else {
 		if (set_gain > (index_max - 1))
@@ -1482,10 +1506,21 @@ static int32_t ad9361_load_gt(struct ad9361_rf_phy *phy, uint64_t freq,
 		rx1_gain = phy->gt_info[band].abs_gain_tbl[set_gain];
 	}
 
-	set_gain = ad9361_spi_readf(spi, REG_RX2_MANUAL_LMT_FULL_GAIN,
-				    RX_FULL_TBL_IDX_MASK);
+	ret = ad9361_spi_readf(spi, REG_RX2_MANUAL_LMT_FULL_GAIN,
+			       RX_FULL_TBL_IDX_MASK);
+	if (ret < 0)
+		goto failed;
+	set_gain = (uint32_t)ret;
 
 	if (phy->current_table != NO_GAIN_TABLE) {
+		if (phy->current_table >= RXGAIN_TBLS_END) {
+			ret = -EINVAL;
+			goto failed;
+		}
+		if (set_gain >= phy->gt_info[phy->current_table].max_index) {
+			ret = -EINVAL;
+			goto failed;
+		}
 		rx2_gain = phy->gt_info[phy->current_table].abs_gain_tbl[set_gain];
 	} else {
 		if (set_gain > (index_max - 1))
@@ -1497,8 +1532,9 @@ static int32_t ad9361_load_gt(struct ad9361_rf_phy *phy, uint64_t freq,
 	lna = phy->pdata->elna_ctrl.elna_in_gaintable_all_index_en ?
 	      EXT_LNA_CTRL : 0;
 
-	ad9361_spi_write(spi, REG_GAIN_TABLE_CONFIG, START_GAIN_TABLE_CLOCK |
-			 RECEIVER_SELECT(dest)); /* Start Gain Table Clock */
+	GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_CONFIG,
+				   START_GAIN_TABLE_CLOCK |
+				   RECEIVER_SELECT(dest)));
 
 	/* TX QUAD Calibration */
 	if (phy->pdata->split_gt)
@@ -1509,17 +1545,17 @@ static int32_t ad9361_load_gt(struct ad9361_rf_phy *phy, uint64_t freq,
 	phy->tx_quad_lpf_tia_match = -EINVAL;
 
 	for (i = 0; i < index_max; i++) {
-		ad9361_spi_write(spi, REG_GAIN_TABLE_ADDRESS, i); /* Gain Table Index */
-		ad9361_spi_write(spi, REG_GAIN_TABLE_WRITE_DATA1,
-				 tab[i][0] | lna); /* Ext LNA, Int LNA, & Mixer Gain Word */
-		ad9361_spi_write(spi, REG_GAIN_TABLE_WRITE_DATA2,
-				 tab[i][1]); /* TIA & LPF Word */
-		ad9361_spi_write(spi, REG_GAIN_TABLE_WRITE_DATA3,
-				 tab[i][2]); /* DC Cal bit & Dig Gain Word */
-		ad9361_spi_write(spi, REG_GAIN_TABLE_CONFIG,
-				 START_GAIN_TABLE_CLOCK |
-				 WRITE_GAIN_TABLE |
-				 RECEIVER_SELECT(dest)); /* Gain Table Index */
+		GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_ADDRESS, i));
+		GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_WRITE_DATA1,
+					  tab[i][0] | lna));
+		GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_WRITE_DATA2,
+					  tab[i][1]));
+		GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_WRITE_DATA3,
+					  tab[i][2]));
+		GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_CONFIG,
+					  START_GAIN_TABLE_CLOCK |
+					  WRITE_GAIN_TABLE |
+					  RECEIVER_SELECT(dest)));
 
 		/* Delay 3 ADCCLK/16 cycles and ~1 us before the next row.
 		 * Upstream spent two dummy register writes on this, which is
@@ -1536,28 +1572,37 @@ static int32_t ad9361_load_gt(struct ad9361_rf_phy *phy, uint64_t freq,
 
 	}
 
-	ad9361_spi_write(spi, REG_GAIN_TABLE_CONFIG, START_GAIN_TABLE_CLOCK |
-			 RECEIVER_SELECT(dest)); /* Clear Write Bit */
+	GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_CONFIG,
+				   START_GAIN_TABLE_CLOCK |
+				   RECEIVER_SELECT(dest)));
 	no_os_udelay(2); /* Was two dummy register writes, ~1us each */
-	ad9361_spi_write(spi, REG_GAIN_TABLE_CONFIG, 0); /* Stop Gain Table Clock */
-
-	phy->current_table = band;
+	GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_CONFIG, 0));
 
 	ret = find_table_index(phy, rx1_gain);
 	if (ret < 0)
 		ret = phy->gt_info[band].max_index - 1;
 
-	ad9361_spi_writef(spi, REG_RX1_MANUAL_LMT_FULL_GAIN,
-			  RX_FULL_TBL_IDX_MASK, ret); /* Rx1 Full/LMT Gain Index */
+	GT_WRITE(ad9361_spi_writef(spi, REG_RX1_MANUAL_LMT_FULL_GAIN,
+				   RX_FULL_TBL_IDX_MASK, ret));
 
 	ret = find_table_index(phy, rx2_gain);
 	if (ret < 0)
 		ret = phy->gt_info[band].max_index - 1;
 
-	ad9361_spi_write(spi, REG_RX2_MANUAL_LMT_FULL_GAIN,
-			 ret); /* Rx2 Full/LMT Gain Index */
+	GT_WRITE(ad9361_spi_write(spi, REG_RX2_MANUAL_LMT_FULL_GAIN, ret));
+
+	phy->current_table = band;
+#undef GT_WRITE
 
 	return 0;
+
+failed:
+	/* A partial table cannot be trusted. Stop the indirect table clock on
+	 * a best-effort basis and force a complete reload on the next attempt. */
+	(void)ad9361_spi_write(spi, REG_GAIN_TABLE_CONFIG, 0);
+	phy->current_table = NO_GAIN_TABLE;
+#undef GT_WRITE
+	return ret;
 }
 
 /**
