@@ -3561,6 +3561,10 @@ int32_t ad9361_fastlock_load(struct ad9361_rf_phy *phy, bool tx,
 			     uint32_t profile, uint8_t *values);
 int32_t ad9361_fastlock_save(struct ad9361_rf_phy *phy, bool tx,
 			     uint32_t profile, uint8_t *values);
+/* Return the RF frequency encoded in an RX fastlock profile's PLL words.
+ * This avoids stale host clock-tree state after a Nios-owned fastlock recall. */
+int32_t ad9361_rx_fastlock_get_freq(struct ad9361_rf_phy *phy,
+				    uint32_t profile, uint64_t *freq_hz);
 void ad9361_ensm_force_state(struct ad9361_rf_phy *phy, uint8_t ensm_state);
 uint8_t ad9361_ensm_get_state(struct ad9361_rf_phy *phy);
 void ad9361_ensm_restore_state(struct ad9361_rf_phy *phy, uint8_t ensm_state);

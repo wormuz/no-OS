@@ -6855,6 +6855,41 @@ static uint64_t ad9361_calc_rfpll_int_freq(uint64_t parent_rate,
 	return rate >> (vco_div + 1);
 }
 
+/* Calculate the carrier encoded in the RFIC's stored RX fastlock profile.
+ * A recall performed by the FPGA Nios core does not update the host driver's
+ * clock-tree cache, so ad9361_get_rx_lo_freq() can report the previous tune.
+ * Read the profile bank itself; the caller separately verifies PLL lock. */
+int32_t ad9361_rx_fastlock_get_freq(struct ad9361_rf_phy *phy,
+				    uint32_t profile, uint64_t *freq_hz)
+{
+	uint32_t fract, integer, vco_div;
+	uint64_t parent_rate;
+	uint8_t b0, b1, b2, b3, b4, div_word;
+
+	if (phy == NULL || freq_hz == NULL || profile >= 8)
+		return -EINVAL;
+
+	/* Fastlock profile words 0..4 contain integer/fractional PLL dividers;
+	 * word 12 low nibble contains the VCO output divider. */
+	b0 = ad9361_fastlock_readval(phy->spi, false, profile, 4);
+	b1 = ad9361_fastlock_readval(phy->spi, false, profile, 3);
+	b2 = ad9361_fastlock_readval(phy->spi, false, profile, 2);
+	b3 = ad9361_fastlock_readval(phy->spi, false, profile, 1);
+	b4 = ad9361_fastlock_readval(phy->spi, false, profile, 0);
+	div_word = ad9361_fastlock_readval(phy->spi, false, profile, 12);
+
+	fract = (SYNTH_FRACT_WORD(b0) << 16) | ((uint32_t)b1 << 8) | b2;
+	integer = (SYNTH_INTEGER_WORD(b3) << 8) | b4;
+	vco_div = div_word & 0x0f;
+	parent_rate = clk_get_rate(phy, phy->ref_clk_scale[RX_REFCLK]);
+	if (parent_rate == 0)
+		return -EINVAL;
+
+	*freq_hz = ad9361_calc_rfpll_int_freq(parent_rate, integer,
+					      fract, vco_div);
+	return 0;
+}
+
 /**
  * Calculate the RFPLL dividers.
  * @param phy The AD9361 state structure.
