@@ -1520,10 +1520,16 @@ static int32_t ad9361_load_gt(struct ad9361_rf_phy *phy, uint64_t freq,
 				 START_GAIN_TABLE_CLOCK |
 				 WRITE_GAIN_TABLE |
 				 RECEIVER_SELECT(dest)); /* Gain Table Index */
-		ad9361_spi_write(spi, REG_GAIN_TABLE_READ_DATA1,
-				 0); /* Dummy Write to delay 3 ADCCLK/16 cycles */
-		ad9361_spi_write(spi, REG_GAIN_TABLE_READ_DATA1,
-				 0); /* Dummy Write to delay ~1u */
+
+		/* Delay 3 ADCCLK/16 cycles and ~1 us before the next row.
+		 * Upstream spent two dummy register writes on this, which is
+		 * free on a directly attached SPI master but costs a full bus
+		 * round trip each on a remote one. no_os_udelay() states the
+		 * same requirement without turning it into bus traffic -- same
+		 * fix as the udelay(3) internal-table-write delay already
+		 * used elsewhere in this file (ad9361_rssi_program_lna_gain,
+		 * ad9361_rssi_gain_step_calibrate). */
+		no_os_udelay(2);
 
 		if ((tab[i][1] & lpf_tia_mask) == 0x20)
 			phy->tx_quad_lpf_tia_match = i;
@@ -1532,10 +1538,7 @@ static int32_t ad9361_load_gt(struct ad9361_rf_phy *phy, uint64_t freq,
 
 	ad9361_spi_write(spi, REG_GAIN_TABLE_CONFIG, START_GAIN_TABLE_CLOCK |
 			 RECEIVER_SELECT(dest)); /* Clear Write Bit */
-	ad9361_spi_write(spi, REG_GAIN_TABLE_READ_DATA1,
-			 0); /* Dummy Write to delay ~1u */
-	ad9361_spi_write(spi, REG_GAIN_TABLE_READ_DATA1,
-			 0); /* Dummy Write to delay ~1u */
+	no_os_udelay(2); /* Was two dummy register writes, ~1us each */
 	ad9361_spi_write(spi, REG_GAIN_TABLE_CONFIG, 0); /* Stop Gain Table Clock */
 
 	phy->current_table = band;
@@ -1621,14 +1624,20 @@ static int32_t ad9361_load_mixer_gm_subtable(struct ad9361_rf_phy *phy)
 				 gm_st_ctrl[i]); /* Control */
 		ad9361_spi_write(phy->spi, REG_GM_SUB_TABLE_CONFIG,
 				 WRITE_GM_SUB_TABLE | START_GM_SUB_TABLE_CLOCK); /* Write Words */
-		ad9361_spi_write(phy->spi, REG_GM_SUB_TABLE_GAIN_READ, 0); /* Dummy Delay */
-		ad9361_spi_write(phy->spi, REG_GM_SUB_TABLE_GAIN_READ, 0); /* Dummy Delay */
+
+		/* Same fix as ad9361_load_gt() above: two dummy register
+		 * reads used only for their SPI round-trip time, replaced
+		 * with no_os_udelay() which states the actual requirement
+		 * instead of spending a bus transaction on a remote SPI
+		 * master. 69 rows in gm_st_ctrl -- larger loop count than
+		 * the gain table, so the round-trip cost compounds more
+		 * here. */
+		no_os_udelay(2);
 	}
 
 	ad9361_spi_write(phy->spi, REG_GM_SUB_TABLE_CONFIG,
 			 START_GM_SUB_TABLE_CLOCK); /* Clear Write */
-	ad9361_spi_write(phy->spi, REG_GM_SUB_TABLE_GAIN_READ, 0); /* Dummy Delay */
-	ad9361_spi_write(phy->spi, REG_GM_SUB_TABLE_GAIN_READ, 0); /* Dummy Delay */
+	no_os_udelay(2); /* Was two dummy register reads, ~1us each */
 	ad9361_spi_write(phy->spi, REG_GM_SUB_TABLE_CONFIG, 0); /* Stop Clock */
 
 	return 0;
