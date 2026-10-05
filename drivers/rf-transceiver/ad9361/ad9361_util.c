@@ -112,7 +112,7 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 		     uint32_t rate)
 {
 	uint32_t source;
-	int32_t i;
+	int32_t i, ret;
 	uint32_t round_rate;
 
 	source = clk_priv->source;
@@ -162,7 +162,9 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 			    phy->rfpll_requested[source == TX_RFPLL] ==
 			    (uint32_t)round_rate)
 				break;
-			ad9361_rfpll_set_rate(clk_priv, round_rate);
+			ret = ad9361_rfpll_set_rate(clk_priv, round_rate);
+			if (ret < 0)
+				return ret;
 			phy->clks[source]->rate = ad9361_rfpll_recalc_rate(clk_priv);
 			phy->rfpll_requested[source == TX_RFPLL] =
 				(uint32_t)round_rate;

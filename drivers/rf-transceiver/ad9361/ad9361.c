@@ -1769,7 +1769,7 @@ static int32_t ad9361_rfpll_vco_init(struct ad9361_rf_phy *phy,
 {
 	struct no_os_spi_desc *spi = phy->spi;
 	const struct SynthLUT(*tab);
-	int32_t i = 0;
+	int32_t i = 0, ret;
 	uint32_t range, offs = 0;
 
 	range = ad9361_rfvco_tableindex(ref_clk);
@@ -1804,37 +1804,40 @@ static int32_t ad9361_rfpll_vco_init(struct ad9361_rf_phy *phy,
 	dev_dbg(&phy->spi->dev, "%s : freq %d MHz : index %"PRId32,
 		__func__, tab[i].VCO_MHz, i);
 
-	ad9361_spi_write(spi, REG_RX_VCO_OUTPUT + offs,
+#define RFPLL_SPI_TRY(call) do { \
+	ret = (call); \
+	if (ret < 0) \
+		return ret; \
+} while (0)
+	RFPLL_SPI_TRY(ad9361_spi_write(spi, REG_RX_VCO_OUTPUT + offs,
 			 VCO_OUTPUT_LEVEL(tab[i].VCO_Output_Level) |
-			 PORB_VCO_LOGIC);
-	ad9361_spi_writef(spi, REG_RX_ALC_VARACTOR + offs,
-			  VCO_VARACTOR(~0), tab[i].VCO_Varactor);
-	ad9361_spi_write(spi, REG_RX_VCO_BIAS_1 + offs,
+			 PORB_VCO_LOGIC));
+	RFPLL_SPI_TRY(ad9361_spi_writef(spi, REG_RX_ALC_VARACTOR + offs,
+			  VCO_VARACTOR(~0), tab[i].VCO_Varactor));
+	RFPLL_SPI_TRY(ad9361_spi_write(spi, REG_RX_VCO_BIAS_1 + offs,
 			 VCO_BIAS_REF(tab[i].VCO_Bias_Ref) |
-			 VCO_BIAS_TCF(tab[i].VCO_Bias_Tcf));
-
-	ad9361_spi_write(spi, REG_RX_FORCE_VCO_TUNE_1 + offs,
-			 VCO_CAL_OFFSET(tab[i].VCO_Cal_Offset));
-	ad9361_spi_write(spi, REG_RX_VCO_VARACTOR_CTRL_1 + offs,
+			 VCO_BIAS_TCF(tab[i].VCO_Bias_Tcf)));
+	RFPLL_SPI_TRY(ad9361_spi_write(spi, REG_RX_FORCE_VCO_TUNE_1 + offs,
+			 VCO_CAL_OFFSET(tab[i].VCO_Cal_Offset)));
+	RFPLL_SPI_TRY(ad9361_spi_write(spi, REG_RX_VCO_VARACTOR_CTRL_1 + offs,
 			 VCO_VARACTOR_REFERENCE(
-				 tab[i].VCO_Varactor_Reference));
-
-	ad9361_spi_write(spi, REG_RX_VCO_CAL_REF + offs, VCO_CAL_REF_TCF(0));
-
-	ad9361_spi_write(spi, REG_RX_VCO_VARACTOR_CTRL_0 + offs,
+				 tab[i].VCO_Varactor_Reference)));
+	RFPLL_SPI_TRY(ad9361_spi_write(spi, REG_RX_VCO_CAL_REF + offs,
+			 VCO_CAL_REF_TCF(0)));
+	RFPLL_SPI_TRY(ad9361_spi_write(spi, REG_RX_VCO_VARACTOR_CTRL_0 + offs,
 			 VCO_VARACTOR_OFFSET(0) |
-			 VCO_VARACTOR_REFERENCE_TCF(7));
-
-	ad9361_spi_writef(spi, REG_RX_CP_CURRENT + offs, CHARGE_PUMP_CURRENT(~0),
-			  tab[i].Charge_Pump_Current);
-	ad9361_spi_write(spi, REG_RX_LOOP_FILTER_1 + offs,
+			 VCO_VARACTOR_REFERENCE_TCF(7)));
+	RFPLL_SPI_TRY(ad9361_spi_writef(spi, REG_RX_CP_CURRENT + offs,
+			  CHARGE_PUMP_CURRENT(~0), tab[i].Charge_Pump_Current));
+	RFPLL_SPI_TRY(ad9361_spi_write(spi, REG_RX_LOOP_FILTER_1 + offs,
 			 LOOP_FILTER_C2(tab[i].LF_C2) |
-			 LOOP_FILTER_C1(tab[i].LF_C1));
-	ad9361_spi_write(spi, REG_RX_LOOP_FILTER_2 + offs,
+			 LOOP_FILTER_C1(tab[i].LF_C1)));
+	RFPLL_SPI_TRY(ad9361_spi_write(spi, REG_RX_LOOP_FILTER_2 + offs,
 			 LOOP_FILTER_R1(tab[i].LF_R1) |
-			 LOOP_FILTER_C3(tab[i].LF_C3));
-	ad9361_spi_write(spi, REG_RX_LOOP_FILTER_3 + offs,
-			 LOOP_FILTER_R3(tab[i].LF_R3));
+			 LOOP_FILTER_C3(tab[i].LF_C3)));
+	RFPLL_SPI_TRY(ad9361_spi_write(spi, REG_RX_LOOP_FILTER_3 + offs,
+			 LOOP_FILTER_R3(tab[i].LF_R3)));
+#undef RFPLL_SPI_TRY
 
 	return 0;
 }
@@ -6992,7 +6995,7 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 	uint64_t vco = 0;
 	uint8_t buf[5];
 	uint32_t reg, div_mask, lock_reg, fract = 0, integer = 0;
-	int32_t vco_div, ret, fixup_other;
+	int32_t vco_div = 0, ret, fixup_other, lock_error = 0;
 
 	dev_dbg(&clk_priv->spi->dev,
 		"%s: %s Rate %"PRIu32" Hz Parent Rate %"PRIu32" Hz",
@@ -7034,21 +7037,33 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 
 	do {
 		fixup_other = 0;
-		ad9361_rfpll_vco_init(phy, div_mask == TX_VCO_DIVIDER(~0),
-				      vco, parent_rate);
+		ret = ad9361_rfpll_vco_init(phy,
+					    div_mask == TX_VCO_DIVIDER(~0),
+					    vco, parent_rate);
+		if (ret < 0)
+			return ret;
 
 		buf[0] = SYNTH_FRACT_WORD(fract >> 16);
 		buf[1] = fract >> 8;
 		buf[2] = fract & 0xFF;
+		ret = ad9361_spi_read(clk_priv->spi, reg - 3);
+		if (ret < 0)
+			return ret;
 		buf[3] = SYNTH_INTEGER_WORD(integer >> 8) |
-			 (~SYNTH_INTEGER_WORD(~0) &
-			  ad9361_spi_read(clk_priv->spi, reg - 3));
+			 (~SYNTH_INTEGER_WORD(~0) & ret);
 		buf[4] = integer & 0xFF;
 
-		ad9361_spi_writem(clk_priv->spi, reg, buf, 5);
-		ad9361_spi_writef(clk_priv->spi, REG_RFPLL_DIVIDERS, div_mask, vco_div);
+		ret = ad9361_spi_writem(clk_priv->spi, reg, buf, 5);
+		if (ret < 0)
+			return ret;
+		ret = ad9361_spi_writef(clk_priv->spi, REG_RFPLL_DIVIDERS,
+					 div_mask, vco_div);
+		if (ret < 0)
+			return ret;
 
 		ret = ad9361_check_cal_done(phy, lock_reg, VCO_LOCK, 1);
+		if (ret < 0 && lock_error == 0)
+			lock_error = ret;
 
 		/* In FDD mode with RX LO == TX LO frequency we use TDD tables to
 		 * reduce VCO pulling
@@ -7096,7 +7111,7 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 		ad9361_trx_vco_cal_control(phy, clk_priv->source == TX_RFPLL_INT,
 					   false);
 
-	return ret;
+	return lock_error < 0 ? lock_error : ret;
 }
 
 /**
@@ -7225,13 +7240,17 @@ int32_t ad9361_rfpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate)
 	case RX_RFPLL:
 		if (phy->pdata->use_ext_rx_lo) {
 			if (phy->ad9361_rfpll_ext_set_rate)
-				phy->ad9361_rfpll_ext_set_rate(clk_priv, rate);
+				ret = phy->ad9361_rfpll_ext_set_rate(clk_priv, rate);
 			else
-				ad9361_rfpll_dummy_set_rate(phy->ref_clk_scale[RX_RFPLL_DUMMY], rate);
+				ret = ad9361_rfpll_dummy_set_rate(
+					phy->ref_clk_scale[RX_RFPLL_DUMMY], rate);
 		} else {
-			ad9361_rfpll_int_set_rate(phy->ref_clk_scale[RX_RFPLL_INT], rate,
-						  phy->clks[phy->ref_clk_scale[RX_RFPLL_INT]->parent_source]->rate);
+			ret = ad9361_rfpll_int_set_rate(
+				phy->ref_clk_scale[RX_RFPLL_INT], rate,
+				phy->clks[phy->ref_clk_scale[RX_RFPLL_INT]->parent_source]->rate);
 		}
+		if (ret < 0)
+			return ret;
 		/* Load Gain Table */
 		ret = ad9361_load_gt(phy, ad9361_from_clk(rate), GT_RX1 + GT_RX2);
 		if (ret < 0)
@@ -7242,13 +7261,17 @@ int32_t ad9361_rfpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate)
 	case TX_RFPLL:
 		if (phy->pdata->use_ext_tx_lo) {
 			if (phy->ad9361_rfpll_ext_set_rate)
-				phy->ad9361_rfpll_ext_set_rate(clk_priv, rate);
+				ret = phy->ad9361_rfpll_ext_set_rate(clk_priv, rate);
 			else
-				ad9361_rfpll_dummy_set_rate(phy->ref_clk_scale[TX_RFPLL_DUMMY], rate);
+				ret = ad9361_rfpll_dummy_set_rate(
+					phy->ref_clk_scale[TX_RFPLL_DUMMY], rate);
 		} else {
-			ad9361_rfpll_int_set_rate(phy->ref_clk_scale[TX_RFPLL_INT], rate,
-						  phy->clks[phy->ref_clk_scale[TX_RFPLL_INT]->parent_source]->rate);
+			ret = ad9361_rfpll_int_set_rate(
+				phy->ref_clk_scale[TX_RFPLL_INT], rate,
+				phy->clks[phy->ref_clk_scale[TX_RFPLL_INT]->parent_source]->rate);
 		}
+		if (ret < 0)
+			return ret;
 		/* For RX LO we typically have the tracking option enabled
 		* so for now do nothing here.
 		*/
