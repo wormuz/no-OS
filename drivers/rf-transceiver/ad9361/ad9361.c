@@ -1578,6 +1578,11 @@ static int32_t ad9361_load_gt(struct ad9361_rf_phy *phy, uint64_t freq,
 	no_os_udelay(2); /* Was two dummy register writes, ~1us each */
 	GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_CONFIG, 0));
 
+	/* find_table_index() consults phy->current_table, so publish the new
+	 * table only after all indirect rows committed. Any later gain-index
+	 * write failure still invalidates it in the common failure path. */
+	phy->current_table = band;
+
 	ret = find_table_index(phy, rx1_gain);
 	if (ret < 0)
 		ret = phy->gt_info[band].max_index - 1;
@@ -1591,7 +1596,6 @@ static int32_t ad9361_load_gt(struct ad9361_rf_phy *phy, uint64_t freq,
 
 	GT_WRITE(ad9361_spi_write(spi, REG_RX2_MANUAL_LMT_FULL_GAIN, ret));
 
-	phy->current_table = band;
 #undef GT_WRITE
 
 	return 0;
