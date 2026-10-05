@@ -3313,6 +3313,9 @@ struct ad9361_fastlock_entry {
 	uint8_t flags;
 	uint8_t alc_orig;
 	uint8_t alc_written;
+	/* Bytes accepted by ad9361_fastlock_load(). Keeping the loaded image
+	 * avoids re-reading the same profile over SPI for every Nios recall. */
+	uint8_t profile_data[16];
 };
 
 struct ad9361_fastlock {
