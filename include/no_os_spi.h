@@ -223,6 +223,10 @@ struct no_os_spi_platform_ops {
 	 * failed/partial script; callers may use it only across write-only runs. */
 	int32_t (*write_register_batch)(struct no_os_spi_desc *,
 					const uint16_t *, const uint8_t *, uint8_t);
+	/** Optional atomic read-modify-write for a single-byte register. The
+	 * platform applies (old & ~mask) | (value & mask) under one SPI lock. */
+	int32_t (*update_register_bits)(struct no_os_spi_desc *, uint16_t,
+					uint8_t, uint8_t);
 	/** Iterate over the spi_msg array and send all messages at once */
 	int32_t (*transfer)(struct no_os_spi_desc *, struct no_os_spi_msg *, uint32_t);
 	/** Iterate over the spi_msg array and send all messages using DMA.

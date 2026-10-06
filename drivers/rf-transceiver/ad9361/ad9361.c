@@ -31,6 +31,7 @@
 *******************************************************************************/
 
 #include <limits.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -857,6 +858,19 @@ static int32_t __ad9361_spi_writef(struct no_os_spi_desc *spi, uint32_t reg,
 
 	if (!mask)
 		return -EINVAL;
+
+	/* A platform may perform the read/modify/write atomically in its local
+	 * SPI owner, avoiding two host↔NIOS transactions. Only an explicit
+	 * unsupported result permits the legacy read+write fallback; transport
+	 * and device errors must remain failures. */
+	if (spi->platform_ops && spi->platform_ops->update_register_bits &&
+	    reg <= 0x3ff && mask <= 0xff) {
+		ret = spi->platform_ops->update_register_bits(
+			spi, (uint16_t)reg, (uint8_t)mask,
+			(uint8_t)((val << offset) & mask));
+		if (ret != -ENOTSUP)
+			return ret;
+	}
 
 	ret = ad9361_spi_readm(spi, reg, &buf, 1);
 	if (ret < 0)
