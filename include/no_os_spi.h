@@ -218,6 +218,11 @@ struct no_os_spi_platform_ops {
 	int32_t (*write_gain_table_row)(struct no_os_spi_desc *, uint16_t,
 					uint8_t, uint8_t, uint8_t, uint8_t,
 					uint32_t);
+	/** Optional atomic transport for up to three independent single-byte
+	 * AD9361 register writes. The platform must preserve order and report a
+	 * failed/partial script; callers may use it only across write-only runs. */
+	int32_t (*write_register_batch)(struct no_os_spi_desc *,
+					const uint16_t *, const uint8_t *, uint8_t);
 	/** Iterate over the spi_msg array and send all messages at once */
 	int32_t (*transfer)(struct no_os_spi_desc *, struct no_os_spi_msg *, uint32_t);
 	/** Iterate over the spi_msg array and send all messages using DMA.

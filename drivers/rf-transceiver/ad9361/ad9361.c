@@ -1820,6 +1820,9 @@ static uint32_t ad9361_rfvco_tableindex(uint32_t freq)
  * @param ref_clk The reference clock frequency [Hz].
  * @return 0 in case of success
  */
+static int32_t ad9361_spi_write_register_run(struct no_os_spi_desc *spi,
+		const uint16_t *regs, const uint8_t *values, uint8_t count);
+
 static int32_t ad9361_rfpll_vco_init(struct ad9361_rf_phy *phy,
 				     bool tx, uint64_t vco_freq,
 				     uint32_t ref_clk)
@@ -1874,27 +1877,66 @@ static int32_t ad9361_rfpll_vco_init(struct ad9361_rf_phy *phy,
 	RFPLL_SPI_TRY(ad9361_spi_write(spi, REG_RX_VCO_BIAS_1 + offs,
 			 VCO_BIAS_REF(tab[i].VCO_Bias_Ref) |
 			 VCO_BIAS_TCF(tab[i].VCO_Bias_Tcf)));
-	RFPLL_SPI_TRY(ad9361_spi_write(spi, REG_RX_FORCE_VCO_TUNE_1 + offs,
-			 VCO_CAL_OFFSET(tab[i].VCO_Cal_Offset)));
-	RFPLL_SPI_TRY(ad9361_spi_write(spi, REG_RX_VCO_VARACTOR_CTRL_1 + offs,
-			 VCO_VARACTOR_REFERENCE(
-				 tab[i].VCO_Varactor_Reference)));
-	RFPLL_SPI_TRY(ad9361_spi_write(spi, REG_RX_VCO_CAL_REF + offs,
-			 VCO_CAL_REF_TCF(0)));
-	RFPLL_SPI_TRY(ad9361_spi_write(spi, REG_RX_VCO_VARACTOR_CTRL_0 + offs,
-			 VCO_VARACTOR_OFFSET(0) |
-			 VCO_VARACTOR_REFERENCE_TCF(7)));
+	{
+		const uint16_t regs[] = {
+			REG_RX_FORCE_VCO_TUNE_1 + offs,
+			REG_RX_VCO_VARACTOR_CTRL_1 + offs,
+			REG_RX_VCO_CAL_REF + offs,
+		};
+		const uint8_t values[] = {
+			VCO_CAL_OFFSET(tab[i].VCO_Cal_Offset),
+			VCO_VARACTOR_REFERENCE(tab[i].VCO_Varactor_Reference),
+			VCO_CAL_REF_TCF(0),
+		};
+		RFPLL_SPI_TRY(ad9361_spi_write_register_run(spi, regs, values,
+								   NO_OS_ARRAY_SIZE(regs)));
+		RFPLL_SPI_TRY(ad9361_spi_write(spi,
+			REG_RX_VCO_VARACTOR_CTRL_0 + offs,
+			VCO_VARACTOR_OFFSET(0) | VCO_VARACTOR_REFERENCE_TCF(7)));
+	}
 	RFPLL_SPI_TRY(ad9361_spi_writef(spi, REG_RX_CP_CURRENT + offs,
 			  CHARGE_PUMP_CURRENT(~0), tab[i].Charge_Pump_Current));
-	RFPLL_SPI_TRY(ad9361_spi_write(spi, REG_RX_LOOP_FILTER_1 + offs,
-			 LOOP_FILTER_C2(tab[i].LF_C2) |
-			 LOOP_FILTER_C1(tab[i].LF_C1)));
-	RFPLL_SPI_TRY(ad9361_spi_write(spi, REG_RX_LOOP_FILTER_2 + offs,
-			 LOOP_FILTER_R1(tab[i].LF_R1) |
-			 LOOP_FILTER_C3(tab[i].LF_C3)));
-	RFPLL_SPI_TRY(ad9361_spi_write(spi, REG_RX_LOOP_FILTER_3 + offs,
-			 LOOP_FILTER_R3(tab[i].LF_R3)));
+	{
+		const uint16_t regs[] = {
+			REG_RX_LOOP_FILTER_1 + offs,
+			REG_RX_LOOP_FILTER_2 + offs,
+			REG_RX_LOOP_FILTER_3 + offs,
+		};
+		const uint8_t values[] = {
+			LOOP_FILTER_C2(tab[i].LF_C2) |
+				LOOP_FILTER_C1(tab[i].LF_C1),
+			LOOP_FILTER_R1(tab[i].LF_R1) |
+				LOOP_FILTER_C3(tab[i].LF_C3),
+			LOOP_FILTER_R3(tab[i].LF_R3),
+		};
+		RFPLL_SPI_TRY(ad9361_spi_write_register_run(spi, regs, values,
+								   NO_OS_ARRAY_SIZE(regs)));
+	}
 #undef RFPLL_SPI_TRY
+
+	return 0;
+}
+
+/* Send a run of independent, single-byte register writes through an optional
+ * platform script transport. Generic platforms retain the scalar path. */
+static int32_t ad9361_spi_write_register_run(struct no_os_spi_desc *spi,
+		const uint16_t *regs, const uint8_t *values, uint8_t count)
+{
+	uint8_t i;
+	int32_t ret;
+
+	if (count == 0)
+		return -EINVAL;
+
+	if (spi->platform_ops && spi->platform_ops->write_register_batch)
+		return spi->platform_ops->write_register_batch(spi, regs, values,
+								count);
+
+	for (i = 0; i < count; i++) {
+		ret = ad9361_spi_write(spi, regs[i], values[i]);
+		if (ret < 0)
+			return ret;
+	}
 
 	return 0;
 }
