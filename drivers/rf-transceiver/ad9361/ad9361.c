@@ -1545,27 +1545,35 @@ static int32_t ad9361_load_gt(struct ad9361_rf_phy *phy, uint64_t freq,
 	phy->tx_quad_lpf_tia_match = -EINVAL;
 
 	for (i = 0; i < index_max; i++) {
-		GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_ADDRESS, i));
-		GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_WRITE_DATA1,
-					  tab[i][0] | lna));
-		GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_WRITE_DATA2,
-					  tab[i][1]));
-		GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_WRITE_DATA3,
-					  tab[i][2]));
-		GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_CONFIG,
-					  START_GAIN_TABLE_CLOCK |
-					  WRITE_GAIN_TABLE |
-					  RECEIVER_SELECT(dest)));
+		if (spi->platform_ops &&
+		    spi->platform_ops->write_gain_table_row) {
+			GT_WRITE(spi->platform_ops->write_gain_table_row(
+					 spi, i, tab[i][0] | lna, tab[i][1], tab[i][2],
+					 START_GAIN_TABLE_CLOCK | WRITE_GAIN_TABLE |
+					 RECEIVER_SELECT(dest), 2));
+		} else {
+			GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_ADDRESS, i));
+			GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_WRITE_DATA1,
+						  tab[i][0] | lna));
+			GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_WRITE_DATA2,
+						  tab[i][1]));
+			GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_WRITE_DATA3,
+						  tab[i][2]));
+			GT_WRITE(ad9361_spi_write(spi, REG_GAIN_TABLE_CONFIG,
+						  START_GAIN_TABLE_CLOCK |
+						  WRITE_GAIN_TABLE |
+						  RECEIVER_SELECT(dest)));
 
-		/* Delay 3 ADCCLK/16 cycles and ~1 us before the next row.
-		 * Upstream spent two dummy register writes on this, which is
-		 * free on a directly attached SPI master but costs a full bus
-		 * round trip each on a remote one. no_os_udelay() states the
-		 * same requirement without turning it into bus traffic -- same
-		 * fix as the udelay(3) internal-table-write delay already
-		 * used elsewhere in this file (ad9361_rssi_program_lna_gain,
-		 * ad9361_rssi_gain_step_calibrate). */
-		no_os_udelay(2);
+			/* Delay 3 ADCCLK/16 cycles and ~1 us before the next row.
+			 * Upstream spent two dummy register writes on this, which is
+			 * free on a directly attached SPI master but costs a full bus
+			 * round trip each on a remote one. no_os_udelay() states the
+			 * same requirement without turning it into bus traffic -- same
+			 * fix as the udelay(3) internal-table-write delay already
+			 * used elsewhere in this file (ad9361_rssi_program_lna_gain,
+			 * ad9361_rssi_gain_step_calibrate). */
+			no_os_udelay(2);
+		}
 
 		if ((tab[i][1] & lpf_tia_mask) == 0x20)
 			phy->tx_quad_lpf_tia_match = i;

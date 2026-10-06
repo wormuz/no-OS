@@ -212,6 +212,12 @@ struct no_os_spi_platform_ops {
 	int32_t (*init)(struct no_os_spi_desc **, const struct no_os_spi_init_param *);
 	/** SPI write/read function pointer */
 	int32_t (*write_and_read)(struct no_os_spi_desc *, uint8_t *, uint16_t);
+	/** Optional platform-optimized AD9361 gain-table row operation. It must
+	 * perform the same ordered address/data/commit writes as five individual
+	 * SPI transactions and honor delay_us after the commit. */
+	int32_t (*write_gain_table_row)(struct no_os_spi_desc *, uint16_t,
+					uint8_t, uint8_t, uint8_t, uint8_t,
+					uint32_t);
 	/** Iterate over the spi_msg array and send all messages at once */
 	int32_t (*transfer)(struct no_os_spi_desc *, struct no_os_spi_msg *, uint32_t);
 	/** Iterate over the spi_msg array and send all messages using DMA.
