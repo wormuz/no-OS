@@ -3075,8 +3075,37 @@ static int32_t ad9361_bb_dc_offset_calib(struct ad9361_rf_phy *phy)
  * @param ref_clk_hz The RX LO frequency [Hz].
  * @return 0 in case of success, negative error code otherwise.
  */
-static int32_t ad9361_rf_dc_offset_calib(struct ad9361_rf_phy *phy,
-		uint64_t rx_freq)
+static int32_t ad9361_run_calibration_timeout(struct ad9361_rf_phy *phy,
+		uint32_t mask, uint32_t timeout_us)
+{
+	uint32_t elapsed_us = 0;
+	const uint32_t poll_delay_us = 1200;
+	uint32_t state;
+	int32_t ret;
+
+	ret = ad9361_spi_write(phy->spi, REG_CALIBRATION_CTRL, mask);
+	if (ret < 0)
+		return ret;
+
+	while (elapsed_us < timeout_us) {
+		state = ad9361_spi_readf(phy->spi, REG_CALIBRATION_CTRL, mask);
+		if (state == 0)
+			return 0;
+
+		if (timeout_us - elapsed_us < poll_delay_us) {
+			no_os_udelay(timeout_us - elapsed_us);
+			break;
+		}
+		no_os_udelay(poll_delay_us);
+		elapsed_us += poll_delay_us;
+	}
+
+	dev_err(&phy->spi->dev, "Calibration TIMEOUT (0x%"PRIX32")", mask);
+	return -ETIMEDOUT;
+}
+
+static int32_t ad9361_rf_dc_offset_calib_with_timeout(
+		struct ad9361_rf_phy *phy, uint64_t rx_freq, uint32_t timeout_us)
 {
 	struct no_os_spi_desc *spi = phy->spi;
 
@@ -3117,7 +3146,15 @@ static int32_t ad9361_rf_dc_offset_calib(struct ad9361_rf_phy *phy,
 				 INVERT_RX2_RF_DC_CGOUT_WORD);
 	}
 
-	return ad9361_run_calibration(phy, RFDC_CAL);
+	return timeout_us == 0
+		? ad9361_run_calibration(phy, RFDC_CAL)
+		: ad9361_run_calibration_timeout(phy, RFDC_CAL, timeout_us);
+}
+
+static int32_t ad9361_rf_dc_offset_calib(struct ad9361_rf_phy *phy,
+		uint64_t rx_freq)
+{
+	return ad9361_rf_dc_offset_calib_with_timeout(phy, rx_freq, 0);
 }
 
 /**
@@ -5944,6 +5981,33 @@ int32_t ad9361_do_calib_run(struct ad9361_rf_phy *phy, uint32_t cal,
 		break;
 	}
 
+	ret2 = ad9361_tracking_control(phy, phy->bbdc_track_en,
+				       phy->rfdc_track_en, phy->quad_track_en);
+	ad9361_ensm_restore_prev_state(phy);
+
+	return ret ? ret : ret2;
+}
+
+/* Run only RX RFDC calibration with a caller-supplied completion budget.
+ * Keep tracking disabled and ENSM in ALERT during calibration, then restore
+ * both even when the hardware calibration exceeds the supplied budget. */
+int32_t ad9361_do_calib_timeout(struct ad9361_rf_phy *phy, uint32_t cal,
+		int32_t arg, uint32_t timeout_us)
+{
+	int32_t ret, ret2;
+
+	(void)arg;
+	if (cal != RFDC_CAL || timeout_us == 0)
+		return -EINVAL;
+
+	ret = ad9361_tracking_control(phy, false, false, false);
+	if (ret < 0)
+		return ret;
+
+	ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
+	ret = ad9361_rf_dc_offset_calib_with_timeout(
+		phy, ad9361_from_clk(clk_get_rate(
+			phy, phy->ref_clk_scale[RX_RFPLL])), timeout_us);
 	ret2 = ad9361_tracking_control(phy, phy->bbdc_track_en,
 				       phy->rfdc_track_en, phy->quad_track_en);
 	ad9361_ensm_restore_prev_state(phy);

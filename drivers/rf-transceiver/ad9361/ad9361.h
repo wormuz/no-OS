@@ -3552,6 +3552,8 @@ int32_t ad9361_rf_port_setup(struct ad9361_rf_phy *phy, bool is_out,
 int32_t ad9361_mcs(struct ad9361_rf_phy *phy, int32_t step);
 int32_t ad9361_do_calib_run(struct ad9361_rf_phy *phy, uint32_t cal,
 			    int32_t arg);
+int32_t ad9361_do_calib_timeout(struct ad9361_rf_phy *phy, uint32_t cal,
+				int32_t arg, uint32_t timeout_us);
 /* Leave a fastlock mode that was entered outside this driver; see the
  * definition for the measurement that motivates it. */
 int32_t ad9361_fastlock_exit_foreign(struct ad9361_rf_phy *phy, bool tx);
