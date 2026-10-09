@@ -2821,14 +2821,25 @@ static int32_t ad9361_rx_tia_calib(struct ad9361_rf_phy *phy, uint32_t bb_bw_Hz)
 {
 	uint32_t Cbbf, R2346;
 	uint64_t CTIA_fF;
-
-	uint8_t reg1EB = ad9361_spi_read(phy->spi, REG_RX_BBF_C3_MSB);
-	uint8_t reg1EC = ad9361_spi_read(phy->spi, REG_RX_BBF_C3_LSB);
-	uint8_t reg1E6 = ad9361_spi_read(phy->spi, REG_RX_BBF_R2346);
+	int32_t ret;
+	uint8_t reg1EB, reg1EC, reg1E6;
 	uint8_t reg1DB, reg1DF, reg1DD, reg1DC, reg1DE, temp;
 
 	dev_dbg(&phy->spi->dev, "%s : bb_bw_Hz %"PRIu32,
 		__func__, bb_bw_Hz);
+
+	ret = ad9361_spi_read(phy->spi, REG_RX_BBF_C3_MSB);
+	if (ret < 0)
+		return ret;
+	reg1EB = ret;
+	ret = ad9361_spi_read(phy->spi, REG_RX_BBF_C3_LSB);
+	if (ret < 0)
+		return ret;
+	reg1EC = ret;
+	ret = ad9361_spi_read(phy->spi, REG_RX_BBF_R2346);
+	if (ret < 0)
+		return ret;
+	reg1E6 = ret;
 
 	bb_bw_Hz = no_os_clamp(bb_bw_Hz, 200000UL, 20000000UL);
 
@@ -2859,13 +2870,19 @@ static int32_t ad9361_rx_tia_calib(struct ad9361_rf_phy *phy, uint32_t bb_bw_Hz)
 		reg1DF = 0;
 	}
 
-	ad9361_spi_write(phy->spi, REG_RX_TIA_CONFIG, reg1DB);
-	ad9361_spi_write(phy->spi, REG_TIA1_C_LSB, reg1DC);
-	ad9361_spi_write(phy->spi, REG_TIA1_C_MSB, reg1DD);
-	ad9361_spi_write(phy->spi, REG_TIA2_C_LSB, reg1DE);
-	ad9361_spi_write(phy->spi, REG_TIA2_C_MSB, reg1DF);
-
-	return 0;
+	ret = ad9361_spi_write(phy->spi, REG_RX_TIA_CONFIG, reg1DB);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_TIA1_C_LSB, reg1DC);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_TIA1_C_MSB, reg1DD);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_TIA2_C_LSB, reg1DE);
+	if (ret < 0)
+		return ret;
+	return ad9361_spi_write(phy->spi, REG_TIA2_C_MSB, reg1DF);
 }
 
 /**
@@ -2881,7 +2898,7 @@ static int32_t ad9361_rx_bb_analog_filter_calib(struct ad9361_rf_phy *phy,
 {
 	uint32_t target;
 	uint8_t tmp;
-	int32_t ret;
+	int32_t ret, disable_ret;
 
 	dev_dbg(&phy->spi->dev, "%s : rx_bb_bw %"PRIu32" bbpll_freq %"PRIu32,
 		__func__, rx_bb_bw, bbpll_freq);
@@ -2894,34 +2911,56 @@ static int32_t ad9361_rx_bb_analog_filter_calib(struct ad9361_rf_phy *phy,
 				     target));
 
 	/* Set RX baseband filter divide value */
-	ad9361_spi_write(phy->spi, REG_RX_BBF_TUNE_DIVIDE, phy->rxbbf_div);
-	ad9361_spi_writef(phy->spi, REG_RX_BBF_TUNE_CONFIG, NO_OS_BIT(0),
-			  phy->rxbbf_div >> 8);
+	ret = ad9361_spi_write(phy->spi, REG_RX_BBF_TUNE_DIVIDE, phy->rxbbf_div);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_writef(phy->spi, REG_RX_BBF_TUNE_CONFIG, NO_OS_BIT(0),
+				phy->rxbbf_div >> 8);
+	if (ret < 0)
+		return ret;
 
 	/* Write the BBBW into registers 0x1FB and 0x1FC */
-	ad9361_spi_write(phy->spi, REG_RX_BBBW_MHZ, rx_bb_bw / 1000000UL);
+	ret = ad9361_spi_write(phy->spi, REG_RX_BBBW_MHZ, rx_bb_bw / 1000000UL);
+	if (ret < 0)
+		return ret;
 
 	tmp = NO_OS_DIV_ROUND_CLOSEST((rx_bb_bw % 1000000UL) * 128, 1000000UL);
-	ad9361_spi_write(phy->spi, REG_RX_BBBW_KHZ, no_os_min_t(uint8_t, 127, tmp));
+	ret = ad9361_spi_write(phy->spi, REG_RX_BBBW_KHZ,
+				no_os_min_t(uint8_t, 127, tmp));
+	if (ret < 0)
+		return ret;
 
-	ad9361_spi_write(phy->spi, REG_RX_MIX_LO_CM,
-			 RX_MIX_LO_CM(0x3F)); /* Set Rx Mix LO CM */
-	ad9361_spi_write(phy->spi, REG_RX_MIX_GM_CONFIG,
-			 RX_MIX_GM_PLOAD(3)); /* Set GM common mode */
+	ret = ad9361_spi_write(phy->spi, REG_RX_MIX_LO_CM,
+				RX_MIX_LO_CM(0x3F)); /* Set Rx Mix LO CM */
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_RX_MIX_GM_CONFIG,
+				RX_MIX_GM_PLOAD(3)); /* Set GM common mode */
+	if (ret < 0)
+		return ret;
 
 	/* Enable the RX BBF tune circuit by writing 0x1E2=0x02 and 0x1E3=0x02 */
-	ad9361_spi_write(phy->spi, REG_RX1_TUNE_CTRL, RX1_TUNE_RESAMPLE);
-	ad9361_spi_write(phy->spi, REG_RX2_TUNE_CTRL, RX2_TUNE_RESAMPLE);
+	ret = ad9361_spi_write(phy->spi, REG_RX1_TUNE_CTRL, RX1_TUNE_RESAMPLE);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_RX2_TUNE_CTRL, RX2_TUNE_RESAMPLE);
+	if (ret < 0)
+		goto disable_tune;
 
 	/* Start the RX Baseband Filter calibration in register 0x016[7] */
 	/* Calibration is complete when register 0x016[7] self clears */
 	ret = ad9361_run_calibration(phy, RX_BB_TUNE_CAL);
 
 	/* Disable the RX baseband filter tune circuit, write 0x1E2=3, 0x1E3=3 */
-	ad9361_spi_write(phy->spi, REG_RX1_TUNE_CTRL,
-			 RX1_TUNE_RESAMPLE | RX1_PD_TUNE);
-	ad9361_spi_write(phy->spi, REG_RX2_TUNE_CTRL,
-			 RX2_TUNE_RESAMPLE | RX2_PD_TUNE);
+	disable_tune:
+	disable_ret = ad9361_spi_write(phy->spi, REG_RX1_TUNE_CTRL,
+				       RX1_TUNE_RESAMPLE | RX1_PD_TUNE);
+	if (ret >= 0 && disable_ret < 0)
+		ret = disable_ret;
+	disable_ret = ad9361_spi_write(phy->spi, REG_RX2_TUNE_CTRL,
+				       RX2_TUNE_RESAMPLE | RX2_PD_TUNE);
+	if (ret >= 0 && disable_ret < 0)
+		ret = disable_ret;
 
 	return ret;
 }
@@ -2938,7 +2977,7 @@ static int32_t ad9361_tx_bb_analog_filter_calib(struct ad9361_rf_phy *phy,
 		uint32_t bbpll_freq)
 {
 	uint32_t target, txbbf_div;
-	int32_t ret;
+	int32_t ret, disable_ret;
 
 	dev_dbg(&phy->spi->dev, "%s : tx_bb_bw %"PRIu32" bbpll_freq %"PRIu32,
 		__func__, tx_bb_bw, bbpll_freq);
@@ -2951,20 +2990,29 @@ static int32_t ad9361_tx_bb_analog_filter_calib(struct ad9361_rf_phy *phy,
 				target));
 
 	/* Set TX baseband filter divide value */
-	ad9361_spi_write(phy->spi, REG_TX_BBF_TUNE_DIVIDER, txbbf_div);
-	ad9361_spi_writef(phy->spi, REG_TX_BBF_TUNE_MODE,
-			  TX_BBF_TUNE_DIVIDER, txbbf_div >> 8);
+	ret = ad9361_spi_write(phy->spi, REG_TX_BBF_TUNE_DIVIDER, txbbf_div);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_writef(phy->spi, REG_TX_BBF_TUNE_MODE,
+				TX_BBF_TUNE_DIVIDER, txbbf_div >> 8);
+	if (ret < 0)
+		return ret;
 
 	/* Enable the TX baseband filter tune circuit by setting 0x0CA=0x22. */
-	ad9361_spi_write(phy->spi, REG_TX_TUNE_CTRL, TUNER_RESAMPLE | TUNE_CTRL(1));
+	ret = ad9361_spi_write(phy->spi, REG_TX_TUNE_CTRL,
+				TUNER_RESAMPLE | TUNE_CTRL(1));
+	if (ret < 0)
+		return ret;
 
 	/* Start the TX Baseband Filter calibration in register 0x016[6] */
 	/* Calibration is complete when register 0x016[] self clears */
 	ret = ad9361_run_calibration(phy, TX_BB_TUNE_CAL);
 
 	/* Disable the TX baseband filter tune circuit by writing 0x0CA=0x26. */
-	ad9361_spi_write(phy->spi, REG_TX_TUNE_CTRL,
-			 TUNER_RESAMPLE | TUNE_CTRL(1) | PD_TUNE);
+	disable_ret = ad9361_spi_write(phy->spi, REG_TX_TUNE_CTRL,
+				       TUNER_RESAMPLE | TUNE_CTRL(1) | PD_TUNE);
+	if (ret >= 0 && disable_ret < 0)
+		ret = disable_ret;
 
 	return ret;
 }
@@ -3048,19 +3096,34 @@ static int32_t ad9361_txrx_synth_cp_calib(struct ad9361_rf_phy *phy,
 {
 	uint32_t offs = tx ? 0x40 : 0;
 	uint32_t vco_cal_cnt;
+	int32_t ret;
 	dev_dbg(&phy->spi->dev, "%s : ref_clk_hz %"PRIu32" : is_tx %d",
 		__func__, ref_clk_hz, tx);
 
 	/* REVIST: */
-	ad9361_spi_write(phy->spi, REG_RX_CP_LEVEL_DETECT + offs, 0x17);
+	ret = ad9361_spi_write(phy->spi, REG_RX_CP_LEVEL_DETECT + offs, 0x17);
+	if (ret < 0)
+		return ret;
 
-	ad9361_spi_write(phy->spi, REG_RX_DSM_SETUP_1 + offs, 0x0);
+	ret = ad9361_spi_write(phy->spi, REG_RX_DSM_SETUP_1 + offs, 0x0);
+	if (ret < 0)
+		return ret;
 
-	ad9361_spi_write(phy->spi, REG_RX_LO_GEN_POWER_MODE + offs, 0x00);
-	ad9361_spi_write(phy->spi, REG_RX_VCO_LDO + offs, 0x0B);
-	ad9361_spi_write(phy->spi, REG_RX_VCO_PD_OVERRIDES + offs, 0x02);
-	ad9361_spi_write(phy->spi, REG_RX_CP_CURRENT + offs, 0x80);
-	ad9361_spi_write(phy->spi, REG_RX_CP_CONFIG + offs, CP_OFFSET_OFF);
+	ret = ad9361_spi_write(phy->spi, REG_RX_LO_GEN_POWER_MODE + offs, 0x00);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_RX_VCO_LDO + offs, 0x0B);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_RX_VCO_PD_OVERRIDES + offs, 0x02);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_RX_CP_CURRENT + offs, 0x80);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_RX_CP_CONFIG + offs, CP_OFFSET_OFF);
+	if (ret < 0)
+		return ret;
 
 	/* see Table 70 Example Calibration Times for RF VCO Cal */
 	if (phy->pdata->fdd) {
@@ -3074,23 +3137,34 @@ static int32_t ad9361_txrx_synth_cp_calib(struct ad9361_rf_phy *phy,
 				      FB_CLOCK_ADV(2);
 	}
 
-	ad9361_spi_write(phy->spi, REG_RX_VCO_CAL + offs, vco_cal_cnt);
+	ret = ad9361_spi_write(phy->spi, REG_RX_VCO_CAL + offs, vco_cal_cnt);
+	if (ret < 0)
+		return ret;
 
 	/* Enable FDD mode during calibrations */
 
 	if (!phy->pdata->fdd) {
-		ad9361_spi_writef(phy->spi, REG_PARALLEL_PORT_CONF_3,
-				  HALF_DUPLEX_MODE, 0);
+		ret = ad9361_spi_writef(phy->spi, REG_PARALLEL_PORT_CONF_3,
+					HALF_DUPLEX_MODE, 0);
+		if (ret < 0)
+			return ret;
 	}
 
-	ad9361_spi_write(phy->spi, REG_ENSM_CONFIG_2, DUAL_SYNTH_MODE);
-	ad9361_spi_write(phy->spi, REG_ENSM_CONFIG_1,
-			 FORCE_ALERT_STATE |
-			 TO_ALERT);
-	ad9361_spi_write(phy->spi, REG_ENSM_MODE, FDD_MODE);
+	ret = ad9361_spi_write(phy->spi, REG_ENSM_CONFIG_2, DUAL_SYNTH_MODE);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_ENSM_CONFIG_1,
+			       FORCE_ALERT_STATE | TO_ALERT);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_ENSM_MODE, FDD_MODE);
+	if (ret < 0)
+		return ret;
 
-	ad9361_spi_write(phy->spi, REG_RX_CP_CONFIG + offs,
-			 CP_OFFSET_OFF | CP_CAL_ENABLE);
+	ret = ad9361_spi_write(phy->spi, REG_RX_CP_CONFIG + offs,
+			       CP_OFFSET_OFF | CP_CAL_ENABLE);
+	if (ret < 0)
+		return ret;
 
 	return ad9361_check_cal_done(phy, REG_RX_CAL_STATUS + offs,
 				     CP_CAL_VALID, 1);
@@ -3103,11 +3177,21 @@ static int32_t ad9361_txrx_synth_cp_calib(struct ad9361_rf_phy *phy,
  */
 static int32_t ad9361_bb_dc_offset_calib(struct ad9361_rf_phy *phy)
 {
+	int32_t ret;
+
 	dev_dbg(&phy->spi->dev, "%s", __func__);
 
-	ad9361_spi_write(phy->spi, REG_BB_DC_OFFSET_COUNT, 0x3F);
-	ad9361_spi_write(phy->spi, REG_BB_DC_OFFSET_SHIFT, BB_DC_M_SHIFT(0xF));
-	ad9361_spi_write(phy->spi, REG_BB_DC_OFFSET_ATTEN, BB_DC_OFFSET_ATTEN(1));
+	ret = ad9361_spi_write(phy->spi, REG_BB_DC_OFFSET_COUNT, 0x3F);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_BB_DC_OFFSET_SHIFT,
+			       BB_DC_M_SHIFT(0xF));
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_BB_DC_OFFSET_ATTEN,
+			       BB_DC_OFFSET_ATTEN(1));
+	if (ret < 0)
+		return ret;
 
 	return ad9361_run_calibration(phy, BBDC_CAL);
 }
@@ -3153,43 +3237,60 @@ static int32_t ad9361_rf_dc_offset_calib_with_timeout(
 		struct ad9361_rf_phy *phy, uint64_t rx_freq, uint32_t timeout_us)
 {
 	struct no_os_spi_desc *spi = phy->spi;
+	int32_t ret;
 
 	dev_dbg(&phy->spi->dev, "%s : rx_freq %"PRIu64,
 		__func__, rx_freq);
 
-	ad9361_spi_write(spi, REG_WAIT_COUNT, 0x20);
+	ret = ad9361_spi_write(spi, REG_WAIT_COUNT, 0x20);
+	if (ret < 0)
+		return ret;
 
 	if (rx_freq <= 4000000000ULL) {
-		ad9361_spi_write(spi, REG_RF_DC_OFFSET_COUNT,
-				 phy->pdata->rf_dc_offset_count_low);
-		ad9361_spi_write(spi, REG_RF_DC_OFFSET_CONFIG_1,
-				 RF_DC_CALIBRATION_COUNT(4) | DAC_FS(2));
-		ad9361_spi_write(spi, REG_RF_DC_OFFSET_ATTEN,
-				 RF_DC_OFFSET_ATTEN(
-					 phy->pdata->dc_offset_attenuation_low));
+		ret = ad9361_spi_write(spi, REG_RF_DC_OFFSET_COUNT,
+				       phy->pdata->rf_dc_offset_count_low);
+		if (ret < 0)
+			return ret;
+		ret = ad9361_spi_write(spi, REG_RF_DC_OFFSET_CONFIG_1,
+				       RF_DC_CALIBRATION_COUNT(4) | DAC_FS(2));
+		if (ret < 0)
+			return ret;
+		ret = ad9361_spi_write(spi, REG_RF_DC_OFFSET_ATTEN,
+				       RF_DC_OFFSET_ATTEN(
+					       phy->pdata->dc_offset_attenuation_low));
 	} else {
-		ad9361_spi_write(spi, REG_RF_DC_OFFSET_COUNT,
-				 phy->pdata->rf_dc_offset_count_high);
-		ad9361_spi_write(spi, REG_RF_DC_OFFSET_CONFIG_1,
-				 RF_DC_CALIBRATION_COUNT(4) | DAC_FS(3));
-		ad9361_spi_write(spi, REG_RF_DC_OFFSET_ATTEN,
-				 RF_DC_OFFSET_ATTEN(
-					 phy->pdata->dc_offset_attenuation_high));
+		ret = ad9361_spi_write(spi, REG_RF_DC_OFFSET_COUNT,
+				       phy->pdata->rf_dc_offset_count_high);
+		if (ret < 0)
+			return ret;
+		ret = ad9361_spi_write(spi, REG_RF_DC_OFFSET_CONFIG_1,
+				       RF_DC_CALIBRATION_COUNT(4) | DAC_FS(3));
+		if (ret < 0)
+			return ret;
+		ret = ad9361_spi_write(spi, REG_RF_DC_OFFSET_ATTEN,
+				       RF_DC_OFFSET_ATTEN(
+					       phy->pdata->dc_offset_attenuation_high));
 	}
+	if (ret < 0)
+		return ret;
 
-	ad9361_spi_write(spi, REG_DC_OFFSET_CONFIG2,
-			 USE_WAIT_COUNTER_FOR_RF_DC_INIT_CAL |
-			 DC_OFFSET_UPDATE(3));
+	ret = ad9361_spi_write(spi, REG_DC_OFFSET_CONFIG2,
+			       USE_WAIT_COUNTER_FOR_RF_DC_INIT_CAL |
+			       DC_OFFSET_UPDATE(3));
+	if (ret < 0)
+		return ret;
 
 	if (phy->pdata->rx1rx2_phase_inversion_en ||
 	    (phy->pdata->port_ctrl.pp_conf[1] & INVERT_RX2)) {
-		ad9361_spi_write(spi, REG_INVERT_BITS,
-				 INVERT_RX1_RF_DC_CGOUT_WORD);
+		ret = ad9361_spi_write(spi, REG_INVERT_BITS,
+				       INVERT_RX1_RF_DC_CGOUT_WORD);
 	} else {
-		ad9361_spi_write(spi, REG_INVERT_BITS,
-				 INVERT_RX1_RF_DC_CGOUT_WORD |
-				 INVERT_RX2_RF_DC_CGOUT_WORD);
+		ret = ad9361_spi_write(spi, REG_INVERT_BITS,
+				       INVERT_RX1_RF_DC_CGOUT_WORD |
+				       INVERT_RX2_RF_DC_CGOUT_WORD);
 	}
+	if (ret < 0)
+		return ret;
 
 	return timeout_us == 0
 		? ad9361_run_calibration(phy, RFDC_CAL)
