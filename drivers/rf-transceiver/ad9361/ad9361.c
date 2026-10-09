@@ -3123,7 +3123,7 @@ static int32_t ad9361_run_calibration_timeout(struct ad9361_rf_phy *phy,
 {
 	uint32_t elapsed_us = 0;
 	const uint32_t poll_delay_us = 1200;
-	uint32_t state;
+	int32_t state;
 	int32_t ret;
 
 	ret = ad9361_spi_write(phy->spi, REG_CALIBRATION_CTRL, mask);
@@ -3132,6 +3132,8 @@ static int32_t ad9361_run_calibration_timeout(struct ad9361_rf_phy *phy,
 
 	while (elapsed_us < timeout_us) {
 		state = ad9361_spi_readf(phy->spi, REG_CALIBRATION_CTRL, mask);
+		if (state < 0)
+			return state;
 		if (state == 0)
 			return 0;
 
