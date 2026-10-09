@@ -72,19 +72,27 @@ static int32_t ad9361_check_pn(struct ad9361_rf_phy *phy, bool tx,
 	uint32_t adi_reg_chan_status;
 	uint32_t adi_reg_status;
 	uint32_t chan;
+	int32_t ret;
 
-	for (chan = 0; chan < num_chan; chan++)
-		axi_adc_write(axi_adc, AXI_ADC_REG_CHAN_STATUS(chan),
-			      AXI_ADC_PN_ERR | AXI_ADC_PN_OOS);
+	for (chan = 0; chan < num_chan; chan++) {
+		ret = axi_adc_write(axi_adc, AXI_ADC_REG_CHAN_STATUS(chan),
+				    AXI_ADC_PN_ERR | AXI_ADC_PN_OOS);
+		if (ret < 0)
+			return ret;
+	}
 	no_os_mdelay(delay);
 
-	axi_adc_read(axi_adc, AXI_ADC_REG_STATUS, &adi_reg_status);
+	ret = axi_adc_read(axi_adc, AXI_ADC_REG_STATUS, &adi_reg_status);
+	if (ret < 0)
+		return ret;
 	if (!tx && !(adi_reg_status & AXI_ADC_STATUS))
 		return 1;
 
 	for (chan = 0; chan < num_chan; chan++) {
-		axi_adc_read(axi_adc, AXI_ADC_REG_CHAN_STATUS(chan),
-			     &adi_reg_chan_status);
+		ret = axi_adc_read(axi_adc, AXI_ADC_REG_CHAN_STATUS(chan),
+				    &adi_reg_chan_status);
+		if (ret < 0)
+			return ret;
 		if (adi_reg_chan_status)
 			return 1;
 	}
@@ -105,8 +113,11 @@ int32_t ad9361_hdl_loopback(struct ad9361_rf_phy *phy, bool enable)
 	uint32_t reg, addr;
 	uint32_t version;
 	int32_t chan;
+	int32_t ret;
 
-	axi_adc_read(rx_adc, 0x4000, &version);
+	ret = axi_adc_read(rx_adc, 0x4000, &version);
+	if (ret < 0)
+		return ret;
 
 	/* Still there but implemented a bit different */
 	if (PCORE_VERSION_MAJOR(version) > 7)
@@ -115,7 +126,9 @@ int32_t ad9361_hdl_loopback(struct ad9361_rf_phy *phy, bool enable)
 		addr = 0x4414;
 
 	for (chan = 0; chan < conv->chip_info->num_channels; chan++) {
-		axi_adc_read(rx_adc, addr + (chan) * 0x40, &reg);
+		ret = axi_adc_read(rx_adc, addr + (chan) * 0x40, &reg);
+		if (ret < 0)
+			return ret;
 
 		if (PCORE_VERSION_MAJOR(version) > 7) {
 			if (enable && reg != 0x8) {
@@ -131,7 +144,9 @@ int32_t ad9361_hdl_loopback(struct ad9361_rf_phy *phy, bool enable)
 			else
 				reg &= ~NO_OS_BIT(1);
 		}
-		axi_adc_write(rx_adc, addr + (chan) * 0x40, reg);
+		ret = axi_adc_write(rx_adc, addr + (chan) * 0x40, reg);
+		if (ret < 0)
+			return ret;
 	}
 
 	return 0;
@@ -151,12 +166,14 @@ static int32_t ad9361_iodelay_set(struct axiadc_state *st, unsigned lane,
 	struct axi_adc *rx_adc = st->phy->rx_adc;
 
 	if (tx) {
-		if (PCORE_VERSION_MAJOR(st->pcore_version) > 8)
-			axi_adc_write(rx_adc, 0x4000 + AXI_ADC_REG_DELAY(lane), val);
-		else
+		if (PCORE_VERSION_MAJOR(st->pcore_version) > 8) {
+			return axi_adc_write(rx_adc,
+					     0x4000 + AXI_ADC_REG_DELAY(lane), val);
+		} else {
 			return -ENODEV;
+		}
 	} else {
-		axi_adc_idelay_set(rx_adc, lane, val);
+		return axi_adc_idelay_set(rx_adc, lane, val);
 	}
 
 	return 0;
@@ -173,8 +190,11 @@ static int32_t ad9361_midscale_iodelay(struct ad9361_rf_phy *phy, bool tx)
 	struct axiadc_state *st = phy->adc_state;
 	int32_t ret = 0, i;
 
-	for (i = 0; i < 7; i++)
-		ret |= ad9361_iodelay_set(st, i, 15, tx);
+	for (i = 0; i < 7; i++) {
+		ret = ad9361_iodelay_set(st, i, 15, tx);
+		if (ret < 0)
+			return ret;
+	}
 
 	return 0;
 }
@@ -194,13 +214,22 @@ static int32_t ad9361_dig_tune_iodelay(struct ad9361_rf_phy *phy, bool tx)
 
 	for (i = 0; i < 7; i++) {
 		for (j = 0; j < 32; j++) {
-			ad9361_iodelay_set(st, i, j, tx);
+			int32_t ret = ad9361_iodelay_set(st, i, j, tx);
+			if (ret < 0)
+				return ret;
 			no_os_mdelay(1);
-			field[j] = ad9361_check_pn(phy, tx, 10);
+			ret = ad9361_check_pn(phy, tx, 10);
+			if (ret < 0)
+				return ret;
+			field[j] = ret;
 		}
 
 		c0 = ad9361_find_opt(&field[0], 32, &s0);
-		ad9361_iodelay_set(st, i, s0 + c0 / 2, tx);
+		{
+			int32_t ret = ad9361_iodelay_set(st, i, s0 + c0 / 2, tx);
+			if (ret < 0)
+				return ret;
+		}
 
 		dev_dbg(&phy->spi->dev,
 			"%s Lane %"PRId32", window cnt %"PRIu32" , start %"PRIu32", IODELAY set to %"PRIu32"\n",
@@ -251,18 +280,31 @@ static void ad9361_dig_tune_verbose_print(struct ad9361_rf_phy *phy,
  * Set intf delay.
  * @param phy The AD9361 state structure.
  */
-static void ad9361_set_intf_delay(struct ad9361_rf_phy *phy, bool tx,
-				  unsigned int clock_delay,
-				  unsigned int data_delay, bool clock_changed)
+static int32_t ad9361_set_intf_delay(struct ad9361_rf_phy *phy, bool tx,
+				     unsigned int clock_delay,
+				     unsigned int data_delay, bool clock_changed)
 {
-	if (clock_changed)
-		ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
-	ad9361_spi_write(phy->spi,
-			 REG_RX_CLOCK_DATA_DELAY + (tx ? 1 : 0),
-			 RX_DATA_DELAY(data_delay) |
-			 DATA_CLK_DELAY(clock_delay));
-	if (clock_changed)
-		ad9361_ensm_force_state(phy, ENSM_STATE_FDD);
+	uint8_t old_state;
+	int32_t ret, restore_ret;
+
+	if (clock_changed) {
+		ret = ad9361_ensm_read_state_checked(phy, &old_state);
+		if (ret < 0)
+			return ret;
+		ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
+		if (ret < 0)
+			return ret;
+	}
+	ret = ad9361_spi_write(phy->spi,
+			       REG_RX_CLOCK_DATA_DELAY + (tx ? 1 : 0),
+			       RX_DATA_DELAY(data_delay) |
+			       DATA_CLK_DELAY(clock_delay));
+	if (clock_changed) {
+		restore_ret = ad9361_ensm_restore_state_checked(phy, old_state);
+		if (ret >= 0 && restore_ret < 0)
+			ret = restore_ret;
+	}
+	return ret;
 }
 
 /**
@@ -275,44 +317,89 @@ static void ad9361_set_intf_delay(struct ad9361_rf_phy *phy, bool tx,
 int32_t ad9361_dig_interface_timing_analysis(struct ad9361_rf_phy *phy,
 		char *buf, int32_t buflen)
 {
-	uint32_t loopback, bist, ensm_state;
+	uint32_t loopback, bist;
+	uint8_t ensm_state;
 	int32_t i, j, len = 0;
 	uint8_t field[16][16];
 	uint8_t rx;
+	int32_t ret, cleanup_ret;
+	enum ad9361_bist_mode old_prbs_mode;
 
 	dev_dbg(&phy->spi->dev, "%s:\n", __func__);
 
 	loopback = phy->bist_loopback_mode;
 	bist = phy->bist_config;
-	ensm_state = ad9361_ensm_get_state(phy);
-	rx = ad9361_spi_read(phy->spi, REG_RX_CLOCK_DATA_DELAY);
+	old_prbs_mode = phy->bist_prbs_mode;
+	ret = ad9361_ensm_read_state_checked(phy, &ensm_state);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_read(phy->spi, REG_RX_CLOCK_DATA_DELAY);
+	if (ret < 0)
+		return ret;
+	rx = (uint8_t)ret;
 
 	/* Mute TX, we don't want to transmit the PRBS */
-	ad9361_tx_mute(phy, 1);
+	ret = ad9361_tx_mute(phy, 1);
+	if (ret < 0)
+		goto cleanup;
 
-	if (!phy->pdata->fdd)
-		ad9361_set_ensm_mode(phy, true, false);
+	if (!phy->pdata->fdd) {
+		ret = ad9361_set_ensm_mode(phy, true, false);
+		if (ret < 0)
+			goto cleanup;
+	}
 
-	ad9361_bist_loopback(phy, 0);
-	ad9361_bist_prbs(phy, BIST_INJ_RX);
+	ret = ad9361_bist_loopback(phy, 0);
+	if (ret < 0)
+		goto cleanup;
+	ret = ad9361_bist_prbs(phy, BIST_INJ_RX);
+	if (ret < 0)
+		goto cleanup;
 
 	for (i = 0; i < 16; i++) {
 		for (j = 0; j < 16; j++) {
-			ad9361_set_intf_delay(phy, false, i, j, j == 0);
-			field[j][i] = ad9361_check_pn(phy, false, 1);
+			ret = ad9361_set_intf_delay(phy, false, i, j, j == 0);
+			if (ret < 0)
+				goto cleanup;
+			ret = ad9361_check_pn(phy, false, 1);
+			if (ret < 0)
+				goto cleanup;
+			field[j][i] = ret;
 		}
 	}
 
-	ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
-	ad9361_spi_write(phy->spi, REG_RX_CLOCK_DATA_DELAY, rx);
-	ad9361_bist_loopback(phy, loopback);
-	ad9361_spi_write(phy->spi, REG_BIST_CONFIG, bist);
-
-	if (!phy->pdata->fdd)
-		ad9361_set_ensm_mode(phy, phy->pdata->fdd, phy->pdata->ensm_pin_ctrl);
-	ad9361_ensm_restore_state(phy, ensm_state);
-
-	ad9361_tx_mute(phy, 0);
+	ret = 0;
+cleanup:
+	cleanup_ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
+	if (ret >= 0 && cleanup_ret < 0)
+		ret = cleanup_ret;
+	cleanup_ret = ad9361_spi_write(phy->spi, REG_RX_CLOCK_DATA_DELAY, rx);
+	if (ret >= 0 && cleanup_ret < 0)
+		ret = cleanup_ret;
+	cleanup_ret = ad9361_bist_loopback(phy, loopback);
+	if (ret >= 0 && cleanup_ret < 0)
+		ret = cleanup_ret;
+	cleanup_ret = ad9361_bist_prbs(phy, old_prbs_mode);
+	if (ret >= 0 && cleanup_ret < 0)
+		ret = cleanup_ret;
+	cleanup_ret = ad9361_spi_write(phy->spi, REG_BIST_CONFIG, bist);
+	if (ret >= 0 && cleanup_ret < 0)
+		ret = cleanup_ret;
+	phy->bist_config = bist;
+	if (!phy->pdata->fdd) {
+		cleanup_ret = ad9361_set_ensm_mode(phy, phy->pdata->fdd,
+						   phy->pdata->ensm_pin_ctrl);
+		if (ret >= 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
+	}
+	cleanup_ret = ad9361_ensm_restore_state_checked(phy, ensm_state);
+	if (ret >= 0 && cleanup_ret < 0)
+		ret = cleanup_ret;
+	cleanup_ret = ad9361_tx_mute(phy, 0);
+	if (ret >= 0 && cleanup_ret < 0)
+		ret = cleanup_ret;
+	if (ret < 0)
+		return ret;
 
 	len += snprintf(buf + len, buflen, "CLK: %"PRIu32" Hz 'o' = PASS\n",
 			clk_get_rate(phy, phy->ref_clk_scale[RX_SAMPL_CLK]));
@@ -350,6 +437,7 @@ static int32_t ad9361_dig_tune_delay(struct ad9361_rf_phy *phy,
 	uint32_t i, j, r;
 	bool half_data_rate;
 	uint8_t field[2][16];
+	int32_t ret;
 
 	if (((phy->pdata->port_ctrl.pp_conf[2] & LVDS_MODE) ||
 	     !phy->pdata->rx2tx2))
@@ -359,9 +447,12 @@ static int32_t ad9361_dig_tune_delay(struct ad9361_rf_phy *phy,
 
 	memset(field, 0, 32);
 	for (r = 0; r < (max_freq ? NO_OS_ARRAY_SIZE(rates) : 1); r++) {
-		if (max_freq)
-			ad9361_set_trx_clock_chain_freq(phy,
-							half_data_rate ? rates[r] / 2 : rates[r]);
+		if (max_freq) {
+			ret = ad9361_set_trx_clock_chain_freq(phy,
+						      half_data_rate ? rates[r] / 2 : rates[r]);
+			if (ret < 0)
+				return ret;
+		}
 
 		for (i = 0; i < 2; i++) {
 			for (j = 0; j < 16; j++) {
@@ -369,9 +460,14 @@ static int32_t ad9361_dig_tune_delay(struct ad9361_rf_phy *phy,
 				 * i == 0: clock delay = 0, data delay from 0 to 15
 				 * i == 1: clock delay = 15, data delay from 15 to 0
 				 */
-				ad9361_set_intf_delay(phy, tx, i ? 15 : 0,
-						      i ? 15 - j : j, j == 0);
-				field[i][j] |= ad9361_check_pn(phy, tx, 4);
+				ret = ad9361_set_intf_delay(phy, tx, i ? 15 : 0,
+						     i ? 15 - j : j, j == 0);
+				if (ret < 0)
+					return ret;
+				ret = ad9361_check_pn(phy, tx, 4);
+				if (ret < 0)
+					return ret;
+				field[i][j] |= ret;
 			}
 		}
 
@@ -396,11 +492,11 @@ static int32_t ad9361_dig_tune_delay(struct ad9361_rf_phy *phy,
 	}
 
 	if (c1 > c0)
-		ad9361_set_intf_delay(phy, tx, s1 + c1 / 2, 0, true);
+		ret = ad9361_set_intf_delay(phy, tx, s1 + c1 / 2, 0, true);
 	else
-		ad9361_set_intf_delay(phy, tx, 0, s0 + c0 / 2, true);
+		ret = ad9361_set_intf_delay(phy, tx, 0, s0 + c0 / 2, true);
 
-	return 0;
+	return ret;
 }
 
 /**
@@ -414,17 +510,27 @@ static int32_t ad9361_dig_tune_rx(struct ad9361_rf_phy *phy, uint32_t max_freq,
 				  enum dig_tune_flags flags)
 {
 	struct axi_adc *rx_adc = phy->rx_adc;
-	int32_t ret;
+	int32_t ret, cleanup_ret;
 
-	ad9361_bist_loopback(phy, 0);
-	ad9361_bist_prbs(phy, BIST_INJ_RX);
+	ret = ad9361_bist_loopback(phy, 0);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_bist_prbs(phy, BIST_INJ_RX);
+	if (ret < 0)
+		return ret;
 
 	ret = ad9361_dig_tune_delay(phy, max_freq, flags, false);
-	if (flags & DO_IDELAY)
-		ad9361_dig_tune_iodelay(phy, false);
+	if (ret >= 0 && (flags & DO_IDELAY))
+		ret = ad9361_dig_tune_iodelay(phy, false);
 
-	axi_adc_write(rx_adc, AXI_ADC_REG_RSTN, AXI_ADC_MMCM_RSTN);
-	axi_adc_write(rx_adc, AXI_ADC_REG_RSTN, AXI_ADC_RSTN | AXI_ADC_MMCM_RSTN);
+	cleanup_ret = axi_adc_write(rx_adc, AXI_ADC_REG_RSTN,
+				    AXI_ADC_MMCM_RSTN);
+	if (ret >= 0 && cleanup_ret < 0)
+		ret = cleanup_ret;
+	cleanup_ret = axi_adc_write(rx_adc, AXI_ADC_REG_RSTN,
+				    AXI_ADC_RSTN | AXI_ADC_MMCM_RSTN);
+	if (ret >= 0 && cleanup_ret < 0)
+		ret = cleanup_ret;
 
 	return ret;
 }
@@ -445,58 +551,112 @@ static int32_t ad9361_dig_tune_tx(struct ad9361_rf_phy *phy, uint32_t max_freq,
 	uint32_t chan, num_chan;
 	uint32_t hdl_dac_version;
 	uint32_t tmp, saved = 0;
-	int32_t ret;
+	uint32_t saved_channels = 0;
+	bool saved_core = false;
+	int32_t ret, cleanup_ret;
 
 	num_chan = ad9361_num_phy_chan(conv);
-	axi_adc_read(rx_adc, 0x4000, &hdl_dac_version);
+	ret = axi_adc_read(rx_adc, 0x4000, &hdl_dac_version);
+	if (ret < 0)
+		return ret;
 
-	ad9361_bist_prbs(phy, BIST_DISABLE);
-	ad9361_bist_loopback(phy, 1);
-	axi_adc_write(rx_adc, 0x4000 + AXI_ADC_REG_RSTN,
-		      AXI_ADC_RSTN | AXI_ADC_MMCM_RSTN);
+	ret = ad9361_bist_prbs(phy, BIST_DISABLE);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_bist_loopback(phy, 1);
+	if (ret < 0)
+		return ret;
+	ret = axi_adc_write(rx_adc, 0x4000 + AXI_ADC_REG_RSTN,
+			    AXI_ADC_RSTN | AXI_ADC_MMCM_RSTN);
+	if (ret < 0)
+		return ret;
 
 	for (chan = 0; chan < num_chan; chan++) {
-		axi_adc_read(rx_adc, AXI_ADC_REG_CHAN_CNTRL(chan), &saved_chan_ctrl0[chan]);
-		axi_adc_write(rx_adc, AXI_ADC_REG_CHAN_CNTRL(chan),
-			      AXI_ADC_FORMAT_SIGNEXT | AXI_ADC_FORMAT_ENABLE |
-			      AXI_ADC_ENABLE | AXI_ADC_IQCOR_ENB);
-		axi_adc_set_pnsel(phy->rx_adc, chan, AXI_ADC_PN_CUSTOM);
-		axi_adc_read(rx_adc, 0x4414 + (chan) * 0x40, &saved_chan_ctrl6[chan]);
+		ret = axi_adc_read(rx_adc, AXI_ADC_REG_CHAN_CNTRL(chan),
+				   &saved_chan_ctrl0[chan]);
+		if (ret < 0)
+			goto tx_cleanup;
+		ret = axi_adc_read(rx_adc, 0x4414 + chan * 0x40,
+				   &saved_chan_ctrl6[chan]);
+		if (ret < 0)
+			goto tx_cleanup;
 		if (PCORE_VERSION_MAJOR(hdl_dac_version) > 7) {
-			axi_adc_read(rx_adc, 0x4418 + (chan) * 0x40, &saved_dsel[chan]);
-			axi_adc_write(rx_adc, 0x4418 + (chan) * 0x40, 9);
-			axi_adc_write(rx_adc, 0x4414 + (chan) * 0x40, 0); /* !IQCOR_ENB */
-			axi_adc_write(rx_adc, 0x4044, 1);
+			ret = axi_adc_read(rx_adc, 0x4418 + chan * 0x40,
+					   &saved_dsel[chan]);
+			if (ret < 0)
+				goto tx_cleanup;
 		} else {
-			axi_adc_write(rx_adc, 0x4414 + (chan) * 0x40, 1); /* DAC_PN_ENB */
+			saved_dsel[chan] = 0;
+		}
+		saved_channels = chan + 1;
+		ret = axi_adc_write(rx_adc, AXI_ADC_REG_CHAN_CNTRL(chan),
+				    AXI_ADC_FORMAT_SIGNEXT | AXI_ADC_FORMAT_ENABLE |
+				    AXI_ADC_ENABLE | AXI_ADC_IQCOR_ENB);
+		if (ret < 0)
+			goto tx_cleanup;
+		ret = axi_adc_set_pnsel(phy->rx_adc, chan, AXI_ADC_PN_CUSTOM);
+		if (ret < 0)
+			goto tx_cleanup;
+		if (PCORE_VERSION_MAJOR(hdl_dac_version) > 7) {
+			ret = axi_adc_write(rx_adc, 0x4418 + chan * 0x40, 9);
+			if (ret < 0)
+				goto tx_cleanup;
+			ret = axi_adc_write(rx_adc, 0x4414 + chan * 0x40, 0);
+			if (ret < 0)
+				goto tx_cleanup;
+			ret = axi_adc_write(rx_adc, 0x4044, 1);
+			if (ret < 0)
+				goto tx_cleanup;
+		} else {
+			ret = axi_adc_write(rx_adc, 0x4414 + chan * 0x40, 1);
+			if (ret < 0)
+				goto tx_cleanup;
 		}
 	}
 	if (PCORE_VERSION_MAJOR(hdl_dac_version) < 8) {
-		axi_adc_read(rx_adc, 0x4048, &tmp);
+		ret = axi_adc_read(rx_adc, 0x4048, &tmp);
+		if (ret < 0)
+			goto tx_cleanup;
 		saved = tmp;
+		saved_core = true;
 		tmp &= ~0xF;
 		tmp |= 1;
-		axi_adc_write(rx_adc, 0x4048, tmp);
+		ret = axi_adc_write(rx_adc, 0x4048, tmp);
+		if (ret < 0)
+			goto tx_cleanup;
 	}
 
 	ret = ad9361_dig_tune_delay(phy, max_freq, flags, true);
-	if (flags & DO_ODELAY)
-		ad9361_dig_tune_iodelay(phy, true);
+	if (ret >= 0 && (flags & DO_ODELAY))
+		ret = ad9361_dig_tune_iodelay(phy, true);
 
-	if (PCORE_VERSION_MAJOR(hdl_dac_version) < 8)
-		axi_adc_write(rx_adc, 0x4048, saved);
-
-	for (chan = 0; chan < num_chan; chan++) {
-		axi_adc_write(rx_adc, AXI_ADC_REG_CHAN_CNTRL(chan),
-			      saved_chan_ctrl0[chan]);
-		axi_adc_set_pnsel(phy->rx_adc, chan, AXI_ADC_PN9);
+tx_cleanup:
+	if (saved_core) {
+		cleanup_ret = axi_adc_write(rx_adc, 0x4048, saved);
+		if (ret >= 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
+	}
+	for (chan = 0; chan < saved_channels; chan++) {
+		cleanup_ret = axi_adc_write(rx_adc, AXI_ADC_REG_CHAN_CNTRL(chan),
+					    saved_chan_ctrl0[chan]);
+		if (ret >= 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
+		cleanup_ret = axi_adc_set_pnsel(phy->rx_adc, chan, AXI_ADC_PN9);
+		if (ret >= 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
 		if (PCORE_VERSION_MAJOR(hdl_dac_version) > 7) {
-			axi_adc_write(rx_adc, 0x4418 + chan * 0x40,
-				      saved_dsel[chan]);
-			axi_adc_write(rx_adc, 0x4044, 1);
+			cleanup_ret = axi_adc_write(rx_adc, 0x4418 + chan * 0x40,
+						    saved_dsel[chan]);
+			if (ret >= 0 && cleanup_ret < 0)
+				ret = cleanup_ret;
+			cleanup_ret = axi_adc_write(rx_adc, 0x4044, 1);
+			if (ret >= 0 && cleanup_ret < 0)
+				ret = cleanup_ret;
 		}
-
-		axi_adc_write(rx_adc, 0x4414 + chan * 0x40, saved_chan_ctrl6[chan]);
+		cleanup_ret = axi_adc_write(rx_adc, 0x4414 + chan * 0x40,
+					    saved_chan_ctrl6[chan]);
+		if (ret >= 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
 	}
 
 	return ret;
@@ -514,9 +674,11 @@ int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 {
 	struct axiadc_converter *conv = phy->adc_conv;
 	struct axi_adc *rx_adc = phy->rx_adc;
-	uint32_t loopback, bist, ensm_state;
+	uint32_t loopback, bist;
+	uint8_t ensm_state;
+	enum ad9361_bist_mode old_prbs_mode;
 	bool restore = false;
-	int32_t ret = 0;
+	int32_t ret = 0, cleanup_ret;
 
 	if (!conv)
 		return -ENODEV;
@@ -524,7 +686,9 @@ int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 	dev_dbg(&phy->spi->dev, "%s: freq %"PRIu32" flags 0x%X\n", __func__,
 		max_freq, flags);
 
-	ensm_state = ad9361_ensm_get_state(phy);
+	ret = ad9361_ensm_read_state_checked(phy, &ensm_state);
+	if (ret < 0)
+		return ret;
 
 	if (phy->pdata->dig_interface_tune_skipmode == 2 ||
 	    (flags & RESTORE_DEFAULT)) {
@@ -533,53 +697,101 @@ int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 	} else {
 		loopback = phy->bist_loopback_mode;
 		bist = phy->bist_config;
+		old_prbs_mode = phy->bist_prbs_mode;
 
 		/* Mute TX, we don't want to transmit the PRBS */
-		ad9361_tx_mute(phy, 1);
+		ret = ad9361_tx_mute(phy, 1);
+		if (ret < 0)
+			goto tune_cleanup;
 
-		if (!phy->pdata->fdd)
-			ad9361_set_ensm_mode(phy, true, false);
+		if (!phy->pdata->fdd) {
+			ret = ad9361_set_ensm_mode(phy, true, false);
+			if (ret < 0)
+				goto tune_cleanup;
+		}
 
-		if (flags & DO_IDELAY)
-			ad9361_midscale_iodelay(phy, false);
+		if (flags & DO_IDELAY) {
+			ret = ad9361_midscale_iodelay(phy, false);
+			if (ret < 0)
+				goto tune_cleanup;
+		}
 
-		if (flags & DO_ODELAY)
-			ad9361_midscale_iodelay(phy, true);
+		if (flags & DO_ODELAY) {
+			ret = ad9361_midscale_iodelay(phy, true);
+			if (ret < 0)
+				goto tune_cleanup;
+		}
 
 		ret = ad9361_dig_tune_rx(phy, max_freq, flags);
 		if (ret == 0 && !phy->pdata->dig_interface_tune_skipmode)
 			ret = ad9361_dig_tune_tx(phy, max_freq, flags);
 
-		ad9361_bist_loopback(phy, loopback);
-		ad9361_spi_write(phy->spi, REG_BIST_CONFIG, bist);
+	tune_cleanup:
+		cleanup_ret = ad9361_bist_loopback(phy, loopback);
+		if (ret >= 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
+		cleanup_ret = ad9361_bist_prbs(phy, old_prbs_mode);
+		if (ret >= 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
+		cleanup_ret = ad9361_spi_write(phy->spi, REG_BIST_CONFIG, bist);
+		if (ret >= 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
+		phy->bist_config = bist;
 
 		if (ret == -EIO)
 			restore = true;
-		if (!max_freq)
-			ret = 0;
 	}
 
 	if (restore) {
-		ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
-		ad9361_spi_write(phy->spi, REG_RX_CLOCK_DATA_DELAY,
-				 phy->pdata->port_ctrl.rx_clk_data_delay);
-		ad9361_spi_write(phy->spi, REG_TX_CLOCK_DATA_DELAY,
-				 phy->pdata->port_ctrl.tx_clk_data_delay);
+		cleanup_ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
+		if (ret >= 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
+		cleanup_ret = ad9361_spi_write(phy->spi, REG_RX_CLOCK_DATA_DELAY,
+					       phy->pdata->port_ctrl.rx_clk_data_delay);
+		if (ret >= 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
+		cleanup_ret = ad9361_spi_write(phy->spi, REG_TX_CLOCK_DATA_DELAY,
+					       phy->pdata->port_ctrl.tx_clk_data_delay);
+		if (ret >= 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
 	} else if (!(flags & SKIP_STORE_RESULT)) {
-		phy->pdata->port_ctrl.rx_clk_data_delay =
-			ad9361_spi_read(phy->spi, REG_RX_CLOCK_DATA_DELAY);
-		phy->pdata->port_ctrl.tx_clk_data_delay =
-			ad9361_spi_read(phy->spi, REG_TX_CLOCK_DATA_DELAY);
+		cleanup_ret = ad9361_spi_read(phy->spi, REG_RX_CLOCK_DATA_DELAY);
+		if (cleanup_ret < 0) {
+			if (ret >= 0)
+				ret = cleanup_ret;
+		} else {
+			phy->pdata->port_ctrl.rx_clk_data_delay = cleanup_ret;
+		}
+		cleanup_ret = ad9361_spi_read(phy->spi, REG_TX_CLOCK_DATA_DELAY);
+		if (cleanup_ret < 0) {
+			if (ret >= 0)
+				ret = cleanup_ret;
+		} else {
+			phy->pdata->port_ctrl.tx_clk_data_delay = cleanup_ret;
+		}
 	}
 
-	if (!phy->pdata->fdd)
-		ad9361_set_ensm_mode(phy, phy->pdata->fdd, phy->pdata->ensm_pin_ctrl);
-	ad9361_ensm_restore_state(phy, ensm_state);
+	if (!phy->pdata->fdd) {
+		cleanup_ret = ad9361_set_ensm_mode(phy, phy->pdata->fdd,
+						   phy->pdata->ensm_pin_ctrl);
+		if (ret >= 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
+	}
+	cleanup_ret = ad9361_ensm_restore_state_checked(phy, ensm_state);
+	if (ret >= 0 && cleanup_ret < 0)
+		ret = cleanup_ret;
 
-	axi_adc_write(rx_adc, AXI_ADC_REG_RSTN, AXI_ADC_MMCM_RSTN);
-	axi_adc_write(rx_adc, AXI_ADC_REG_RSTN, AXI_ADC_RSTN | AXI_ADC_MMCM_RSTN);
+	cleanup_ret = axi_adc_write(rx_adc, AXI_ADC_REG_RSTN, AXI_ADC_MMCM_RSTN);
+	if (ret >= 0 && cleanup_ret < 0)
+		ret = cleanup_ret;
+	cleanup_ret = axi_adc_write(rx_adc, AXI_ADC_REG_RSTN,
+				    AXI_ADC_RSTN | AXI_ADC_MMCM_RSTN);
+	if (ret >= 0 && cleanup_ret < 0)
+		ret = cleanup_ret;
 
-	ad9361_tx_mute(phy, 0);
+	cleanup_ret = ad9361_tx_mute(phy, 0);
+	if (ret >= 0 && cleanup_ret < 0)
+		ret = cleanup_ret;
 
 	return ret;
 }
@@ -598,43 +810,54 @@ int32_t ad9361_post_setup(struct ad9361_rf_phy *phy)
 	uint8_t saved_skipmode = phy->pdata->dig_interface_tune_skipmode;
 	int32_t ret;
 
+#define POST_SETUP_TRY(call) do { \
+	ret = (call); \
+	if (ret < 0) \
+		goto out; \
+} while (0)
+
 	num_chan = ad9361_num_phy_chan(conv);
 
-	axi_adc_write(rx_adc, AXI_ADC_REG_CNTRL, rx2tx2 ? 0 : AXI_ADC_R1_MODE);
-	axi_adc_read(rx_adc, 0x4048, &tmp);
+	POST_SETUP_TRY(axi_adc_write(rx_adc, AXI_ADC_REG_CNTRL,
+				     rx2tx2 ? 0 : AXI_ADC_R1_MODE));
+	POST_SETUP_TRY(axi_adc_read(rx_adc, 0x4048, &tmp));
 
 	bool half_rate = phy->pdata->axi_half_dac_rate_en;
 	bool lvds      = !!(phy->pdata->port_ctrl.pp_conf[2] & LVDS_MODE);
 
 	if (!rx2tx2) {
-		axi_adc_write(rx_adc, 0x4048, tmp | NO_OS_BIT(5)); /* R1_MODE */
+		POST_SETUP_TRY(axi_adc_write(rx_adc, 0x4048,
+					     tmp | NO_OS_BIT(5))); /* R1_MODE */
 		if (!half_rate)
-			axi_adc_write(rx_adc, 0x404c, lvds ? 1 : 0); /* RATE */
+			POST_SETUP_TRY(axi_adc_write(rx_adc, 0x404c,
+						     lvds ? 1 : 0)); /* RATE */
 		else
-			axi_adc_write(rx_adc, 0x404c, 0);
+			POST_SETUP_TRY(axi_adc_write(rx_adc, 0x404c, 0));
 	} else {
 		tmp &= ~NO_OS_BIT(5);
-		axi_adc_write(rx_adc, 0x4048, tmp);
+		POST_SETUP_TRY(axi_adc_write(rx_adc, 0x4048, tmp));
 		if (!half_rate)
-			axi_adc_write(rx_adc, 0x404c, lvds ? 3 : 1); /* RATE */
+			POST_SETUP_TRY(axi_adc_write(rx_adc, 0x404c,
+						     lvds ? 3 : 1)); /* RATE */
 		else
-			axi_adc_write(rx_adc, 0x404c, 1);
+			POST_SETUP_TRY(axi_adc_write(rx_adc, 0x404c, 1));
 	}
 
 #ifdef ALTERA_PLATFORM
 	/* Stale old-API call upstream (axiadc_write(st, ...)); same register,
 	 * same value through the current API. */
-	axi_adc_write(rx_adc, 0x404c, 1);
+	POST_SETUP_TRY(axi_adc_write(rx_adc, 0x404c, 1));
 #endif
 
 	for (i = 0; i < num_chan; i++) {
-		axi_adc_write(rx_adc, AXI_ADC_REG_CHAN_CNTRL_1(i),
-			      AXI_ADC_DCFILT_OFFSET(0));
-		axi_adc_write(rx_adc, AXI_ADC_REG_CHAN_CNTRL_2(i),
-			      (i & 1) ? 0x00004000 : 0x40000000);
-		axi_adc_write(rx_adc, AXI_ADC_REG_CHAN_CNTRL(i),
-			      AXI_ADC_FORMAT_SIGNEXT | AXI_ADC_FORMAT_ENABLE |
-			      AXI_ADC_ENABLE | AXI_ADC_IQCOR_ENB);
+		POST_SETUP_TRY(axi_adc_write(rx_adc, AXI_ADC_REG_CHAN_CNTRL_1(i),
+					     AXI_ADC_DCFILT_OFFSET(0)));
+		POST_SETUP_TRY(axi_adc_write(rx_adc, AXI_ADC_REG_CHAN_CNTRL_2(i),
+					     (i & 1) ? 0x00004000 : 0x40000000));
+		POST_SETUP_TRY(axi_adc_write(rx_adc, AXI_ADC_REG_CHAN_CNTRL(i),
+					     AXI_ADC_FORMAT_SIGNEXT |
+					     AXI_ADC_FORMAT_ENABLE |
+					     AXI_ADC_ENABLE | AXI_ADC_IQCOR_ENB));
 	}
 
 	flags = 0x0;
@@ -647,7 +870,7 @@ int32_t ad9361_post_setup(struct ad9361_rf_phy *phy)
 	if (phy->pdata->bb_clk_change_dig_tune_en)
 		phy->pdata->dig_interface_tune_skipmode = 2; /* SKIP_ALL */
 
-	axi_adc_read(rx_adc, ADI_REG_ID, &id);
+	POST_SETUP_TRY(axi_adc_read(rx_adc, ADI_REG_ID, &id));
 	ret = ad9361_dig_tune(phy, 61440000, (id) ? flags | RESTORE_DEFAULT : flags);
 	if (ret < 0)
 		goto out;
@@ -663,14 +886,18 @@ int32_t ad9361_post_setup(struct ad9361_rf_phy *phy)
 	ret = ad9361_set_trx_clock_chain(phy,
 					 phy->pdata->rx_path_clks,
 					 phy->pdata->tx_path_clks);
-
-	ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
-	ad9361_ensm_restore_prev_state(phy);
+	if (ret < 0)
+		goto out;
+	ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
+	if (ret < 0)
+		goto out;
+	ret = ad9361_ensm_restore_prev_state_checked(phy);
 
 out:
 	/* restore skipmode so subsequent BB clock changes tune correctly */
 	if (phy->pdata->bb_clk_change_dig_tune_en)
 		phy->pdata->dig_interface_tune_skipmode = saved_skipmode;
+	#undef POST_SETUP_TRY
 
 	return ret;
 }

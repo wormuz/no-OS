@@ -34,6 +34,9 @@
 
 #include <sys/types.h>
 #include <inttypes.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <math.h>
 #include <string.h>
 #include <errno.h>
 #include "no_os_error.h"
@@ -49,6 +52,7 @@
 #define AXI_ADC_REG_CLOCKS_PER_PPS        0x00C0
 #define AXI_ADC_REG_CLOCKS_PER_PPS_STATUS 0x00C4
 #define AXI_ADC_CLOCKS_PER_PPS_STAT_INVAL NO_OS_BIT(0)
+#define AD9361_FASTLOCK_PROFILE_COUNT 8
 
 /**
  * Calibration modes.
@@ -81,6 +85,44 @@ static const char * const ad9361_agc_modes[] =
  * State machine modes.
  */
 extern const char *ad9361_ensm_states[12];
+
+static int parse_u32_attr(const char *buf, uint32_t *value)
+{
+	char *end;
+	unsigned long long parsed;
+
+	if (!buf || !value || !isdigit((unsigned char)*buf))
+		return -EINVAL;
+	errno = 0;
+	parsed = strtoull(buf, &end, 10);
+	if (errno == ERANGE || parsed > UINT32_MAX)
+		return -ERANGE;
+	while (isspace((unsigned char)*end))
+		end++;
+	if (*end != '\0')
+		return -EINVAL;
+	*value = (uint32_t)parsed;
+	return 0;
+}
+
+static int parse_i32_attr(const char *buf, int32_t *value)
+{
+	char *end;
+	long long parsed;
+
+	if (!buf || !value || (!isdigit((unsigned char)*buf) && *buf != '-'))
+		return -EINVAL;
+	errno = 0;
+	parsed = strtoll(buf, &end, 10);
+	if (errno == ERANGE || parsed < INT32_MIN || parsed > INT32_MAX)
+		return -ERANGE;
+	while (isspace((unsigned char)*end))
+		end++;
+	if (*end != '\0')
+		return -EINVAL;
+	*value = (int32_t)parsed;
+	return 0;
+}
 
 /**
  * @brief get_rf_port_select().
@@ -696,8 +738,18 @@ static int set_hardwaregain(void *device, char *buf, uint32_t len,
 			    const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
+	char *end;
 	int ret = 0;
-	float gain = strtof(buf, NULL);
+	float gain;
+	errno = 0;
+	gain = strtof(buf, &end);
+	if (end == buf || errno == ERANGE || !isfinite(gain) ||
+	    gain < -200.0f || gain > 200.0f)
+		return -EINVAL;
+	while (isspace((unsigned char)*end))
+		end++;
+	if (*end != '\0')
+		return -EINVAL;
 	int32_t val1 = (int32_t)gain;
 	int32_t val2 = (int32_t)(gain * 1000) % 1000;
 
@@ -710,17 +762,15 @@ static int set_hardwaregain(void *device, char *buf, uint32_t len,
 		ch = ad9361_1rx1tx_channel_map(ad9361_phy, true, channel->ch_num);
 		ret = ad9361_set_tx_atten(ad9361_phy, code, ch == 0, ch == 1,
 					  !ad9361_phy->pdata->update_tx_gain_via_alert);
-		if (ret < 0) {
-			return -EINVAL;
-		}
+		if (ret < 0)
+			return ret;
 	} else {
 		struct rf_rx_gain rx_gain = {0};
 		rx_gain.gain_db = val1;
 		ret = ad9361_set_rx_gain(ad9361_phy,
 					 ad9361_1rx1tx_channel_map(ad9361_phy, false, channel->ch_num + 1), &rx_gain);
-		if (ret < 0) {
-			return -EINVAL;
-		}
+		if (ret < 0)
+			return ret;
 	}
 
 	return len;
@@ -802,7 +852,6 @@ static int set_gain_control_mode(void *device, char *buf, uint32_t len,
 				 intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	struct rf_gain_ctrl gc = {0};
 	uint32_t mode;
 	uint32_t i;
 	int ret;
@@ -817,10 +866,8 @@ static int set_gain_control_mode(void *device, char *buf, uint32_t len,
 	mode = i;
 	if (ad9361_phy->agc_mode[channel->ch_num] == mode)
 		return len;
-	gc.ant = ad9361_1rx1tx_channel_map(ad9361_phy, false, channel->ch_num + 1);
-	gc.mode = mode;
-	ad9361_phy->agc_mode[channel->ch_num] = mode;
-	ret = ad9361_set_gain_ctrl_mode(ad9361_phy, &gc);
+	ret = ad9361_set_rx_gain_control_mode(ad9361_phy, channel->ch_num,
+					       (uint8_t)mode);
 	if (ret < 0)
 		return ret;
 
@@ -857,8 +904,12 @@ static int set_rf_bandwidth(void *device, char *buf, uint32_t len,
 			    const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	int ret = -ENOENT;
-	uint32_t rf_bandwidth = no_os_str_to_uint32(buf);
+	int ret = 0;
+	uint32_t rf_bandwidth;
+
+	ret = parse_u32_attr(buf, &rf_bandwidth);
+	if (ret < 0)
+		return ret;
 
 	rf_bandwidth = ad9361_validate_rf_bw(ad9361_phy, rf_bandwidth);
 	if (channel->ch_out) {
@@ -889,16 +940,14 @@ static int set_rf_dc_offset_tracking_en(void *device, char *buf, uint32_t len,
 					intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	int8_t en_dis = no_os_str_to_int32(buf);
+	int32_t en_dis;
 	int32_t ret;
 
-	if (en_dis < 0)
-		return en_dis;
-
-	ad9361_phy->rfdc_track_en = en_dis ? 1 : 0;
+	ret = parse_i32_attr(buf, &en_dis);
+	if (ret < 0 || en_dis < 0 || en_dis > 1)
+		return -EINVAL;
 	if (!channel->ch_out) {
-		ret = ad9361_tracking_control(ad9361_phy, ad9361_phy->bbdc_track_en,
-					      ad9361_phy->rfdc_track_en, ad9361_phy->quad_track_en);
+		ret = ad9361_set_rx_rfdc_track_en_dis(ad9361_phy, en_dis);
 		if (ret < 0)
 			return ret;
 	}
@@ -938,16 +987,14 @@ static int set_quadrature_tracking_en(void *device, char *buf, uint32_t len,
 				      intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	int8_t en_dis = no_os_str_to_int32(buf);
+	int32_t en_dis;
 	int32_t ret;
 
-	if (en_dis < 0)
-		return en_dis;
-
-	ad9361_phy->quad_track_en = en_dis ? 1 : 0;
+	ret = parse_i32_attr(buf, &en_dis);
+	if (ret < 0 || en_dis < 0 || en_dis > 1)
+		return -EINVAL;
 	if (!channel->ch_out) {
-		ret = ad9361_tracking_control(ad9361_phy, ad9361_phy->bbdc_track_en,
-					      ad9361_phy->rfdc_track_en, ad9361_phy->quad_track_en);
+		ret = ad9361_set_rx_quad_track_en_dis(ad9361_phy, en_dis);
 		if (ret < 0)
 			return ret;
 	}
@@ -968,8 +1015,11 @@ static int set_sampling_frequency(void *device, char *buf, uint32_t len,
 				  intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	uint32_t sampling_freq_hz = no_os_str_to_uint32(buf);
-	int ret = ad9361_set_rx_sampling_freq(ad9361_phy, sampling_freq_hz);
+	uint32_t sampling_freq_hz;
+	int ret = parse_u32_attr(buf, &sampling_freq_hz);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_set_rx_sampling_freq(ad9361_phy, sampling_freq_hz);
 
 	if (ret < 0)
 		return ret;
@@ -991,7 +1041,6 @@ static int set_gain_control_mode_available(void *device, char *buf,
 		intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	struct rf_gain_ctrl gc = {0};
 	uint32_t mode;
 	int ret;
 	uint16_t i;
@@ -1006,10 +1055,8 @@ static int set_gain_control_mode_available(void *device, char *buf,
 	mode = i;
 	if (ad9361_phy->agc_mode[channel->ch_num] == mode)
 		return len;
-	gc.ant = ad9361_1rx1tx_channel_map(ad9361_phy, false, channel->ch_num + 1);
-	gc.mode = mode;
-	ad9361_phy->agc_mode[channel->ch_num] = mode;
-	ret = ad9361_set_gain_ctrl_mode(ad9361_phy, &gc);
+	ret = ad9361_set_rx_gain_control_mode(ad9361_phy, channel->ch_num,
+					       (uint8_t)mode);
 	if (ret < 0)
 		return ret;
 
@@ -1028,12 +1075,12 @@ static int set_filter_fir_en(void *device, char *buf, uint32_t len,
 			     const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	int8_t en_dis = no_os_str_to_int32(buf);
+	int32_t en_dis;
 	int ret;
 
-	if (en_dis < 0)
-		return en_dis;
-	en_dis = en_dis ? 1 : 0;
+	ret = parse_i32_attr(buf, &en_dis);
+	if (ret < 0 || en_dis < 0 || en_dis > 1)
+		return -EINVAL;
 	if (channel->ch_out)
 		ret = ad9361_set_tx_fir_en_dis(ad9361_phy, en_dis);
 	else
@@ -1076,21 +1123,19 @@ static int set_bb_dc_offset_tracking_en(void *device, char *buf, uint32_t len,
 					intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	int8_t en_dis = no_os_str_to_int32(buf);
+	int32_t en_dis;
 	int32_t ret;
 
-	if (en_dis < 0)
-		return en_dis;
-
-	ad9361_phy->bbdc_track_en = en_dis ? 1 : 0;
+	ret = parse_i32_attr(buf, &en_dis);
+	if (ret < 0 || en_dis < 0 || en_dis > 1)
+		return -EINVAL;
 	if (!channel->ch_out) {
-		ret = ad9361_tracking_control(ad9361_phy, ad9361_phy->bbdc_track_en,
-					      ad9361_phy->rfdc_track_en, ad9361_phy->quad_track_en);
+		ret = ad9361_set_rx_bbdc_track_en_dis(ad9361_phy, en_dis);
 		if (ret < 0)
 			return ret;
 	}
 
-	return -ENOENT;
+	return len;
 }
 
 /**
@@ -1123,7 +1168,10 @@ static int set_fastlock_save(void *device, char *buf, uint32_t len,
 			     const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	uint32_t readin = no_os_str_to_uint32(buf);
+	uint32_t readin;
+	int ret = parse_u32_attr(buf, &readin);
+	if (ret < 0 || readin >= AD9361_FASTLOCK_PROFILE_COUNT)
+		return ret < 0 ? ret : -EINVAL;
 
 	ad9361_phy->fastlock.save_profile = readin;
 
@@ -1143,7 +1191,12 @@ static int set_powerdown(void *device, char *buf, uint32_t len,
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
 	int ret = -ENOENT;
-	bool res = no_os_str_to_int32(buf) ? 1 : 0;
+	int32_t value;
+	bool res;
+	ret = parse_i32_attr(buf, &value);
+	if (ret < 0 || (value != 0 && value != 1))
+		return ret < 0 ? ret : -EINVAL;
+	res = value != 0;
 
 	if (channel->ch_num == 0)
 		ret = ad9361_synth_lo_powerdown(ad9361_phy, res ? LO_OFF : LO_ON, LO_DONTCARE);
@@ -1178,9 +1231,14 @@ static int set_fastlock_load(void *device, char *buf, uint32_t len,
 
 		ret = sscanf(line, "%"PRIu32" %"PRIu32"", &val, &val2);
 		if (ret == 1) {
+			if (val > UINT8_MAX || i >= NO_OS_ARRAY_SIZE(faslock_vals))
+				return -EINVAL;
 			faslock_vals[i++] = val;
 			continue;
 		} else if (ret == 2) {
+			if (i != 0 || val >= AD9361_FASTLOCK_PROFILE_COUNT ||
+			    val2 > UINT8_MAX)
+				return -EINVAL;
 			profile = val;
 			faslock_vals[i++] = val2;
 			continue;
@@ -1209,8 +1267,11 @@ static int set_fastlock_store(void *device, char *buf, uint32_t len,
 			      const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	uint32_t profile = no_os_str_to_uint32(buf);
+	uint32_t profile;
 	int32_t ret;
+	ret = parse_u32_attr(buf, &profile);
+	if (ret < 0 || profile >= AD9361_FASTLOCK_PROFILE_COUNT)
+		return ret < 0 ? ret : -EINVAL;
 
 	ret = ad9361_fastlock_store(ad9361_phy, channel->ch_num == 1, profile);
 	if (ret < 0)
@@ -1231,8 +1292,22 @@ static int set_frequency(void *device, char *buf, uint32_t len,
 			 const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	uint64_t lo_freq_hz = no_os_str_to_uint32(buf);
+	char *end;
+	unsigned long long parsed_freq;
+	uint64_t lo_freq_hz;
 	int ret = 0;
+
+	errno = 0;
+	if (!isdigit((unsigned char)*buf))
+		return -EINVAL;
+	parsed_freq = strtoull(buf, &end, 10);
+	if (end == buf || errno == ERANGE)
+		return -EINVAL;
+	while (*end == ' ' || *end == '\t' || *end == '\n')
+		end++;
+	if (*end != '\0')
+		return -EINVAL;
+	lo_freq_hz = (uint64_t)parsed_freq;
 
 	switch (channel->ch_num) {
 	case 0:
@@ -1264,8 +1339,13 @@ static int set_external(void *device, char *buf, uint32_t len,
 			const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	bool select = no_os_str_to_int32(buf) ? 1 : 0;
+	int32_t value;
+	bool select;
 	int ret = 0;
+	ret = parse_i32_attr(buf, &value);
+	if (ret < 0 || (value != 0 && value != 1))
+		return ret < 0 ? ret : -EINVAL;
+	select = value != 0;
 
 	if (channel->ch_num == 0)
 		ret = ad9361_set_rx_lo_int_ext(ad9361_phy, select);
@@ -1289,8 +1369,10 @@ static int set_fastlock_recall(void *device, char *buf, uint32_t len,
 			       const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	int ret = 0;
-	uint32_t profile = no_os_str_to_uint32(buf);
+	uint32_t profile;
+	int ret = parse_u32_attr(buf, &profile);
+	if (ret < 0 || profile >= AD9361_FASTLOCK_PROFILE_COUNT)
+		return ret < 0 ? ret : -EINVAL;
 
 	ret = ad9361_fastlock_recall(ad9361_phy, channel->ch_num == 1, profile);
 	if (ret < 0)
@@ -1312,13 +1394,15 @@ static int set_voltage_filter_fir_en(void *device, char *buf, uint32_t len,
 				     intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	int8_t en_dis = no_os_str_to_int32(buf) ? 1 : 0;
+	int32_t value;
+	int8_t en_dis;
 	int ret;
+	ret = parse_i32_attr(buf, &value);
+	if (ret < 0 || (value != 0 && value != 1))
+		return ret < 0 ? ret : -EINVAL;
+	en_dis = (int8_t)value;
 
-	ret = ad9361_set_tx_fir_en_dis(ad9361_phy, en_dis);
-	if (ret < 0)
-		return ret;
-	ret = ad9361_set_rx_fir_en_dis(ad9361_phy, en_dis);
+	ret = ad9361_set_trx_fir_en_dis(ad9361_phy, en_dis);
 	if (ret < 0)
 		return ret;
 
@@ -1566,45 +1650,90 @@ static int set_rssi_gain_step_error(void *device, char *buf, uint32_t len,
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
 	struct ad9361_phy_platform_data *pd = ad9361_phy->pdata;
 	uint32_t lna[4], mix[16], cal[5];
+	uint32_t old_lna[4], old_mix[16], old_cal[5];
 	int ret;
+	bool tables_programmed = false;
 
 	/* Allow a live calibration trigger as a convenience shortcut */
 	if (!strncmp(buf, "rssi_gain_step", 14)) {
-		return ad9361_rssi_gain_step_calib(ad9361_phy) < 0 ? -EIO : (int)len;
+		ret = ad9361_rssi_gain_step_calib(ad9361_phy);
+		return ret < 0 ? ret : (int)len;
 	}
 
+	char extra;
 	ret = sscanf(buf,
 		     "lna_error: %"SCNu32" %"SCNu32" %"SCNu32" %"SCNu32" "
 		     "mixer_error: %"SCNu32" %"SCNu32" %"SCNu32" %"SCNu32" "
 		     "%"SCNu32" %"SCNu32" %"SCNu32" %"SCNu32" "
 		     "%"SCNu32" %"SCNu32" %"SCNu32" %"SCNu32" "
 		     "%"SCNu32" %"SCNu32" %"SCNu32" %"SCNu32" "
-		     "gain_step_calib_reg_val: %"SCNu32" %"SCNu32" %"SCNu32" %"SCNu32" %"SCNu32,
+		     "gain_step_calib_reg_val: %"SCNu32" %"SCNu32" %"SCNu32" %"SCNu32" %"SCNu32" %c",
 		     &lna[0], &lna[1], &lna[2], &lna[3],
 		     &mix[0],  &mix[1],  &mix[2],  &mix[3],
 		     &mix[4],  &mix[5],  &mix[6],  &mix[7],
 		     &mix[8],  &mix[9],  &mix[10], &mix[11],
 		     &mix[12], &mix[13], &mix[14], &mix[15],
-		     &cal[0], &cal[1], &cal[2], &cal[3], &cal[4]);
+		     &cal[0], &cal[1], &cal[2], &cal[3], &cal[4], &extra);
 
 	if (ret != 25)
 		return -EINVAL;
+	for (size_t i = 0; i < NO_OS_ARRAY_SIZE(lna); i++)
+		if (lna[i] > UINT8_MAX)
+			return -EINVAL;
+	for (size_t i = 0; i < NO_OS_ARRAY_SIZE(mix); i++)
+		if (mix[i] > UINT8_MAX)
+			return -EINVAL;
+	for (size_t i = 0; i < NO_OS_ARRAY_SIZE(cal); i++)
+		if (cal[i] > UINT8_MAX)
+			return -EINVAL;
 
-	/* Store into pdata */
+	memcpy(old_lna, pd->rssi_lna_err_tbl, sizeof(old_lna));
+	memcpy(old_mix, pd->rssi_mixer_err_tbl, sizeof(old_mix));
+	memcpy(old_cal, pd->rssi_gain_step_calib_reg_val, sizeof(old_cal));
+
+	/* Stage the parsed tables for the hardware programming helpers. */
 	for (ret = 0; ret < 4;  ret++) pd->rssi_lna_err_tbl[ret]  = lna[ret];
 	for (ret = 0; ret < 16; ret++) pd->rssi_mixer_err_tbl[ret] = mix[ret];
 	for (ret = 0; ret < 5;  ret++) pd->rssi_gain_step_calib_reg_val[ret] = cal[ret];
 
 	/* Program immediately into hardware */
-	ad9361_ensm_force_state(ad9361_phy, ENSM_STATE_ALERT);
-	ad9361_rssi_program_lna_gain(ad9361_phy);
-	ad9361_rssi_write_err_tbl(ad9361_phy);
-	ad9361_ensm_restore_prev_state(ad9361_phy);
+	ret = ad9361_ensm_force_state_checked(ad9361_phy, ENSM_STATE_ALERT);
+	if (ret < 0) {
+		int restore_ret = ad9361_ensm_restore_prev_state_checked(ad9361_phy);
+		if (restore_ret < 0)
+			dev_err(&ad9361_phy->spi->dev,
+				"Unable to restore ENSM after failed RSSI table setup");
+		goto restore_tables;
+	}
+	ret = ad9361_rssi_program_lna_gain(ad9361_phy);
+	if (ret >= 0)
+		ret = ad9361_rssi_write_err_tbl(ad9361_phy);
+	if (ret >= 0)
+		tables_programmed = true;
+	{
+		int restore_ret = ad9361_ensm_restore_prev_state_checked(ad9361_phy);
+		if (ret >= 0 && restore_ret < 0)
+			ret = restore_ret;
+	}
+	if (ret < 0)
+		goto restore_tables;
 
 	/* Mark that tables are pre-loaded so ad9361_setup won't overwrite them */
 	pd->rssi_skip_calib = true;
 
 	return (int)len;
+
+restore_tables:
+	if (tables_programmed) {
+		/* Hardware contains the new tables; keep software state aligned even
+		 * when restoring ENSM failed after the programming completed. */
+		pd->rssi_skip_calib = true;
+		return ret;
+	}
+	memcpy(pd->rssi_lna_err_tbl, old_lna, sizeof(old_lna));
+	memcpy(pd->rssi_mixer_err_tbl, old_mix, sizeof(old_mix));
+	memcpy(pd->rssi_gain_step_calib_reg_val, old_cal, sizeof(old_cal));
+	return ret;
 }
 
 /**
@@ -1766,13 +1895,13 @@ static int set_trx_rate_governor(void *device, char *buf, uint32_t len,
 		return -EINVAL;
 
 	if (!strcmp(buf, "nominal"))
-		ad9361_set_trx_rate_gov(ad9361_phy, 1);
+		ret = ad9361_set_trx_rate_gov(ad9361_phy, 1);
 	else if (!strcmp(buf, "highest_osr"))
-		ad9361_set_trx_rate_gov(ad9361_phy, 0);
+		ret = ad9361_set_trx_rate_gov(ad9361_phy, 0);
 	else
 		ret =  -ENOENT;
 
-	return ret;
+	return ret < 0 ? ret : (int)len;
 }
 
 /**
@@ -1788,17 +1917,17 @@ static int set_dcxo_tune_coarse(void *device, char *buf, uint32_t len,
 				intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	uint32_t dcxo_coarse = no_os_str_to_uint32(buf);
+	uint32_t dcxo_coarse;
 	int32_t ret;
+	ret = parse_u32_attr(buf, &dcxo_coarse);
+	if (ret < 0)
+		return ret;
 
 	if (ad9361_iio_ensm_sleep_guard(ad9361_phy))
 		return -EINVAL;
 
 	dcxo_coarse = no_os_clamp_t(uint32_t, dcxo_coarse, 0, 63U);
-	ad9361_phy->pdata->dcxo_coarse = dcxo_coarse;
-
-	ret = ad9361_set_dcxo_tune(ad9361_phy, ad9361_phy->pdata->dcxo_coarse,
-				   ad9361_phy->pdata->dcxo_fine);
+	ret = ad9361_do_dcxo_tune_coarse(ad9361_phy, dcxo_coarse);
 	if (ret < 0)
 		return ret;
 
@@ -1817,14 +1946,14 @@ static int set_dcxo_tune_fine(void *device, char *buf, uint32_t len,
 			      const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	uint32_t dcxo_fine = no_os_str_to_uint32(buf);
+	uint32_t dcxo_fine;
 	int32_t ret;
+	ret = parse_u32_attr(buf, &dcxo_fine);
+	if (ret < 0)
+		return ret;
 
 	dcxo_fine = no_os_clamp_t(uint32_t, dcxo_fine, 0, 8191U);
-	ad9361_phy->pdata->dcxo_fine = dcxo_fine;
-
-	ret = ad9361_set_dcxo_tune(ad9361_phy, ad9361_phy->pdata->dcxo_coarse,
-				   ad9361_phy->pdata->dcxo_fine);
+	ret = ad9361_do_dcxo_tune_fine(ad9361_phy, dcxo_fine);
 	if (ret < 0)
 		return ret;
 
@@ -1855,11 +1984,13 @@ static int set_calib_mode(void *device, char *buf, uint32_t len,
 	if (!strcmp(buf, "auto")) {
 		ret = ad9361_set_tx_auto_cal_en_dis(ad9361_phy, 1);
 	} else if (!strcmp(buf, "manual")) {
-		ad9361_set_tx_auto_cal_en_dis(ad9361_phy, 0);
+		ret = ad9361_set_tx_auto_cal_en_dis(ad9361_phy, 0);
 	} else if (!strncmp(buf, "tx_quad", 7)) {
-		ret = sscanf(buf, "tx_quad %"PRIi32, &arg);
+		char extra;
+		ret = sscanf(buf, "tx_quad %"PRIi32" %c", &arg, &extra);
 		if (ret != 1)
-			arg = -1;
+			return -EINVAL;
+		ret = 0;
 		val = TX_QUAD_CAL;
 	} else if (!strcmp(buf, "rf_dc_offs")) {
 		val = RFDC_CAL;
@@ -1894,7 +2025,8 @@ static int set_ensm_mode(void *device, char *buf, uint32_t len,
 	bool res = false;
 	int ret;
 
-	ad9361_phy->pdata->fdd_independent_mode = false;
+	bool old_fdd_independent = ad9361_phy->pdata->fdd_independent_mode;
+	bool fdd_independent = false;
 
 	if (!strcmp(buf, "tx")) {
 		val = ENSM_STATE_TX;
@@ -1913,18 +2045,23 @@ static int set_ensm_mode(void *device, char *buf, uint32_t len,
 		val = ENSM_STATE_SLEEP_WAIT;
 	} else if (!strcmp(buf, "pinctrl_fdd_indep")) {
 		val = ENSM_STATE_FDD;
-		ad9361_phy->pdata->fdd_independent_mode = true;
+		fdd_independent = true;
 	} else {
 		return -ENOENT;
 	}
 
 	ret = ad9361_set_ensm_mode(ad9361_phy, ad9361_phy->pdata->fdd, res);
-	if (ret < 0)
+	if (ret < 0) {
+		ad9361_phy->pdata->fdd_independent_mode = old_fdd_independent;
 		return ret;
+	}
 
 	ret = ad9361_ensm_set_state(ad9361_phy, val, res);
-	if (ret < 0)
+	if (ret < 0) {
+		ad9361_phy->pdata->fdd_independent_mode = old_fdd_independent;
 		return ret;
+	}
+	ad9361_phy->pdata->fdd_independent_mode = fdd_independent;
 
 	return len;
 }
@@ -1941,8 +2078,11 @@ static int set_multichip_sync(void *device, char *buf, uint32_t len,
 			      const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	uint32_t readin = no_os_str_to_uint32(buf);
+	uint32_t readin;
 	int32_t ret;
+	ret = parse_u32_attr(buf, &readin);
+	if (ret < 0 || readin > 1)
+		return ret < 0 ? ret : -EINVAL;
 
 	ret = ad9361_mcs(ad9361_phy, readin);
 	if (ret < 0)
@@ -2035,39 +2175,54 @@ static int set_gpo(void *device, char *buf, uint32_t len,
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
 	struct gpo_control *ctrl = &ad9361_phy->pdata->gpo_ctrl;
-	uint32_t pin, val, mask, new_mask;
+	uint32_t pin, val, mask, new_mask, new_state;
+	int32_t ret;
+	int32_t lna_reg;
 
 	if (!ctrl->gpo_manual_mode_en)
 		return -EINVAL;
 
-	if (sscanf(buf, "%"SCNu32" %"SCNu32, &pin, &val) != 2)
+	char extra;
+	if (sscanf(buf, "%"SCNu32" %"SCNu32" %c", &pin, &val,
+		   &extra) != 2)
 		return -EINVAL;
 
 	if (pin <= 3) {
+		if (val > 1)
+			return -EINVAL;
 		mask = NO_OS_BIT(pin);
 		new_mask = val ? mask : 0;
 	} else if (pin == 0xF) {
+		if (val > 0xF)
+			return -EINVAL;
 		mask = 0xF;
 		new_mask = val & 0xF;
 	} else {
 		return -EINVAL;
 	}
 
-	ctrl->gpo_manual_mode_enable_mask &= ~mask;
-	ctrl->gpo_manual_mode_enable_mask |= new_mask;
+	new_state = (ctrl->gpo_manual_mode_enable_mask & ~mask) | new_mask;
 
-	ad9361_spi_write(ad9361_phy->spi, REG_GPO_FORCE_AND_INIT,
-			 GPO_MANUAL_CTRL(ctrl->gpo_manual_mode_enable_mask) |
+	ret = ad9361_spi_write(ad9361_phy->spi, REG_GPO_FORCE_AND_INIT,
+			 GPO_MANUAL_CTRL(new_state) |
 			 GPO_INIT_STATE(ctrl->gpo0_inactive_state_high_en |
 					(ctrl->gpo1_inactive_state_high_en << 1) |
 					(ctrl->gpo2_inactive_state_high_en << 2) |
 					(ctrl->gpo3_inactive_state_high_en << 3)));
+	if (ret < 0)
+		return ret;
 
 	/* Ensure GPO_MANUAL_SELECT is set in the external LNA control register */
-	uint8_t lna_reg = ad9361_spi_read(ad9361_phy->spi, REG_EXTERNAL_LNA_CTRL);
-	if (!(lna_reg & GPO_MANUAL_SELECT))
-		ad9361_spi_write(ad9361_phy->spi, REG_EXTERNAL_LNA_CTRL,
-				 lna_reg | GPO_MANUAL_SELECT);
+	lna_reg = ad9361_spi_read(ad9361_phy->spi, REG_EXTERNAL_LNA_CTRL);
+	if (lna_reg < 0)
+		return lna_reg;
+	if (!(lna_reg & GPO_MANUAL_SELECT)) {
+		ret = ad9361_spi_write(ad9361_phy->spi, REG_EXTERNAL_LNA_CTRL,
+				       lna_reg | GPO_MANUAL_SELECT);
+		if (ret < 0)
+			return ret;
+	}
+	ctrl->gpo_manual_mode_enable_mask = new_state;
 
 	return (int)len;
 }
@@ -2083,7 +2238,12 @@ static int set_cal_sw_ctrl(void *device, char *buf, uint32_t len,
 			   const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	uint32_t val = no_os_str_to_uint32(buf);
+	uint32_t val;
+	int parse_ret = parse_u32_attr(buf, &val);
+	if (parse_ret < 0)
+		return parse_ret;
+	if (val > 3)
+		return -EINVAL;
 	int32_t ret = ad9361_set_cal_sw(ad9361_phy, val);
 	return (ret < 0) ? ret : (int)len;
 }
@@ -2107,10 +2267,17 @@ static int set_bist_timing_analysis(void *device, char *buf, uint32_t len,
 {
 #ifndef AXI_ADC_NOT_PRESENT
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	int32_t val = no_os_str_to_int32(buf);
-	ad9361_phy->bist_config = val;
-	if (val)
-		ad9361_dig_interface_timing_analysis(ad9361_phy, buf, (int32_t)len);
+	int32_t val;
+	int32_t ret;
+	ret = parse_i32_attr(buf, &val);
+	if (ret < 0 || (val != 0 && val != 1))
+		return ret < 0 ? ret : -EINVAL;
+	if (val) {
+		ret = ad9361_dig_interface_timing_analysis(ad9361_phy, buf,
+							   (int32_t)len);
+		if (ret < 0)
+			return ret;
+	}
 	return (int)len;
 #else
 	return -ENODEV;
@@ -2131,7 +2298,10 @@ static int set_bist_prbs(void *device, char *buf, uint32_t len,
 			 const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	int32_t val = no_os_str_to_int32(buf);
+	int32_t val;
+	int parse_ret = parse_i32_attr(buf, &val);
+	if (parse_ret < 0 || val < BIST_DISABLE || val > BIST_INJ_RX)
+		return parse_ret < 0 ? parse_ret : -EINVAL;
 	int32_t ret = ad9361_bist_prbs(ad9361_phy, (enum ad9361_bist_mode)val);
 	return (ret < 0) ? ret : (int)len;
 }
@@ -2151,7 +2321,10 @@ static int set_bist_tone(void *device, char *buf, uint32_t len,
 			 const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	int32_t val = no_os_str_to_int32(buf);
+	int32_t val;
+	int parse_ret = parse_i32_attr(buf, &val);
+	if (parse_ret < 0 || val < BIST_DISABLE || val > BIST_INJ_RX)
+		return parse_ret < 0 ? parse_ret : -EINVAL;
 	int32_t ret = ad9361_bist_tone(ad9361_phy,
 				       (enum ad9361_bist_mode)val,
 				       ad9361_phy->bist_tone_freq_Hz,
@@ -2174,7 +2347,10 @@ static int set_loopback(void *device, char *buf, uint32_t len,
 			const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	int32_t val = no_os_str_to_int32(buf);
+	int32_t val;
+	int parse_ret = parse_i32_attr(buf, &val);
+	if (parse_ret < 0 || val < 0 || val > 2)
+		return parse_ret < 0 ? parse_ret : -EINVAL;
 	int32_t ret = ad9361_bist_loopback(ad9361_phy, val);
 	return (ret < 0) ? ret : (int)len;
 }
@@ -2196,7 +2372,10 @@ static int set_digital_tune(void *device, char *buf, uint32_t len,
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
 	uint32_t max_freq = 0, flags = 0;
 
-	sscanf(buf, "%"SCNu32" %"SCNu32, &max_freq, &flags);
+	char extra;
+	if (sscanf(buf, "%"SCNu32" %"SCNu32" %c", &max_freq, &flags,
+		   &extra) != 2)
+		return -EINVAL;
 	if (!max_freq)
 		max_freq = 61440000;
 
@@ -2218,7 +2397,10 @@ static int set_initialize(void *device, char *buf, uint32_t len,
 			  const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	uint32_t val = no_os_str_to_uint32(buf);
+	uint32_t val;
+	int parse_ret = parse_u32_attr(buf, &val);
+	if (parse_ret < 0)
+		return parse_ret;
 
 	if (val != 1)
 		return -EINVAL;
@@ -2325,7 +2507,9 @@ static int set_calibscale(void *device, char *buf, uint32_t len,
 		return -ENODEV;
 
 	/* Parse fixed-point "X.YYYYYY" */
-	if (sscanf(buf, "%"SCNd32".%"SCNd32, &val, &val2) != 2)
+	char extra;
+	if (sscanf(buf, "%"SCNd32".%"SCNd32" %c", &val, &val2,
+		   &extra) != 2)
 		return -EINVAL;
 
 	int ret = axi_adc_set_calib_scale(ad9361_phy->rx_adc,
@@ -2369,7 +2553,10 @@ static int set_calibbias(void *device, char *buf, uint32_t len,
 	if (!ad9361_phy->rx_adc)
 		return -ENODEV;
 
-	sscanf(buf, "%"SCNd32".%"SCNd32, &val, &val2);
+	char extra;
+	if (sscanf(buf, "%"SCNd32".%"SCNd32" %c", &val, &val2,
+		   &extra) != 2)
+		return -EINVAL;
 
 	int ret = axi_adc_set_calib_bias(ad9361_phy->rx_adc,
 					 (uint32_t)channel->ch_num, val, val2);
@@ -2412,7 +2599,10 @@ static int set_calibphase(void *device, char *buf, uint32_t len,
 	if (!ad9361_phy->rx_adc)
 		return -ENODEV;
 
-	sscanf(buf, "%"SCNd32".%"SCNd32, &val, &val2);
+	char extra;
+	if (sscanf(buf, "%"SCNd32".%"SCNd32" %c", &val, &val2,
+		   &extra) != 2)
+		return -EINVAL;
 
 	int ret = axi_adc_set_calib_phase(ad9361_phy->rx_adc,
 					  (uint32_t)channel->ch_num, val, val2);
@@ -2728,7 +2918,10 @@ static int set_out_voltage_sampling_frequency(void *dev, char *buf,
 		intptr_t priv)
 {
 	struct ad9361_rf_phy *phy = (struct ad9361_rf_phy *)dev;
-	uint32_t rate = no_os_str_to_uint32(buf);
+	uint32_t rate;
+	int parse_ret = parse_u32_attr(buf, &rate);
+	if (parse_ret < 0)
+		return parse_ret;
 	int ret = ad9361_set_tx_sampling_freq(phy, rate);
 	if (ret < 0)
 		return ret;
@@ -2777,12 +2970,13 @@ static int set_in_out_voltage_filter_fir_en(void *dev, char *buf, uint32_t len,
 {
 	/* Set both RX and TX FIR simultaneously */
 	struct ad9361_rf_phy *phy = (struct ad9361_rf_phy *)dev;
-	int8_t en = (int8_t)no_os_str_to_int32(buf);
+	int32_t value;
+	int parse_ret = parse_i32_attr(buf, &value);
+	if (parse_ret < 0 || (value != 0 && value != 1))
+		return parse_ret < 0 ? parse_ret : -EINVAL;
+	int8_t en = (int8_t)value;
 	int ret;
-	ret = ad9361_set_rx_fir_en_dis(phy, en ? 1 : 0);
-	if (ret < 0)
-		return ret;
-	ret = ad9361_set_tx_fir_en_dis(phy, en ? 1 : 0);
+	ret = ad9361_set_trx_fir_en_dis(phy, en ? 1 : 0);
 	if (ret < 0)
 		return ret;
 	return (int)len;

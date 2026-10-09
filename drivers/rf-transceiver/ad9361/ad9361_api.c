@@ -483,17 +483,33 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 
 	phy->pdata->debug_mode = true;
 
-	no_os_gpio_get(&phy->gpio_desc_resetb, &init_param->gpio_resetb);
+	ret = no_os_gpio_get(&phy->gpio_desc_resetb, &init_param->gpio_resetb);
+	if (ret < 0)
+		goto out;
 	/* Optional: next three GPIOs are used for MCS synchronization */
-	no_os_gpio_get_optional(&phy->gpio_desc_sync, &init_param->gpio_sync);
-	no_os_gpio_get_optional(&phy->gpio_desc_cal_sw1, &init_param->gpio_cal_sw1);
-	no_os_gpio_get_optional(&phy->gpio_desc_cal_sw2, &init_param->gpio_cal_sw2);
+	ret = no_os_gpio_get_optional(&phy->gpio_desc_sync, &init_param->gpio_sync);
+	if (ret < 0)
+		goto out;
+	ret = no_os_gpio_get_optional(&phy->gpio_desc_cal_sw1, &init_param->gpio_cal_sw1);
+	if (ret < 0)
+		goto out;
+	ret = no_os_gpio_get_optional(&phy->gpio_desc_cal_sw2, &init_param->gpio_cal_sw2);
+	if (ret < 0)
+		goto out;
 
-	no_os_gpio_direction_output(phy->gpio_desc_resetb, 0);
+	ret = no_os_gpio_direction_output(phy->gpio_desc_resetb, 0);
+	if (ret < 0)
+		goto out;
 
-	no_os_gpio_direction_output(phy->gpio_desc_sync, 0);
+	if (phy->gpio_desc_sync) {
+		ret = no_os_gpio_direction_output(phy->gpio_desc_sync, 0);
+		if (ret < 0)
+			goto out;
+	}
 
-	no_os_spi_init(&phy->spi, &init_param->spi_param);
+	ret = no_os_spi_init(&phy->spi, &init_param->spi_param);
+	if (ret < 0)
+		goto out;
 
 	phy->pdata->port_ctrl.digital_io_ctrl = 0;
 	phy->pdata->port_ctrl.lvds_invert[0] = init_param->lvds_invert1_control;
@@ -536,9 +552,13 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 	phy->bist_tone_level_dB = 0;
 	phy->bist_tone_mask = 0;
 
-	ad9361_reset(phy);
+	ret = ad9361_reset(phy);
+	if (ret < 0)
+		goto out;
 
 	ret = ad9361_spi_read(phy->spi, REG_PRODUCT_ID);
+	if (ret < 0)
+		goto out;
 	if ((ret & PRODUCT_ID_MASK) != PRODUCT_ID_9361) {
 		printf("%s : Unsupported PRODUCT_ID 0x%X", __func__, (unsigned int)ret);
 		ret = -ENODEV;
@@ -559,8 +579,13 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 		goto out_clk;
 
 #if !defined(AXI_ADC_NOT_PRESENT) && !defined(BLADERF_NIOS_BUILD)
-	axi_adc_init(&phy->rx_adc, init_param->rx_adc_init);
-	axi_adc_read(phy->rx_adc, ADI_REG_VERSION, &phy->adc_state->pcore_version);
+	ret = axi_adc_init(&phy->rx_adc, init_param->rx_adc_init);
+	if (ret < 0)
+		goto out_clk;
+	ret = axi_adc_read(phy->rx_adc, ADI_REG_VERSION,
+			   &phy->adc_state->pcore_version);
+	if (ret < 0)
+		goto out_clk;
 
 	/* The TX half of the same core. init_param carries tx_dac_init and
 	 * nothing here ever used it, so the DAC side stayed in whatever state
@@ -580,7 +605,8 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 	 * which write is the effective one - verified by reading the core
 	 * back after init: cntrl_2 = 0, ratecntrl = 1 on this 2R2T board. */
 	if (init_param->tx_dac_init)
-		axi_dac_init(&phy->tx_dac, init_param->tx_dac_init);
+		if ((ret = axi_dac_init(&phy->tx_dac, init_param->tx_dac_init)) < 0)
+			goto out_clk;
 
 	/* platform specific wrapper to call ad9361_post_setup() */
 	ret = ad9361_post_setup(phy);
@@ -610,7 +636,19 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 out_clk:
 	ad9361_unregister_clocks(phy);
 out:
+	if (ret >= 0)
+		ret = -ENODEV;
+	if (phy->spi)
+		no_os_spi_remove(phy->spi);
+	no_os_gpio_remove(phy->gpio_desc_resetb);
+	no_os_gpio_remove(phy->gpio_desc_sync);
+	no_os_gpio_remove(phy->gpio_desc_cal_sw1);
+	no_os_gpio_remove(phy->gpio_desc_cal_sw2);
 #ifndef AXI_ADC_NOT_PRESENT
+	if (phy->rx_adc)
+		axi_adc_remove(phy->rx_adc);
+	if (phy->tx_dac)
+		axi_dac_remove(phy->tx_dac);
 	no_os_free(phy->adc_conv);
 	no_os_free(phy->adc_state);
 #endif
@@ -619,7 +657,7 @@ out:
 	no_os_free(phy);
 	printf("%s : AD936x initialization error\n", __func__);
 
-	return -ENODEV;
+	return ret;
 }
 
 /**
@@ -636,6 +674,10 @@ int32_t ad9361_remove(struct ad9361_rf_phy *phy)
 	no_os_gpio_remove(phy->gpio_desc_cal_sw1);
 	no_os_gpio_remove(phy->gpio_desc_cal_sw2);
 #ifndef AXI_ADC_NOT_PRESENT
+	if (phy->rx_adc)
+		axi_adc_remove(phy->rx_adc);
+	if (phy->tx_dac)
+		axi_dac_remove(phy->tx_dac);
 	no_os_free(phy->adc_conv);
 	no_os_free(phy->adc_state);
 #endif
@@ -817,10 +859,11 @@ int32_t ad9361_get_rx_rf_gain(struct ad9361_rf_phy *phy,
 
 	ret = ad9361_get_rx_gain(phy, ad9361_1rx1tx_channel_map(phy,
 				 false, ch + 1), &rx_gain);
-
+	if (ret < 0)
+		return ret;
 	*gain_db = rx_gain.gain_db;
 
-	return ret;
+	return 0;
 }
 
 /**
@@ -986,14 +1029,21 @@ int32_t ad9361_get_rx_lo_freq(struct ad9361_rf_phy *phy,
  */
 int32_t ad9361_set_rx_lo_int_ext(struct ad9361_rf_phy *phy, uint8_t int_ext)
 {
+	uint8_t old_use_ext = phy->pdata->use_ext_rx_lo;
+	int32_t ret;
+
+	if (int_ext != INT_LO && int_ext != EXT_LO)
+		return -EINVAL;
 	if ((phy->dev_sel == ID_AD9363A) && (int_ext == EXT_LO)) {
 		printf("%s : EXT_LO is not supported by AD9363!\n", __func__);
 		return -1;
 	}
 
 	phy->pdata->use_ext_rx_lo = int_ext;
-
-	return ad9361_clk_mux_set_parent(phy->ref_clk_scale[RX_RFPLL], int_ext);
+	ret = ad9361_clk_mux_set_parent(phy->ref_clk_scale[RX_RFPLL], int_ext);
+	if (ret < 0)
+		phy->pdata->use_ext_rx_lo = old_use_ext;
+	return ret;
 }
 
 /**
@@ -1012,11 +1062,14 @@ int32_t ad9361_get_rx_rssi(struct ad9361_rf_phy *phy,
 			   uint8_t ch, struct rf_rssi *rssi)
 {
 	int32_t ret;
+	struct rf_rssi result = {0};
 
-	rssi->ant = ad9361_1rx1tx_channel_map(phy, false, ch + 1);
-	rssi->duration = 1;
-	ret = ad9361_read_rssi(phy, rssi);
-
+	result.ant = ad9361_1rx1tx_channel_map(phy, false, ch + 1);
+	result.duration = 1;
+	ret = ad9361_read_rssi(phy, &result);
+	if (ret < 0)
+		return ret;
+	*rssi = result;
 	return ret;
 }
 
@@ -1086,11 +1139,13 @@ int32_t ad9361_set_rx_fir_config(struct ad9361_rf_phy *phy,
 				 AD9361_RXFIRConfig fir_cfg)
 {
 	int32_t ret;
+	uint8_t old_rx_fir_dec = phy->rx_fir_dec;
 
 	phy->rx_fir_dec = fir_cfg.rx_dec;
 	ret = ad9361_load_fir_filter_coef(phy, (enum fir_dest)(fir_cfg.rx | FIR_IS_RX),
 					  fir_cfg.rx_gain, fir_cfg.rx_coef_size, fir_cfg.rx_coef);
-
+	if (ret < 0)
+		phy->rx_fir_dec = old_rx_fir_dec;
 	return ret;
 }
 
@@ -1110,6 +1165,9 @@ int32_t ad9361_get_rx_fir_config(struct ad9361_rf_phy *phy, uint8_t rx_ch,
 	int32_t ret;
 	uint32_t fir_conf;
 	uint8_t index;
+	AD9361_RXFIRConfig result = {0};
+	if (!fir_cfg || rx_ch > 1)
+		return -EINVAL;
 
 	rx_ch += 1;
 
@@ -1118,13 +1176,13 @@ int32_t ad9361_get_rx_fir_config(struct ad9361_rf_phy *phy, uint8_t rx_ch,
 		return ret;
 	fir_conf = ret;
 
-	fir_cfg->rx_coef_size = (((fir_conf & FIR_NUM_TAPS(7)) >> 5) + 1) * 16;
+	result.rx_coef_size = (((fir_conf & FIR_NUM_TAPS(7)) >> 5) + 1) * 16;
 
 	ret = ad9361_spi_read(phy->spi, REG_RX_FILTER_GAIN);
 	if (ret < 0)
 		return ret;
-	fir_cfg->rx_gain = -6 * (ret & FILTER_GAIN(3)) + 6;
-	fir_cfg->rx = rx_ch;
+	result.rx_gain = -6 * (ret & FILTER_GAIN(3)) + 6;
+	result.rx = rx_ch;
 
 	fir_conf &= ~FIR_SELECT(3);
 	fir_conf |= FIR_SELECT(rx_ch) | FIR_START_CLK;
@@ -1139,11 +1197,11 @@ int32_t ad9361_get_rx_fir_config(struct ad9361_rf_phy *phy, uint8_t rx_ch,
 		ret = ad9361_spi_read(phy->spi, REG_RX_FILTER_COEF_READ_DATA_1);
 		if (ret < 0)
 			goto rx_fir_restore;
-		fir_cfg->rx_coef[index] = ret;
+		result.rx_coef[index] = ret;
 		ret = ad9361_spi_read(phy->spi, REG_RX_FILTER_COEF_READ_DATA_2);
 		if (ret < 0)
 			goto rx_fir_restore;
-		fir_cfg->rx_coef[index] |= (ret << 8);
+		result.rx_coef[index] |= (ret << 8);
 	}
 
 	rx_fir_restore:
@@ -1157,7 +1215,8 @@ int32_t ad9361_get_rx_fir_config(struct ad9361_rf_phy *phy, uint8_t rx_ch,
 	if (ret < 0)
 		return ret;
 
-	fir_cfg->rx_dec = phy->rx_fir_dec;
+	result.rx_dec = phy->rx_fir_dec;
+	*fir_cfg = result;
 
 	return 0;
 }
@@ -1177,15 +1236,17 @@ int32_t ad9361_set_rx_fir_en_dis(struct ad9361_rf_phy *phy,
 				 uint8_t en_dis)
 {
 	int32_t ret = 0;
+	bool old_bypass = phy->bypass_rx_fir;
+	if (en_dis > 1)
+		return -EINVAL;
 
 	if (phy->bypass_rx_fir == !en_dis)
 		return ret;
 
 	phy->bypass_rx_fir = !en_dis;
 	ret = ad9361_validate_enable_fir(phy);
-	if (ret < 0) {
-		phy->bypass_rx_fir = true;
-	}
+	if (ret < 0)
+		phy->bypass_rx_fir = old_bypass;
 
 	return ret;
 }
@@ -1216,14 +1277,20 @@ int32_t ad9361_get_rx_fir_en_dis(struct ad9361_rf_phy *phy,
 int32_t ad9361_set_rx_rfdc_track_en_dis(struct ad9361_rf_phy *phy,
 					uint8_t en_dis)
 {
-	int32_t ret = 0;
+	int32_t ret;
+	uint8_t old_en = phy->rfdc_track_en;
+
+	if (en_dis > 1)
+		return -EINVAL;
 
 	if (phy->rfdc_track_en == en_dis)
-		return ret;
+		return 0;
 
 	phy->rfdc_track_en = en_dis;
 	ret = ad9361_tracking_control(phy, phy->bbdc_track_en,
 				      phy->rfdc_track_en, phy->quad_track_en);
+	if (ret < 0)
+		phy->rfdc_track_en = old_en;
 
 	return ret;
 }
@@ -1254,14 +1321,20 @@ int32_t ad9361_get_rx_rfdc_track_en_dis(struct ad9361_rf_phy *phy,
 int32_t ad9361_set_rx_bbdc_track_en_dis(struct ad9361_rf_phy *phy,
 					uint8_t en_dis)
 {
-	int32_t ret = 0;
+	int32_t ret;
+	uint8_t old_en = phy->bbdc_track_en;
+
+	if (en_dis > 1)
+		return -EINVAL;
 
 	if (phy->bbdc_track_en == en_dis)
-		return ret;
+		return 0;
 
 	phy->bbdc_track_en = en_dis;
 	ret = ad9361_tracking_control(phy, phy->bbdc_track_en,
 				      phy->rfdc_track_en, phy->quad_track_en);
+	if (ret < 0)
+		phy->bbdc_track_en = old_en;
 
 	return ret;
 }
@@ -1292,14 +1365,20 @@ int32_t ad9361_get_rx_bbdc_track_en_dis(struct ad9361_rf_phy *phy,
 int32_t ad9361_set_rx_quad_track_en_dis(struct ad9361_rf_phy *phy,
 					uint8_t en_dis)
 {
-	int32_t ret = 0;
+	int32_t ret;
+	uint8_t old_en = phy->quad_track_en;
+
+	if (en_dis > 1)
+		return -EINVAL;
 
 	if (phy->quad_track_en == en_dis)
-		return ret;
+		return 0;
 
 	phy->quad_track_en = en_dis;
 	ret = ad9361_tracking_control(phy, phy->bbdc_track_en,
 				      phy->rfdc_track_en, phy->quad_track_en);
+	if (ret < 0)
+		phy->quad_track_en = old_en;
 
 	return ret;
 }
@@ -1341,12 +1420,15 @@ int32_t ad9361_set_rx_rf_port_input(struct ad9361_rf_phy *phy,
 				    uint32_t mode)
 {
 	int32_t ret;
+	uint32_t old_mode = phy->pdata->rf_rx_input_sel;
 
 	phy->pdata->rf_rx_input_sel = mode;
 
 	ret = ad9361_rf_port_setup(phy, false,
 				   phy->pdata->rf_rx_input_sel,
 				   phy->pdata->rf_tx_output_sel);
+	if (ret < 0)
+		phy->pdata->rf_rx_input_sel = old_mode;
 
 	return ret;
 }
@@ -1675,14 +1757,21 @@ int32_t ad9361_get_tx_lo_freq(struct ad9361_rf_phy *phy,
  */
 int32_t ad9361_set_tx_lo_int_ext(struct ad9361_rf_phy *phy, uint8_t int_ext)
 {
+	uint8_t old_use_ext = phy->pdata->use_ext_tx_lo;
+	int32_t ret;
+
+	if (int_ext != INT_LO && int_ext != EXT_LO)
+		return -EINVAL;
 	if ((phy->dev_sel == ID_AD9363A) && (int_ext == EXT_LO)) {
 		printf("%s : EXT_LO is not supported by AD9363!\n", __func__);
 		return -1;
 	}
 
 	phy->pdata->use_ext_tx_lo = int_ext;
-
-	return ad9361_clk_mux_set_parent(phy->ref_clk_scale[TX_RFPLL], int_ext);
+	ret = ad9361_clk_mux_set_parent(phy->ref_clk_scale[TX_RFPLL], int_ext);
+	if (ret < 0)
+		phy->pdata->use_ext_tx_lo = old_use_ext;
+	return ret;
 }
 
 /**
@@ -1697,11 +1786,13 @@ int32_t ad9361_set_tx_fir_config(struct ad9361_rf_phy *phy,
 				 AD9361_TXFIRConfig fir_cfg)
 {
 	int32_t ret;
+	uint8_t old_tx_fir_int = phy->tx_fir_int;
 
 	phy->tx_fir_int = fir_cfg.tx_int;
 	ret = ad9361_load_fir_filter_coef(phy, (enum fir_dest)fir_cfg.tx,
 					  fir_cfg.tx_gain, fir_cfg.tx_coef_size, fir_cfg.tx_coef);
-
+	if (ret < 0)
+		phy->tx_fir_int = old_tx_fir_int;
 	return ret;
 }
 
@@ -1721,6 +1812,9 @@ int32_t ad9361_get_tx_fir_config(struct ad9361_rf_phy *phy, uint8_t tx_ch,
 	int32_t ret;
 	uint32_t fir_conf;
 	uint8_t index;
+	AD9361_TXFIRConfig result = {0};
+	if (!fir_cfg || tx_ch > 1)
+		return -EINVAL;
 
 	tx_ch += 1;
 
@@ -1728,9 +1822,9 @@ int32_t ad9361_get_tx_fir_config(struct ad9361_rf_phy *phy, uint8_t tx_ch,
 	if (ret < 0)
 		return ret;
 	fir_conf = ret;
-	fir_cfg->tx_coef_size = (((fir_conf & FIR_NUM_TAPS(7)) >> 5) + 1) * 16;
-	fir_cfg->tx_gain = -6 * (fir_conf & TX_FIR_GAIN_6DB);
-	fir_cfg->tx = tx_ch;
+	result.tx_coef_size = (((fir_conf & FIR_NUM_TAPS(7)) >> 5) + 1) * 16;
+	result.tx_gain = -6 * (fir_conf & TX_FIR_GAIN_6DB);
+	result.tx = tx_ch;
 
 	fir_conf &= ~FIR_SELECT(3);
 	fir_conf |= FIR_SELECT(tx_ch) | FIR_START_CLK;
@@ -1745,11 +1839,11 @@ int32_t ad9361_get_tx_fir_config(struct ad9361_rf_phy *phy, uint8_t tx_ch,
 		ret = ad9361_spi_read(phy->spi, REG_TX_FILTER_COEF_READ_DATA_1);
 		if (ret < 0)
 			goto tx_fir_restore;
-		fir_cfg->tx_coef[index] = ret;
+		result.tx_coef[index] = ret;
 		ret = ad9361_spi_read(phy->spi, REG_TX_FILTER_COEF_READ_DATA_2);
 		if (ret < 0)
 			goto tx_fir_restore;
-		fir_cfg->tx_coef[index] |= (ret << 8);
+		result.tx_coef[index] |= (ret << 8);
 	}
 
 	tx_fir_restore:
@@ -1763,7 +1857,8 @@ int32_t ad9361_get_tx_fir_config(struct ad9361_rf_phy *phy, uint8_t tx_ch,
 	if (ret < 0)
 		return ret;
 
-	fir_cfg->tx_int = phy->tx_fir_int;
+	result.tx_int = phy->tx_fir_int;
+	*fir_cfg = result;
 
 	return 0;
 }
@@ -1783,15 +1878,17 @@ int32_t ad9361_set_tx_fir_en_dis(struct ad9361_rf_phy *phy,
 				 uint8_t en_dis)
 {
 	int32_t ret = 0;
+	bool old_bypass = phy->bypass_tx_fir;
+	if (en_dis > 1)
+		return -EINVAL;
 
 	if (phy->bypass_tx_fir == !en_dis)
 		return ret;
 
 	phy->bypass_tx_fir = !en_dis;
 	ret = ad9361_validate_enable_fir(phy);
-	if (ret < 0) {
-		phy->bypass_tx_fir = true;
-	}
+	if (ret < 0)
+		phy->bypass_tx_fir = old_bypass;
 
 	return ret;
 }
@@ -1888,12 +1985,18 @@ int32_t ad9361_set_tx_rf_port_output(struct ad9361_rf_phy *phy,
 				     uint32_t mode)
 {
 	int32_t ret;
+	uint32_t old_mode = phy->pdata->rf_tx_output_sel;
+
+	if (mode > 1)
+		return -EINVAL;
 
 	phy->pdata->rf_tx_output_sel = mode;
 
 	ret = ad9361_rf_port_setup(phy, true,
 				   phy->pdata->rf_rx_input_sel,
 				   phy->pdata->rf_tx_output_sel);
+	if (ret < 0)
+		phy->pdata->rf_tx_output_sel = old_mode;
 
 	return ret;
 }
@@ -1924,6 +2027,8 @@ int32_t ad9361_get_tx_rf_port_output(struct ad9361_rf_phy *phy,
 int32_t ad9361_set_tx_auto_cal_en_dis(struct ad9361_rf_phy *phy,
 				      uint8_t en_dis)
 {
+	if (en_dis > 1)
+		return -EINVAL;
 	if (en_dis == 0)
 		phy->auto_cal_en = 0;
 	else
@@ -2090,6 +2195,7 @@ int32_t ad9361_get_trx_path_clks(struct ad9361_rf_phy *phy,
 int32_t ad9361_set_no_ch_mode(struct ad9361_rf_phy *phy, uint8_t no_ch_mode)
 {
 	int32_t ret;
+	uint32_t rates[NUM_AD9361_CLKS];
 	switch (no_ch_mode) {
 	case 1:
 		phy->pdata->rx2tx2 = 0;
@@ -2118,46 +2224,68 @@ int32_t ad9361_set_no_ch_mode(struct ad9361_rf_phy *phy, uint8_t no_ch_mode)
 
 	ad9361_clear_state(phy);
 
-	phy->clks[TX_REFCLK]->rate = ad9361_clk_factor_recalc_rate(
-					     phy->ref_clk_scale[TX_REFCLK], phy->clk_refin->rate);
-	phy->clks[RX_REFCLK]->rate = ad9361_clk_factor_recalc_rate(
-					     phy->ref_clk_scale[RX_REFCLK], phy->clk_refin->rate);
-	phy->clks[BB_REFCLK]->rate = ad9361_clk_factor_recalc_rate(
-					     phy->ref_clk_scale[BB_REFCLK], phy->clk_refin->rate);
-	phy->clks[BBPLL_CLK]->rate = ad9361_bbpll_recalc_rate(
-					     phy->ref_clk_scale[BBPLL_CLK], phy->clks[BB_REFCLK]->rate);
-	phy->clks[ADC_CLK]->rate = ad9361_clk_factor_recalc_rate(
-					   phy->ref_clk_scale[ADC_CLK], phy->clks[BBPLL_CLK]->rate);
-	phy->clks[R2_CLK]->rate = ad9361_clk_factor_recalc_rate(
-					  phy->ref_clk_scale[R2_CLK], phy->clks[ADC_CLK]->rate);
-	phy->clks[R1_CLK]->rate = ad9361_clk_factor_recalc_rate(
-					  phy->ref_clk_scale[R1_CLK], phy->clks[R2_CLK]->rate);
-	phy->clks[CLKRF_CLK]->rate = ad9361_clk_factor_recalc_rate(
-					     phy->ref_clk_scale[CLKRF_CLK], phy->clks[R1_CLK]->rate);
-	phy->clks[RX_SAMPL_CLK]->rate = ad9361_clk_factor_recalc_rate(
-						phy->ref_clk_scale[RX_SAMPL_CLK], phy->clks[CLKRF_CLK]->rate);
-	phy->clks[DAC_CLK]->rate = ad9361_clk_factor_recalc_rate(
-					   phy->ref_clk_scale[DAC_CLK], phy->clks[ADC_CLK]->rate);
-	phy->clks[T2_CLK]->rate = ad9361_clk_factor_recalc_rate(
-					  phy->ref_clk_scale[T2_CLK], phy->clks[DAC_CLK]->rate);
-	phy->clks[T1_CLK]->rate = ad9361_clk_factor_recalc_rate(
-					  phy->ref_clk_scale[T1_CLK], phy->clks[T2_CLK]->rate);
-	phy->clks[CLKTF_CLK]->rate = ad9361_clk_factor_recalc_rate(
-					     phy->ref_clk_scale[CLKTF_CLK], phy->clks[T1_CLK]->rate);
-	phy->clks[TX_SAMPL_CLK]->rate = ad9361_clk_factor_recalc_rate(
-						phy->ref_clk_scale[TX_SAMPL_CLK], phy->clks[CLKTF_CLK]->rate);
-	phy->clks[RX_RFPLL_INT]->rate = ad9361_rfpll_int_recalc_rate(
-						phy->ref_clk_scale[RX_RFPLL_INT], phy->clks[RX_REFCLK]->rate);
-	phy->clks[TX_RFPLL_INT]->rate = ad9361_rfpll_int_recalc_rate(
-						phy->ref_clk_scale[TX_RFPLL_INT], phy->clks[TX_REFCLK]->rate);
-	phy->clks[RX_RFPLL_DUMMY]->rate = ad9361_rfpll_dummy_recalc_rate(
-			phy->ref_clk_scale[RX_RFPLL_DUMMY]);
-	phy->clks[TX_RFPLL_DUMMY]->rate = ad9361_rfpll_dummy_recalc_rate(
-			phy->ref_clk_scale[TX_RFPLL_DUMMY]);
-	phy->clks[RX_RFPLL]->rate = ad9361_rfpll_recalc_rate(
-					    phy->ref_clk_scale[RX_RFPLL]);
-	phy->clks[TX_RFPLL]->rate = ad9361_rfpll_recalc_rate(
-					    phy->ref_clk_scale[TX_RFPLL]);
+	/* Rebuild into a temporary clock tree. Legacy recalc wrappers convert a
+	 * failed SPI read into rate zero, which made channel-mode changes report
+	 * success with a corrupt cached tree. */
+#define NO_CH_RECALC(index, call) do { \
+	ret = (call); \
+	if (ret < 0) \
+		return ret; \
+} while (0)
+	NO_CH_RECALC(TX_REFCLK, ad9361_clk_factor_recalc_rate_checked(
+		phy->ref_clk_scale[TX_REFCLK], phy->clk_refin->rate,
+		&rates[TX_REFCLK]));
+	NO_CH_RECALC(RX_REFCLK, ad9361_clk_factor_recalc_rate_checked(
+		phy->ref_clk_scale[RX_REFCLK], phy->clk_refin->rate,
+		&rates[RX_REFCLK]));
+	NO_CH_RECALC(BB_REFCLK, ad9361_clk_factor_recalc_rate_checked(
+		phy->ref_clk_scale[BB_REFCLK], phy->clk_refin->rate,
+		&rates[BB_REFCLK]));
+	NO_CH_RECALC(BBPLL_CLK, ad9361_bbpll_recalc_rate_checked(
+		phy->ref_clk_scale[BBPLL_CLK], rates[BB_REFCLK],
+		&rates[BBPLL_CLK]));
+	NO_CH_RECALC(ADC_CLK, ad9361_clk_factor_recalc_rate_checked(
+		phy->ref_clk_scale[ADC_CLK], rates[BBPLL_CLK], &rates[ADC_CLK]));
+	NO_CH_RECALC(R2_CLK, ad9361_clk_factor_recalc_rate_checked(
+		phy->ref_clk_scale[R2_CLK], rates[ADC_CLK], &rates[R2_CLK]));
+	NO_CH_RECALC(R1_CLK, ad9361_clk_factor_recalc_rate_checked(
+		phy->ref_clk_scale[R1_CLK], rates[R2_CLK], &rates[R1_CLK]));
+	NO_CH_RECALC(CLKRF_CLK, ad9361_clk_factor_recalc_rate_checked(
+		phy->ref_clk_scale[CLKRF_CLK], rates[R1_CLK], &rates[CLKRF_CLK]));
+	NO_CH_RECALC(RX_SAMPL_CLK, ad9361_clk_factor_recalc_rate_checked(
+		phy->ref_clk_scale[RX_SAMPL_CLK], rates[CLKRF_CLK],
+		&rates[RX_SAMPL_CLK]));
+	NO_CH_RECALC(DAC_CLK, ad9361_clk_factor_recalc_rate_checked(
+		phy->ref_clk_scale[DAC_CLK], rates[ADC_CLK], &rates[DAC_CLK]));
+	NO_CH_RECALC(T2_CLK, ad9361_clk_factor_recalc_rate_checked(
+		phy->ref_clk_scale[T2_CLK], rates[DAC_CLK], &rates[T2_CLK]));
+	NO_CH_RECALC(T1_CLK, ad9361_clk_factor_recalc_rate_checked(
+		phy->ref_clk_scale[T1_CLK], rates[T2_CLK], &rates[T1_CLK]));
+	NO_CH_RECALC(CLKTF_CLK, ad9361_clk_factor_recalc_rate_checked(
+		phy->ref_clk_scale[CLKTF_CLK], rates[T1_CLK], &rates[CLKTF_CLK]));
+	NO_CH_RECALC(TX_SAMPL_CLK, ad9361_clk_factor_recalc_rate_checked(
+		phy->ref_clk_scale[TX_SAMPL_CLK], rates[CLKTF_CLK],
+		&rates[TX_SAMPL_CLK]));
+	NO_CH_RECALC(RX_RFPLL_INT, ad9361_rfpll_int_recalc_rate_checked(
+		phy->ref_clk_scale[RX_RFPLL_INT], rates[RX_REFCLK],
+		&rates[RX_RFPLL_INT]));
+	NO_CH_RECALC(TX_RFPLL_INT, ad9361_rfpll_int_recalc_rate_checked(
+		phy->ref_clk_scale[TX_RFPLL_INT], rates[TX_REFCLK],
+		&rates[TX_RFPLL_INT]));
+	rates[RX_RFPLL_DUMMY] = ad9361_rfpll_dummy_recalc_rate(
+		phy->ref_clk_scale[RX_RFPLL_DUMMY]);
+	rates[TX_RFPLL_DUMMY] = ad9361_rfpll_dummy_recalc_rate(
+		phy->ref_clk_scale[TX_RFPLL_DUMMY]);
+	NO_CH_RECALC(RX_RFPLL, ad9361_rfpll_recalc_rate_checked(
+		phy->ref_clk_scale[RX_RFPLL], &rates[RX_RFPLL]));
+	NO_CH_RECALC(TX_RFPLL, ad9361_rfpll_recalc_rate_checked(
+		phy->ref_clk_scale[TX_RFPLL], &rates[TX_RFPLL]));
+#undef NO_CH_RECALC
+	{
+		size_t i;
+		for (i = 0; i < NUM_AD9361_CLKS; ++i)
+			phy->clks[i]->rate = rates[i];
+	}
 
 	ret = ad9361_setup(phy);
 	if (ret < 0)
@@ -2261,6 +2389,11 @@ int32_t ad9361_set_trx_fir_en_dis(struct ad9361_rf_phy *phy,
 				  uint8_t en_dis)
 {
 	int32_t ret = 0;
+	bool old_rx_bypass = phy->bypass_rx_fir;
+	bool old_tx_bypass = phy->bypass_tx_fir;
+
+	if (en_dis > 1)
+		return -EINVAL;
 
 	if ((phy->bypass_rx_fir == phy->bypass_tx_fir) &&
 	    (phy->bypass_rx_fir == !en_dis))
@@ -2270,8 +2403,8 @@ int32_t ad9361_set_trx_fir_en_dis(struct ad9361_rf_phy *phy,
 	phy->bypass_tx_fir = !en_dis;
 	ret = ad9361_validate_enable_fir(phy);
 	if (ret < 0) {
-		phy->bypass_rx_fir = true;
-		phy->bypass_tx_fir = true;
+		phy->bypass_rx_fir = old_rx_bypass;
+		phy->bypass_tx_fir = old_tx_bypass;
 	}
 
 	return ret;
@@ -2392,10 +2525,10 @@ int32_t ad9361_trx_load_enable_fir(struct ad9361_rf_phy *phy,
 int32_t ad9361_do_dcxo_tune_coarse(struct ad9361_rf_phy *phy,
 				   uint32_t coarse)
 {
-	phy->pdata->dcxo_coarse = coarse;
-
-	return ad9361_set_dcxo_tune(phy, phy->pdata->dcxo_coarse,
-				    phy->pdata->dcxo_fine);
+	int32_t ret = ad9361_set_dcxo_tune(phy, coarse, phy->pdata->dcxo_fine);
+	if (ret >= 0)
+		phy->pdata->dcxo_coarse = coarse;
+	return ret;
 }
 
 /**
@@ -2407,10 +2540,10 @@ int32_t ad9361_do_dcxo_tune_coarse(struct ad9361_rf_phy *phy,
 int32_t ad9361_do_dcxo_tune_fine(struct ad9361_rf_phy *phy,
 				 uint32_t fine)
 {
-	phy->pdata->dcxo_fine = fine;
-
-	return ad9361_set_dcxo_tune(phy, phy->pdata->dcxo_coarse,
-				    phy->pdata->dcxo_fine);
+	int32_t ret = ad9361_set_dcxo_tune(phy, phy->pdata->dcxo_coarse, fine);
+	if (ret >= 0)
+		phy->pdata->dcxo_fine = fine;
+	return ret;
 }
 
 /**
@@ -2422,7 +2555,9 @@ int32_t ad9361_do_dcxo_tune_fine(struct ad9361_rf_phy *phy,
 int32_t ad9361_get_temperature(struct ad9361_rf_phy *phy,
 			       int32_t *temp)
 {
-	*temp = ad9361_get_temp(phy);
-
+	int32_t ret = ad9361_get_temp(phy);
+	if (ret < 0)
+		return ret;
+	*temp = ret;
 	return 0;
 }

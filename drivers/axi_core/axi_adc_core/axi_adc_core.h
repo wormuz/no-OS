@@ -198,9 +198,9 @@ int32_t axi_adc_get_sampling_freq(struct axi_adc *adc,
 				  uint32_t chan,
 				  uint64_t *sampling_freq);
 /** Set input/output delay primitive for specific interface line */
-void axi_adc_idelay_set(struct axi_adc *adc,
-			uint32_t lane,
-			uint32_t val);
+int32_t axi_adc_idelay_set(struct axi_adc *adc,
+			   uint32_t lane,
+			   uint32_t val);
 /** Set input/output delay primitive for number of lines */
 int32_t axi_adc_delay_set(struct axi_adc *adc,
 			  uint32_t no_of_lanes,

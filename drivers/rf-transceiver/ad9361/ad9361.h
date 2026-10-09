@@ -3584,7 +3584,9 @@ int32_t ad9361_rx_fastlock_get_freq(struct ad9361_rf_phy *phy,
 void ad9361_ensm_force_state(struct ad9361_rf_phy *phy, uint8_t ensm_state);
 int32_t ad9361_ensm_force_state_checked(struct ad9361_rf_phy *phy,
 		uint8_t ensm_state);
-uint8_t ad9361_ensm_get_state(struct ad9361_rf_phy *phy);
+int32_t ad9361_ensm_get_state(struct ad9361_rf_phy *phy);
+int32_t ad9361_ensm_read_state_checked(struct ad9361_rf_phy *phy,
+				       uint8_t *ensm_state);
 void ad9361_ensm_restore_state(struct ad9361_rf_phy *phy, uint8_t ensm_state);
 void ad9361_ensm_restore_prev_state(struct ad9361_rf_phy *phy);
 int32_t ad9361_ensm_restore_state_checked(struct ad9361_rf_phy *phy,

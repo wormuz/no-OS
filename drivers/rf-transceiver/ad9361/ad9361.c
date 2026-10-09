@@ -1062,9 +1062,13 @@ int32_t ad9361_1rx1tx_channel_map(struct ad9361_rf_phy *phy, bool tx,
 int32_t ad9361_reset(struct ad9361_rf_phy *phy)
 {
 	if (phy->gpio_desc_resetb) {
-		no_os_gpio_set_value(phy->gpio_desc_resetb, 0);
+		int32_t ret = no_os_gpio_set_value(phy->gpio_desc_resetb, 0);
+		if (ret < 0)
+			return ret;
 		no_os_mdelay(1);
-		no_os_gpio_set_value(phy->gpio_desc_resetb, 1);
+		ret = no_os_gpio_set_value(phy->gpio_desc_resetb, 1);
+		if (ret < 0)
+			return ret;
 		no_os_mdelay(1);
 		dev_dbg(&phy->spi->dev, "%s: by GPIO", __func__);
 		return 0;
@@ -1235,10 +1239,9 @@ void ad9361_get_bist_loopback(struct ad9361_rf_phy *phy, int32_t *mode)
 int32_t ad9361_bist_prbs(struct ad9361_rf_phy *phy, enum ad9361_bist_mode mode)
 {
 	uint32_t reg = 0;
+	int32_t ret;
 
 	dev_dbg(&phy->spi->dev, "%s: mode %d", __func__, mode);
-
-	phy->bist_prbs_mode = mode;
 
 	switch (mode) {
 	case BIST_DISABLE:
@@ -1250,11 +1253,17 @@ int32_t ad9361_bist_prbs(struct ad9361_rf_phy *phy, enum ad9361_bist_mode mode)
 	case BIST_INJ_RX:
 		reg = BIST_CTRL_POINT(2) | BIST_ENABLE;
 		break;
-	};
+	default:
+		return -EINVAL;
+	}
 
+	ret = ad9361_spi_write(phy->spi, REG_BIST_CONFIG, reg);
+	if (ret < 0)
+		return ret;
+
+	phy->bist_prbs_mode = mode;
 	phy->bist_config = reg;
-
-	return ad9361_spi_write(phy->spi, REG_BIST_CONFIG, reg);
+	return 0;
 }
 
 /**
@@ -1292,7 +1301,6 @@ int32_t ad9361_bist_tone(struct ad9361_rf_phy *phy,
 		reg = 0;
 		break;
 	case BIST_INJ_TX:
-		clk = clk_get_rate(phy, phy->ref_clk_scale[TX_SAMPL_CLK]);
 		reg = BIST_CTRL_POINT(0) | BIST_ENABLE;
 		break;
 	case BIST_INJ_RX:
@@ -2259,7 +2267,7 @@ out:
  * @param phy The AD9361 state structure.
  * @return The state.
  */
-uint8_t ad9361_ensm_get_state(struct ad9361_rf_phy *phy)
+int32_t ad9361_ensm_get_state(struct ad9361_rf_phy *phy)
 {
 	return ad9361_spi_readf(phy->spi, REG_STATE, ENSM_STATE(~0));
 }
@@ -2271,7 +2279,7 @@ uint8_t ad9361_ensm_get_state(struct ad9361_rf_phy *phy)
  *                   ENSM_STATE_TX, ENSM_STATE_TX_FLUSH, ENSM_STATE_RX,
  *                   ENSM_STATE_RX_FLUSH, ENSM_STATE_FDD, ENSM_STATE_FDD_FLUSH].
  */
-static int32_t ad9361_ensm_read_state_checked(struct ad9361_rf_phy *phy,
+int32_t ad9361_ensm_read_state_checked(struct ad9361_rf_phy *phy,
 		uint8_t *ensm_state)
 {
 	int32_t state;
@@ -2625,8 +2633,13 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 	reg = NO_OS_DIV_ROUND_UP(reg, 1000UL) +
 	      phy->pdata->gain_ctrl.agc_attack_delay_extra_margin_us;
 	reg = no_os_clamp_t(uint8_t, reg, 0U, 31U);
-	ret = ad9361_spi_writef(spi, REG_AGC_ATTACK_DELAY,
-				AGC_ATTACK_DELAY(~0), reg);
+#define GC_WRITE(call) do { \
+	ret = (call); \
+	if (ret < 0) \
+		return ret; \
+} while (0)
+	GC_WRITE(ad9361_spi_writef(spi, REG_AGC_ATTACK_DELAY,
+				   AGC_ATTACK_DELAY(~0), reg));
 
 	/*
 	 * Peak Overload Wait Time (ClkRF cycles)=ceiling((0.1+Delay_LNA) *clkRF+1)
@@ -2635,8 +2648,8 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 	reg = (delay_lna + 100UL) * (clkrf / 1000UL);
 	reg = NO_OS_DIV_ROUND_UP(reg, 1000000UL) + 1;
 	reg = no_os_clamp_t(uint8_t, reg, 0U, 31U);
-	ret |= ad9361_spi_writef(spi, REG_PEAK_WAIT_TIME,
-				 PEAK_OVERLOAD_WAIT_TIME(~0), reg);
+	GC_WRITE(ad9361_spi_writef(spi, REG_PEAK_WAIT_TIME,
+				   PEAK_OVERLOAD_WAIT_TIME(~0), reg));
 
 	/*
 	 * Settling Delay in 0x111.  Applies to all gain control modes:
@@ -2646,8 +2659,8 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 	reg = (delay_lna + 200UL) * (clkrf / 2000UL);
 	reg = NO_OS_DIV_ROUND_UP(reg, 1000000UL) + 7;
 	reg = settling_delay = no_os_clamp_t(uint8_t, reg, 0U, 31U);
-	ret |= ad9361_spi_writef(spi, REG_FAST_CONFIG_2_SETTLING_DELAY,
-				 SETTLING_DELAY(~0), reg);
+	GC_WRITE(ad9361_spi_writef(spi, REG_FAST_CONFIG_2_SETTLING_DELAY,
+				   SETTLING_DELAY(~0), reg));
 
 	/*
 	 * Gain Update Counter [15:0]= round((((time*ClkRF-0x111[D4:D0]*2)-2))/2)
@@ -2674,19 +2687,19 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 	}
 
 	/* Power Measurement Duration */
-	ret |= ad9361_spi_writef(spi, REG_DEC_POWER_MEASURE_DURATION_0,
-				 DEC_POWER_MEASUREMENT_DURATION(~0),
-				 ilog2(dec_pow_meas_dur / 16));
+	GC_WRITE(ad9361_spi_writef(spi, REG_DEC_POWER_MEASURE_DURATION_0,
+				   DEC_POWER_MEASUREMENT_DURATION(~0),
+				   ilog2(dec_pow_meas_dur / 16)));
 
 
-	ret |= ad9361_spi_writef(spi, REG_DIGITAL_SAT_COUNTER,
-				 DOUBLE_GAIN_COUNTER,  reg > 65535);
+	GC_WRITE(ad9361_spi_writef(spi, REG_DIGITAL_SAT_COUNTER,
+				   DOUBLE_GAIN_COUNTER, reg > 65535));
 
 	if (reg > 65535)
 		reg /= 2;
 
-	ret |= ad9361_spi_write(spi, REG_GAIN_UPDATE_COUNTER1, reg & 0xFF);
-	ret |= ad9361_spi_write(spi, REG_GAIN_UPDATE_COUNTER2, reg >> 8);
+	GC_WRITE(ad9361_spi_write(spi, REG_GAIN_UPDATE_COUNTER1, reg & 0xFF));
+	GC_WRITE(ad9361_spi_write(spi, REG_GAIN_UPDATE_COUNTER2, reg >> 8));
 
 	/*
 	 * Fast AGC State Wait Time - Energy Detect Count
@@ -2695,10 +2708,11 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 	reg = NO_OS_DIV_ROUND_CLOSEST(phy->pdata->gain_ctrl.f_agc_state_wait_time_ns *
 				      (clkrf / 1000UL), 1000000UL);
 	reg = no_os_clamp_t(uint32_t, reg, 0U, 31U);
-	ret |= ad9361_spi_writef(spi, REG_FAST_ENERGY_DETECT_COUNT,
-				 ENERGY_DETECT_COUNT(~0),  reg);
+	GC_WRITE(ad9361_spi_writef(spi, REG_FAST_ENERGY_DETECT_COUNT,
+				   ENERGY_DETECT_COUNT(~0), reg));
+#undef GC_WRITE
 
-	return ret;
+	return 0;
 }
 
 /**
@@ -2715,6 +2729,7 @@ int32_t ad9361_set_gain_ctrl_mode(struct ad9361_rf_phy *phy,
 	int32_t rc = 0;
 	uint32_t gain_ctl_shift, mode;
 	uint8_t val;
+	bool rx_disabled = false;
 
 	rc = ad9361_spi_readm(spi, REG_AGC_CONFIG_1, &val, 1);
 	if (rc) {
@@ -2756,6 +2771,7 @@ int32_t ad9361_set_gain_ctrl_mode(struct ad9361_rf_phy *phy,
 		dev_err(dev, "Unable to disable rx%"PRIu32, gain_ctrl->ant);
 		goto out;
 	}
+	rx_disabled = true;
 
 	val &= ~(RX_GAIN_CTL_MASK << gain_ctl_shift);
 	val |= mode << gain_ctl_shift;
@@ -2780,8 +2796,17 @@ int32_t ad9361_set_gain_ctrl_mode(struct ad9361_rf_phy *phy,
 	rc = ad9361_en_dis_rx(phy, gain_ctrl->ant, RX_ENABLE);
 	if (rc)
 		goto out;
+	rx_disabled = false;
 	rc = ad9361_gc_update(phy);
 out:
+	if (rx_disabled) {
+		int32_t restore_rc = ad9361_en_dis_rx(phy, gain_ctrl->ant,
+						      RX_ENABLE);
+		if (rc >= 0 && restore_rc < 0)
+			rc = restore_rc;
+		else if (rc < 0 && restore_rc < 0)
+			dev_err(dev, "Unable to re-enable RX after gain-mode failure");
+	}
 	return rc;
 }
 
@@ -3259,8 +3284,12 @@ static int32_t ad9361_tx_bb_second_filter_calib(struct ad9361_rf_phy *phy,
 	}
 
 	ret = ad9361_spi_write(phy->spi, REG_CONFIG0, reg_conf);
-	ret |= ad9361_spi_write(phy->spi, REG_RESISTOR, reg_res);
-	ret |= ad9361_spi_write(phy->spi, REG_CAPACITOR, (uint8_t)cap);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_RESISTOR, reg_res);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_CAPACITOR, (uint8_t)cap);
 
 	return ret;
 }
@@ -4190,6 +4219,11 @@ static int32_t ad9361_txmon_setup(struct ad9361_rf_phy *phy,
 int32_t ad9361_txmon_control(struct ad9361_rf_phy *phy,
 				    int32_t en_mask)
 {
+	int32_t ret;
+
+	if (en_mask & ~(TX_1 | TX_2))
+		return -EINVAL;
+
 	dev_dbg(&phy->spi->dev, "%s: mask 0x%"PRIx32, __func__, en_mask);
 
 #if 0
@@ -4204,11 +4238,14 @@ int32_t ad9361_txmon_control(struct ad9361_rf_phy *phy,
 	}
 #endif
 
-	ad9361_spi_writef(phy->spi, REG_ANALOG_POWER_DOWN_OVERRIDE,
-			  TX_MONITOR_POWER_DOWN(~0), ~en_mask);
-
-	ad9361_spi_writef(phy->spi, REG_TPM_MODE_ENABLE,
-			  TX1_MON_ENABLE, !!(en_mask & TX_1));
+	ret = ad9361_spi_writef(phy->spi, REG_ANALOG_POWER_DOWN_OVERRIDE,
+				TX_MONITOR_POWER_DOWN(~0), ~en_mask);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_writef(phy->spi, REG_TPM_MODE_ENABLE,
+				TX1_MON_ENABLE, !!(en_mask & TX_1));
+	if (ret < 0)
+		return ret;
 
 	return ad9361_spi_writef(phy->spi, REG_TPM_MODE_ENABLE,
 				 TX2_MON_ENABLE, !!(en_mask & TX_2));
@@ -4241,15 +4278,21 @@ int32_t ad9361_rf_port_setup(struct ad9361_rf_phy *phy, bool is_out,
 			     uint32_t rx_inputs, uint32_t txb)
 {
 	uint32_t val;
+	int32_t ret;
 
 	if (rx_inputs > 11)
 		return -EINVAL;
 
 	if (!is_out) {
-		if (rx_inputs > 8)
-			return ad9361_txmon_control(phy, rx_inputs & (TX_1 | TX_2));
-		else
-			ad9361_txmon_control(phy, 0);
+		if (rx_inputs > 8) {
+			ret = ad9361_txmon_control(phy, rx_inputs & (TX_1 | TX_2));
+			if (ret < 0)
+				return ret;
+		} else {
+			ret = ad9361_txmon_control(phy, 0);
+			if (ret < 0)
+				return ret;
+		}
 	}
 
 	if (rx_inputs < 3)
@@ -5156,9 +5199,15 @@ static int32_t ad9361_bb_clk_change_handler(struct ad9361_rf_phy *phy)
 	int32_t ret;
 
 	ret = ad9361_gc_update(phy);
-	ret |= ad9361_rssi_setup(phy, &phy->pdata->rssi_ctrl, true);
-	ret |= ad9361_auxadc_setup(phy, &phy->pdata->auxadc_ctrl,
-				   clk_get_rate(phy, phy->ref_clk_scale[BBPLL_CLK]));
+	if (ret < 0)
+		return ret;
+	ret = ad9361_rssi_setup(phy, &phy->pdata->rssi_ctrl, true);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_auxadc_setup(phy, &phy->pdata->auxadc_ctrl,
+				  clk_get_rate(phy, phy->ref_clk_scale[BBPLL_CLK]));
+	if (ret < 0)
+		return ret;
 
 	/*
 	 * when bb_clk_change_dig_tune_en is set, re-run the digital
@@ -5167,7 +5216,9 @@ static int32_t ad9361_bb_clk_change_handler(struct ad9361_rf_phy *phy)
 	 */
 	if (phy->pdata->bb_clk_change_dig_tune_en) {
 #ifndef AXI_ADC_NOT_PRESENT
-		ret |= ad9361_dig_tune(phy, 0, RESTORE_DEFAULT);
+		ret = ad9361_dig_tune(phy, 0, RESTORE_DEFAULT);
+		if (ret < 0)
+			return ret;
 #endif
 	}
 
@@ -5511,8 +5562,11 @@ int32_t ad9361_set_trx_clock_chain(struct ad9361_rf_phy *phy,
 	 */
 
 	if (!phy->pdata->dig_interface_tune_fir_disable &&
-	    !(phy->bypass_tx_fir && phy->bypass_rx_fir))
+	    !(phy->bypass_tx_fir && phy->bypass_rx_fir)) {
 		ret = ad9361_dig_tune(phy, 0, SKIP_STORE_RESULT);
+		if (ret < 0)
+			return ret;
+	}
 
 	return ad9361_bb_clk_change_handler(phy);
 }
@@ -6211,6 +6265,10 @@ int32_t ad9361_mcs(struct ad9361_rf_phy *phy, int32_t step)
 {
 	int32_t mcs_mask = MCS_RF_ENABLE | MCS_BBPLL_ENABLE |
 			   MCS_DIGITAL_CLK_ENABLE | MCS_BB_ENABLE;
+	int32_t ret;
+
+	if (step < 0 || step > 5)
+		return -EINVAL;
 
 	dev_dbg(&phy->spi->dev, "%s: MCS step %"PRId32, __func__, step);
 
@@ -6219,39 +6277,44 @@ int32_t ad9361_mcs(struct ad9361_rf_phy *phy, int32_t step)
 		/* REVIST:
 		* POWER_DOWN_TRX_SYNTH and MCS_RF_ENABLE somehow conflict
 		*/
-		ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
-				  POWER_DOWN_TX_SYNTH | POWER_DOWN_RX_SYNTH, 0);
-
-		ad9361_spi_writef(phy->spi, REG_MULTICHIP_SYNC_AND_TX_MON_CTRL,
-				  mcs_mask, MCS_BB_ENABLE | MCS_BBPLL_ENABLE | MCS_RF_ENABLE);
-		ad9361_spi_writef(phy->spi, REG_CP_BLEED_CURRENT,
-				  MCS_REFCLK_SCALE_EN, 1);
+		ret = ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
+					POWER_DOWN_TX_SYNTH | POWER_DOWN_RX_SYNTH, 0);
+		if (ret < 0)
+			return ret;
+		ret = ad9361_spi_writef(phy->spi, REG_MULTICHIP_SYNC_AND_TX_MON_CTRL,
+					mcs_mask, MCS_BB_ENABLE | MCS_BBPLL_ENABLE | MCS_RF_ENABLE);
+		if (ret < 0)
+			return ret;
+		return ad9361_spi_writef(phy->spi, REG_CP_BLEED_CURRENT,
+					 MCS_REFCLK_SCALE_EN, 1);
 		break;
 	case 2:
 		if (!phy->gpio_desc_sync)
-			break;
+			return -ENODEV;
 		/*
 		 * NOTE: This is not a regular GPIO -
 		 * HDL ensures Multi-chip Synchronization SYNC_IN Pulse Timing
 		 * relative to rising and falling edge of REF_CLK
 		 */
-		no_os_gpio_set_value(phy->gpio_desc_sync, 1);
-		no_os_gpio_set_value(phy->gpio_desc_sync, 0);
-		break;
+		ret = no_os_gpio_set_value(phy->gpio_desc_sync, 1);
+		if (ret < 0)
+			return ret;
+		return no_os_gpio_set_value(phy->gpio_desc_sync, 0);
 	case 3:
-		ad9361_spi_writef(phy->spi, REG_MULTICHIP_SYNC_AND_TX_MON_CTRL,
-				  mcs_mask, MCS_BB_ENABLE | MCS_DIGITAL_CLK_ENABLE | MCS_RF_ENABLE);
-		break;
+		return ad9361_spi_writef(phy->spi, REG_MULTICHIP_SYNC_AND_TX_MON_CTRL,
+					 mcs_mask, MCS_BB_ENABLE | MCS_DIGITAL_CLK_ENABLE | MCS_RF_ENABLE);
 	case 4:
 		if (!phy->gpio_desc_sync)
-			break;
-		no_os_gpio_set_value(phy->gpio_desc_sync, 1);
-		no_os_gpio_set_value(phy->gpio_desc_sync, 0);
-		break;
+			return -ENODEV;
+		ret = no_os_gpio_set_value(phy->gpio_desc_sync, 1);
+		if (ret < 0)
+			return ret;
+		return no_os_gpio_set_value(phy->gpio_desc_sync, 0);
 	case 5:
-		ad9361_spi_writef(phy->spi, REG_MULTICHIP_SYNC_AND_TX_MON_CTRL,
-				  mcs_mask, MCS_RF_ENABLE);
-		break;
+		return ad9361_spi_writef(phy->spi, REG_MULTICHIP_SYNC_AND_TX_MON_CTRL,
+					 mcs_mask, MCS_RF_ENABLE);
+	case 0:
+		return 0;
 	}
 
 	return 0;
@@ -7346,8 +7409,11 @@ int32_t ad9361_validate_enable_fir(struct ad9361_rf_phy *phy)
 
 	/* See also: ad9361_set_trx_clock_chain() */
 	if (!phy->pdata->dig_interface_tune_fir_disable &&
-	    phy->bypass_tx_fir && phy->bypass_rx_fir)
-		ad9361_dig_tune(phy, 0, RESTORE_DEFAULT);
+	    phy->bypass_tx_fir && phy->bypass_rx_fir) {
+		ret = ad9361_dig_tune(phy, 0, RESTORE_DEFAULT);
+		if (ret < 0)
+			return ret;
+	}
 
 	return ad9361_update_rf_bandwidth(phy,
 					  valid ? phy->filt_rx_bw_Hz : phy->current_rx_bw_Hz,
@@ -7534,8 +7600,10 @@ static int32_t ad9361_set_clk_scaler(struct refclk_scale *clk_priv, bool set)
 			tmp = ret;
 			ret = ad9361_spi_writef(spi, REG_REF_DIVIDE_CONFIG_1,
 						RX_REF_DIVIDER_MSB, tmp >> 1);
-			ret |= ad9361_spi_writef(spi, REG_REF_DIVIDE_CONFIG_2,
-						 RX_REF_DIVIDER_LSB, tmp & 1);
+			if (ret < 0)
+				return ret;
+			ret = ad9361_spi_writef(spi, REG_REF_DIVIDE_CONFIG_2,
+						RX_REF_DIVIDER_LSB, tmp & 1);
 			return ret;
 		}
 		break;
@@ -9015,8 +9083,12 @@ int32_t ad9361_get_dig_tune_data(struct ad9361_rf_phy *phy,
  */
 int32_t ad9361_write_bist_reg(struct ad9361_rf_phy *phy, uint32_t val)
 {
+	int32_t ret = ad9361_spi_write(phy->spi,
+				       REG_BIST_AND_DATA_PORT_TEST_CONFIG, val);
+	if (ret < 0)
+		return ret;
 	phy->bist_config = val;
-	return ad9361_spi_write(phy->spi, REG_BIST_AND_DATA_PORT_TEST_CONFIG, val);
+	return 0;
 }
 
 /**
@@ -9056,14 +9128,24 @@ int32_t ad9361_ensm_mode_restore_pinctrl(struct ad9361_rf_phy *phy)
  */
 int32_t ad9361_set_cal_sw(struct ad9361_rf_phy *phy, uint32_t val)
 {
+	int32_t ret;
+	if (val > 3)
+		return -EINVAL;
+
 	if (!phy->gpio_desc_cal_sw1 || !phy->gpio_desc_cal_sw2) {
 		dev_err(&phy->spi->dev,
 			"%s: calibration switch GPIOs not configured\n", __func__);
 		return -ENODEV;
 	}
 
-	no_os_gpio_set_value(phy->gpio_desc_cal_sw1, !!(val & NO_OS_BIT(0)));
-	no_os_gpio_set_value(phy->gpio_desc_cal_sw2, !!(val & NO_OS_BIT(1)));
+	ret = no_os_gpio_set_value(phy->gpio_desc_cal_sw1,
+				   !!(val & NO_OS_BIT(0)));
+	if (ret < 0)
+		return ret;
+	ret = no_os_gpio_set_value(phy->gpio_desc_cal_sw2,
+				   !!(val & NO_OS_BIT(1)));
+	if (ret < 0)
+		return ret;
 
 	return 0;
 }

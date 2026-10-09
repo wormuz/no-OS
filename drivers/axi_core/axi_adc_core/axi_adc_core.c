@@ -110,13 +110,14 @@ int32_t axi_adc_set_pnsel(struct axi_adc *adc,
 			  enum axi_adc_pn_sel sel)
 {
 	uint32_t reg_data;
+	int32_t ret;
 
-	axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL_3(chan), &reg_data);
+	ret = axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL_3(chan), &reg_data);
+	if (ret < 0)
+		return ret;
 	reg_data &= ~AXI_ADC_ADC_PN_SEL(~0);
 	reg_data |= AXI_ADC_ADC_PN_SEL(sel);
-	axi_adc_write(adc, AXI_ADC_REG_CHAN_CNTRL_3(chan), reg_data);
-
-	return 0;
+	return axi_adc_write(adc, AXI_ADC_REG_CHAN_CNTRL_3(chan), reg_data);
 }
 
 /**
@@ -131,22 +132,33 @@ int32_t axi_adc_pn_mon(struct axi_adc *adc,
 {
 	uint8_t	ch;
 	uint32_t reg_data;
+	int32_t ret;
 
 	for (ch = 0; ch < adc->num_channels; ch++) {
-		axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL(ch), &reg_data);
+		ret = axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL(ch), &reg_data);
+		if (ret < 0)
+			return ret;
 		reg_data |= AXI_ADC_ENABLE;
-		axi_adc_write(adc, AXI_ADC_REG_CHAN_CNTRL(ch), reg_data);
-		axi_adc_set_pnsel(adc, ch, sel);
+		ret = axi_adc_write(adc, AXI_ADC_REG_CHAN_CNTRL(ch), reg_data);
+		if (ret < 0)
+			return ret;
+		ret = axi_adc_set_pnsel(adc, ch, sel);
+		if (ret < 0)
+			return ret;
 	}
 	no_os_mdelay(1);
 
 	for (ch = 0; ch < adc->num_channels; ch++) {
-		axi_adc_write(adc, AXI_ADC_REG_CHAN_STATUS(ch), 0xff);
+		ret = axi_adc_write(adc, AXI_ADC_REG_CHAN_STATUS(ch), 0xff);
+		if (ret < 0)
+			return ret;
 	}
 	no_os_mdelay(delay_ms);
 
 	for (ch = 0; ch < adc->num_channels; ch++) {
-		axi_adc_read(adc, AXI_ADC_REG_CHAN_STATUS(ch), &reg_data);
+		ret = axi_adc_read(adc, AXI_ADC_REG_CHAN_STATUS(ch), &reg_data);
+		if (ret < 0)
+			return ret;
 		if (reg_data != 0)
 			return -1;
 	}
@@ -167,10 +179,15 @@ int32_t axi_adc_get_sampling_freq(struct axi_adc *adc,
 {
 	uint32_t freq;
 	uint32_t ratio;
+	int32_t ret;
 
-	axi_adc_read(adc, AXI_ADC_REG_CLK_FREQ, &freq);
-	axi_adc_read(adc, AXI_ADC_REG_CLK_RATIO, &ratio);
-	*sampling_freq = freq * ratio;
+	ret = axi_adc_read(adc, AXI_ADC_REG_CLK_FREQ, &freq);
+	if (ret < 0)
+		return ret;
+	ret = axi_adc_read(adc, AXI_ADC_REG_CLK_RATIO, &ratio);
+	if (ret < 0)
+		return ret;
+	*sampling_freq = (uint64_t)freq * ratio;
 	*sampling_freq = ((*sampling_freq) * 390625) >> 8;
 
 	return 0;
@@ -182,12 +199,11 @@ int32_t axi_adc_get_sampling_freq(struct axi_adc *adc,
  * @param lane - The AXI ADC interface line.
  * @param val - Delay value.
  */
-void axi_adc_idelay_set(struct axi_adc *adc,
-			uint32_t lane,
-			uint32_t val)
+int32_t axi_adc_idelay_set(struct axi_adc *adc,
+			   uint32_t lane,
+			   uint32_t val)
 {
-	axi_adc_write(adc, AXI_ADC_REG_DELAY(lane), val);
-
+	return axi_adc_write(adc, AXI_ADC_REG_DELAY(lane), val);
 }
 
 /**
@@ -205,7 +221,9 @@ int32_t axi_adc_delay_set(struct axi_adc *adc,
 	uint32_t rdata;
 	uint32_t pcore_version;
 
-	axi_adc_read(adc, 0x0, &pcore_version);
+	int32_t ret = axi_adc_read(adc, 0x0, &pcore_version);
+	if (ret < 0)
+		return ret;
 	pcore_version >>= 16;
 	if (pcore_version < 9) {
 		printf(" pcore_version is : %d\n\r", (int)pcore_version);
@@ -213,11 +231,16 @@ int32_t axi_adc_delay_set(struct axi_adc *adc,
 		return -1;
 	} else {
 		for (i = 0; i < no_of_lanes; i++) {
-			axi_adc_idelay_set(adc, i, delay);
-			axi_adc_read(adc, AXI_ADC_REG_DELAY(i), &rdata);
+			ret = axi_adc_idelay_set(adc, i, delay);
+			if (ret < 0)
+				return ret;
+			ret = axi_adc_read(adc, AXI_ADC_REG_DELAY(i), &rdata);
+			if (ret < 0)
+				return ret;
 			if (rdata != delay) {
 				printf("adc_delay_1: sel(%2d), rcv(%04x), exp(%04x)\n\r",
 				       (int)i, (int)rdata, (int)delay);
+				return -EIO;
 			}
 		}
 	}
@@ -249,21 +272,29 @@ int32_t axi_adc_delay_calibrate(struct axi_adc *adc,
 	uint8_t cnt_invalid = 0;
 	uint8_t val = 0;
 	uint8_t max_val = 32;
+	int32_t ret;
 
 	for (delay = 0; delay < 32; delay++) {
-		axi_adc_delay_set(adc, no_of_lanes, delay);
+		ret = axi_adc_delay_set(adc, no_of_lanes, delay);
+		if (ret < 0)
+			return ret;
 		no_os_mdelay(20);
-		if (axi_adc_pn_mon(adc, sel, 100) == 0) {
+		ret = axi_adc_pn_mon(adc, sel, 100);
+		if (ret == 0) {
 			err_field[delay] = 0;
 			start_valid_delay = start_valid_delay == 32 ?
 					    delay : start_valid_delay;
-		} else {
+		} else if (ret == -1) {
 			err_field[delay] = 1;
+		} else {
+			return ret;
 		}
 	}
 	if (start_valid_delay > 31) {
 		printf("%s FAILED.\n", __func__);
-		axi_adc_delay_set(adc, no_of_lanes, 0);
+		ret = axi_adc_delay_set(adc, no_of_lanes, 0);
+		if (ret < 0)
+			return ret;
 		return -1;
 	}
 
@@ -305,9 +336,7 @@ int32_t axi_adc_delay_calibrate(struct axi_adc *adc,
 	delay = (valid_range[max_interval] + invalid_range[max_interval] - 1) / 2;
 
 	printf("adc_delay: setting zero error delay (%d)\n\r", delay);
-	axi_adc_delay_set(adc, no_of_lanes, delay);
-
-	return 0;
+	return axi_adc_delay_set(adc, no_of_lanes, delay);
 }
 
 /**
@@ -328,6 +357,11 @@ int32_t axi_adc_set_calib_phase_scale(struct axi_adc *adc,
 	uint32_t fract;
 	uint64_t llval;
 	uint32_t tmp;
+	int32_t ret;
+	int64_t signed_val2 = val2;
+
+	if (signed_val2 < -999999 || signed_val2 > 999999)
+		return -EINVAL;
 
 	switch (val) {
 	case 1:
@@ -338,20 +372,22 @@ int32_t axi_adc_set_calib_phase_scale(struct axi_adc *adc,
 		break;
 	case 0:
 		fract = 0;
-		if (val2 < 0) {
+		if (signed_val2 < 0) {
 			fract = 0x8000;
-			val2 *= -1;
+			signed_val2 = -signed_val2;
 		}
 		break;
 	default:
 		return -1;
 	}
 
-	llval = (uint64_t)val2 * 0x4000UL + (1000000UL / 2);
+	llval = (uint64_t)signed_val2 * 0x4000UL + (1000000UL / 2);
 	no_os_do_div(&llval, 1000000UL);
 	fract |= llval;
 
-	axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL_2(chan), &tmp);
+	ret = axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL_2(chan), &tmp);
+	if (ret < 0)
+		return ret;
 
 	if (!((chan + phase) % 2)) {
 		tmp &= ~AXI_ADC_IQCOR_COEFF_1(~0);
@@ -361,9 +397,7 @@ int32_t axi_adc_set_calib_phase_scale(struct axi_adc *adc,
 		tmp |= AXI_ADC_IQCOR_COEFF_2(fract);
 	}
 
-	axi_adc_write(adc, AXI_ADC_REG_CHAN_CNTRL_2(chan), tmp);
-
-	return 0;
+	return axi_adc_write(adc, AXI_ADC_REG_CHAN_CNTRL_2(chan), tmp);
 }
 
 /**
@@ -384,8 +418,11 @@ int32_t axi_adc_get_calib_phase_scale(struct axi_adc *adc,
 	uint32_t tmp;
 	int32_t sign;
 	uint64_t llval;
+	int32_t ret, result, result2;
 
-	axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL_2(chan), &tmp);
+	ret = axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL_2(chan), &tmp);
+	if (ret < 0)
+		return ret;
 
 	if (!((phase + chan) % 2)) {
 		tmp = AXI_ADC_TO_IQCOR_COEFF_1(tmp);
@@ -399,18 +436,20 @@ int32_t axi_adc_get_calib_phase_scale(struct axi_adc *adc,
 		sign = 1;
 
 	if (tmp & 0x4000)
-		*val = 1 * sign;
+		result = 1 * sign;
 	else
-		*val = 0;
+		result = 0;
 
 	tmp &= ~0xC000;
 
 	llval = tmp * 1000000ULL + (0x4000 / 2);
 	no_os_do_div(&llval, 0x4000);
-	if (*val == 0)
-		*val2 = llval * sign;
+	if (result == 0)
+		result2 = (int32_t)llval * sign;
 	else
-		*val2 = llval;
+		result2 = llval;
+	*val = result;
+	*val2 = result2;
 
 	return 0;
 }
@@ -493,14 +532,15 @@ int32_t axi_adc_set_calib_bias(struct axi_adc *adc,
 			       int32_t val2)
 {
 	uint32_t tmp;
+	int32_t ret;
 
-	axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL_1(chan), &tmp);
+	ret = axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL_1(chan), &tmp);
+	if (ret < 0)
+		return ret;
 	tmp &= ~AXI_ADC_DCFILT_OFFSET(~0);
 	tmp |= AXI_ADC_DCFILT_OFFSET((uint16_t)val);
 
-	axi_adc_write(adc, AXI_ADC_REG_CHAN_CNTRL_1(chan), tmp);
-
-	return 0;
+	return axi_adc_write(adc, AXI_ADC_REG_CHAN_CNTRL_1(chan), tmp);
 }
 
 /**
@@ -517,8 +557,11 @@ int32_t axi_adc_get_calib_bias(struct axi_adc *adc,
 			       int32_t *val2)
 {
 	uint32_t tmp;
+	int32_t ret;
 
-	axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL_1(chan), &tmp);
+	ret = axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL_1(chan), &tmp);
+	if (ret < 0)
+		return ret;
 	*val = (uint16_t)AXI_ADC_TO_DCFILT_OFFSET(tmp);
 
 	return 0;
@@ -535,13 +578,13 @@ int32_t axi_adc_update_active_channels(struct axi_adc *adc, uint32_t mask)
 	uint32_t ch;
 	uint32_t val;
 	uint32_t new_val;
+	uint32_t requested_mask = mask;
 
 	if (mask == adc->mask)
 		return 0;
 
-	adc->mask = mask;
 	for (ch = 0; ch < adc->num_channels; ch++) {
-		if (ch > (adc->num_slave_channels - 1))
+		if (ch >= adc->num_slave_channels)
 			ret = axi_slave_adc_read(adc,
 						 AXI_ADC_REG_CHAN_CNTRL(ch - adc->num_slave_channels),
 						 &val);
@@ -555,7 +598,7 @@ int32_t axi_adc_update_active_channels(struct axi_adc *adc, uint32_t mask)
 		if (mask & 1)
 			new_val = val | AXI_ADC_ENABLE;
 		if (new_val != val) {
-			if (ch > (adc->num_slave_channels - 1))
+			if (ch >= adc->num_slave_channels)
 				ret = axi_slave_adc_write(adc,
 							  AXI_ADC_REG_CHAN_CNTRL(ch - adc->num_slave_channels),
 							  new_val);
@@ -567,6 +610,7 @@ int32_t axi_adc_update_active_channels(struct axi_adc *adc, uint32_t mask)
 		}
 		mask >>= 1;
 	}
+	adc->mask = requested_mask;
 
 	return 0;
 }
