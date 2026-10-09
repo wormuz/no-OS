@@ -2479,8 +2479,12 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 	uint32_t reg, delay_lna, settling_delay, dec_pow_meas_dur;
 	int32_t ret;
 	uint32_t fir_div;
+	uint32_t rx_sample_rate;
 
-	clkrf = clk_get_rate(phy, phy->ref_clk_scale[CLKRF_CLK]);
+	clkrf = phy->clks[CLKRF_CLK]->rate;
+	rx_sample_rate = phy->clks[RX_SAMPL_CLK]->rate;
+	if (!clkrf || !rx_sample_rate)
+		return -EIO;
 	delay_lna = phy->pdata->elna_ctrl.settling_delay_ns;
 
 	/*
@@ -2530,8 +2534,9 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 		dec_pow_meas_dur =
 			phy->pdata->gain_ctrl.f_agc_dec_pow_measuremnt_duration;
 	} else {
-		fir_div = NO_OS_DIV_ROUND_CLOSEST(clkrf,
-						  clk_get_rate(phy, phy->ref_clk_scale[RX_SAMPL_CLK]));
+		fir_div = NO_OS_DIV_ROUND_CLOSEST(clkrf, rx_sample_rate);
+		if (!fir_div)
+			return -EIO;
 		dec_pow_meas_dur = phy->pdata->gain_ctrl.dec_pow_measuremnt_duration;
 
 		if (((reg * 2 / fir_div) / dec_pow_meas_dur) < 2) {
@@ -2540,9 +2545,9 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 	}
 
 	/* Power Measurement Duration */
-	ad9361_spi_writef(spi, REG_DEC_POWER_MEASURE_DURATION_0,
-			  DEC_POWER_MEASUREMENT_DURATION(~0),
-			  ilog2(dec_pow_meas_dur / 16));
+	ret |= ad9361_spi_writef(spi, REG_DEC_POWER_MEASURE_DURATION_0,
+				 DEC_POWER_MEASUREMENT_DURATION(~0),
+				 ilog2(dec_pow_meas_dur / 16));
 
 
 	ret |= ad9361_spi_writef(spi, REG_DIGITAL_SAT_COUNTER,
@@ -4892,8 +4897,7 @@ static int32_t ad9361_rssi_setup(struct ad9361_rf_phy *phy,
 		rssi_duration = ctrl->rssi_duration;
 	} else {
 		/* update sample based on RX rate */
-		rate = NO_OS_DIV_ROUND_CLOSEST(
-			       clk_get_rate(phy, phy->ref_clk_scale[RX_SAMPL_CLK]), 1000);
+		rate = NO_OS_DIV_ROUND_CLOSEST(phy->clks[RX_SAMPL_CLK]->rate, 1000);
 		/* units are in us */
 		rssi_delay = NO_OS_DIV_ROUND_CLOSEST(ctrl->rssi_delay * rate, 1000);
 		rssi_wait = NO_OS_DIV_ROUND_CLOSEST(ctrl->rssi_wait * rate, 1000);
@@ -5093,7 +5097,11 @@ int32_t ad9361_ensm_set_state(struct ad9361_rf_phy *phy, uint8_t ensm_state,
 		if (rc < 0)
 			goto out;
 		/* Delay Flush Time 384 ADC clock cycles */
-		no_os_udelay(384000000UL / clk_get_rate(phy, phy->ref_clk_scale[ADC_CLK]));
+		if (!phy->clks[ADC_CLK]->rate) {
+			rc = -EIO;
+			goto out;
+		}
+		no_os_udelay(384000000UL / phy->clks[ADC_CLK]->rate);
 		rc = ad9361_spi_write(spi, REG_ENSM_CONFIG_1, 0); /* Move to Wait*/
 		if (rc < 0)
 			goto out;
@@ -5363,7 +5371,9 @@ int32_t ad9361_get_trx_clock_chain(struct ad9361_rf_phy *phy,
 	if (!rx_path_clks && !tx_path_clks)
 		return -EINVAL;
 
-	bbpll_freq = clk_get_rate(phy, phy->ref_clk_scale[BBPLL_CLK]);
+	bbpll_freq = phy->clks[BBPLL_CLK]->rate;
+	if (!bbpll_freq)
+		return -EIO;
 
 	if (rx_path_clks)
 		rx_path_clks[BBPLL_FREQ] = bbpll_freq;
@@ -6325,7 +6335,7 @@ int32_t ad9361_setup(struct ad9361_rf_phy *phy)
 
 	ret = ad9361_rx_adc_setup(phy,
 				  bbpll_freq,
-				  clk_get_rate(phy, phy->ref_clk_scale[ADC_CLK]));
+				  phy->clks[ADC_CLK]->rate);
 	if (ret < 0)
 		return ret;
 
@@ -6334,7 +6344,7 @@ int32_t ad9361_setup(struct ad9361_rf_phy *phy)
 		return ret;
 
 	ret = ad9361_rf_dc_offset_calib(phy,
-					ad9361_from_clk(clk_get_rate(phy, phy->ref_clk_scale[RX_RFPLL])));
+					ad9361_from_clk(phy->clks[RX_RFPLL]->rate));
 	if (ret < 0)
 		return ret;
 
@@ -6464,7 +6474,7 @@ int32_t ad9361_do_calib_run(struct ad9361_rf_phy *phy, uint32_t cal,
 			break;
 		case RFDC_CAL:
 			ret = ad9361_rf_dc_offset_calib(phy,
-							ad9361_from_clk(clk_get_rate(phy, phy->ref_clk_scale[RX_RFPLL])));
+							ad9361_from_clk(phy->clks[RX_RFPLL]->rate));
 			break;
 		default:
 			ret = -EINVAL;
@@ -6502,8 +6512,7 @@ int32_t ad9361_do_calib_timeout(struct ad9361_rf_phy *phy, uint32_t cal,
 	ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
 	if (ret >= 0)
 		ret = ad9361_rf_dc_offset_calib_with_timeout(
-			phy, ad9361_from_clk(clk_get_rate(
-				phy, phy->ref_clk_scale[RX_RFPLL])), timeout_us);
+			phy, ad9361_from_clk(phy->clks[RX_RFPLL]->rate), timeout_us);
 	ret2 = ad9361_tracking_control(phy, phy->bbdc_track_en,
 				       phy->rfdc_track_en, phy->quad_track_en);
 	restore_ret = ad9361_ensm_restore_prev_state_checked(phy);
@@ -7042,39 +7051,47 @@ static int32_t ad9361_get_clk_scaler(struct refclk_scale *clk_priv)
 {
 	struct no_os_spi_desc *spi = clk_priv->spi;
 	uint32_t tmp, tmp1;
+	int32_t ret;
+
+#define CLK_SCALER_READ(_target, _expr) do { \
+		ret = (_expr); \
+		if (ret < 0) \
+			return ret; \
+		_target = ret; \
+	} while (0)
 
 	switch (clk_priv->source) {
 	case BB_REFCLK:
-		tmp = ad9361_spi_read(spi, REG_CLOCK_CTRL);
+		CLK_SCALER_READ(tmp, ad9361_spi_read(spi, REG_CLOCK_CTRL));
 		tmp &= 0x3;
 		break;
 	case RX_REFCLK:
-		tmp = ad9361_spi_readf(spi, REG_REF_DIVIDE_CONFIG_1,
-				       RX_REF_DIVIDER_MSB);
-		tmp1 = ad9361_spi_readf(spi, REG_REF_DIVIDE_CONFIG_2,
-					RX_REF_DIVIDER_LSB);
+		CLK_SCALER_READ(tmp, ad9361_spi_readf(spi, REG_REF_DIVIDE_CONFIG_1,
+						       RX_REF_DIVIDER_MSB));
+		CLK_SCALER_READ(tmp1, ad9361_spi_readf(spi, REG_REF_DIVIDE_CONFIG_2,
+							RX_REF_DIVIDER_LSB));
 		tmp = (tmp << 1) | tmp1;
 		break;
 	case TX_REFCLK:
-		tmp = ad9361_spi_readf(spi, REG_REF_DIVIDE_CONFIG_2,
-				       TX_REF_DIVIDER(~0));
+		CLK_SCALER_READ(tmp, ad9361_spi_readf(spi, REG_REF_DIVIDE_CONFIG_2,
+						       TX_REF_DIVIDER(~0)));
 		break;
 	case ADC_CLK:
-		tmp = ad9361_spi_read(spi, REG_BBPLL);
+		CLK_SCALER_READ(tmp, ad9361_spi_read(spi, REG_BBPLL));
 		return ad9361_set_muldiv(clk_priv, 1, 1 << (tmp & 0x7));
 	case R2_CLK:
-		tmp = ad9361_spi_readf(spi, REG_RX_ENABLE_FILTER_CTRL,
-				       DEC3_ENABLE_DECIMATION(~0));
+		CLK_SCALER_READ(tmp, ad9361_spi_readf(spi, REG_RX_ENABLE_FILTER_CTRL,
+						       DEC3_ENABLE_DECIMATION(~0)));
 		return ad9361_set_muldiv(clk_priv, 1, tmp + 1);
 	case R1_CLK:
-		tmp = ad9361_spi_readf(spi, REG_RX_ENABLE_FILTER_CTRL, RHB2_EN);
+		CLK_SCALER_READ(tmp, ad9361_spi_readf(spi, REG_RX_ENABLE_FILTER_CTRL, RHB2_EN));
 		return ad9361_set_muldiv(clk_priv, 1, tmp + 1);
 	case CLKRF_CLK:
-		tmp = ad9361_spi_readf(spi, REG_RX_ENABLE_FILTER_CTRL, RHB1_EN);
+		CLK_SCALER_READ(tmp, ad9361_spi_readf(spi, REG_RX_ENABLE_FILTER_CTRL, RHB1_EN));
 		return ad9361_set_muldiv(clk_priv, 1, tmp + 1);
 	case RX_SAMPL_CLK:
-		tmp = ad9361_spi_readf(spi, REG_RX_ENABLE_FILTER_CTRL,
-				       RX_FIR_ENABLE_DECIMATION(~0));
+		CLK_SCALER_READ(tmp, ad9361_spi_readf(spi, REG_RX_ENABLE_FILTER_CTRL,
+						       RX_FIR_ENABLE_DECIMATION(~0)));
 
 		if (!tmp)
 			tmp = 1; /* bypass filter */
@@ -7083,21 +7100,21 @@ static int32_t ad9361_get_clk_scaler(struct refclk_scale *clk_priv)
 
 		return ad9361_set_muldiv(clk_priv, 1, tmp);
 	case DAC_CLK:
-		tmp = ad9361_spi_readf(spi, REG_BBPLL, NO_OS_BIT(3));
+		CLK_SCALER_READ(tmp, ad9361_spi_readf(spi, REG_BBPLL, NO_OS_BIT(3)));
 		return ad9361_set_muldiv(clk_priv, 1, tmp + 1);
 	case T2_CLK:
-		tmp = ad9361_spi_readf(spi, REG_TX_ENABLE_FILTER_CTRL,
-				       THB3_ENABLE_INTERP(~0));
+		CLK_SCALER_READ(tmp, ad9361_spi_readf(spi, REG_TX_ENABLE_FILTER_CTRL,
+						       THB3_ENABLE_INTERP(~0)));
 		return ad9361_set_muldiv(clk_priv, 1, tmp + 1);
 	case T1_CLK:
-		tmp = ad9361_spi_readf(spi, REG_TX_ENABLE_FILTER_CTRL, THB2_EN);
+		CLK_SCALER_READ(tmp, ad9361_spi_readf(spi, REG_TX_ENABLE_FILTER_CTRL, THB2_EN));
 		return ad9361_set_muldiv(clk_priv, 1, tmp + 1);
 	case CLKTF_CLK:
-		tmp = ad9361_spi_readf(spi, REG_TX_ENABLE_FILTER_CTRL, THB1_EN);
+		CLK_SCALER_READ(tmp, ad9361_spi_readf(spi, REG_TX_ENABLE_FILTER_CTRL, THB1_EN));
 		return ad9361_set_muldiv(clk_priv, 1, tmp + 1);
 	case TX_SAMPL_CLK:
-		tmp = ad9361_spi_readf(spi, REG_TX_ENABLE_FILTER_CTRL,
-				       TX_FIR_ENABLE_INTERPOLATION(~0));
+		CLK_SCALER_READ(tmp, ad9361_spi_readf(spi, REG_TX_ENABLE_FILTER_CTRL,
+						       TX_FIR_ENABLE_INTERPOLATION(~0)));
 
 		if (!tmp)
 			tmp = 1; /* bypass filter */
@@ -7112,23 +7129,24 @@ static int32_t ad9361_get_clk_scaler(struct refclk_scale *clk_priv)
 	/* REFCLK Scaler */
 	switch (tmp) {
 	case 0:
-		ad9361_set_muldiv(clk_priv, 1, 1);
+		ret = ad9361_set_muldiv(clk_priv, 1, 1);
 		break;
 	case 1:
-		ad9361_set_muldiv(clk_priv, 1, 2);
+		ret = ad9361_set_muldiv(clk_priv, 1, 2);
 		break;
 	case 2:
-		ad9361_set_muldiv(clk_priv, 1, 4);
+		ret = ad9361_set_muldiv(clk_priv, 1, 4);
 		break;
 	case 3:
-		ad9361_set_muldiv(clk_priv, 2, 1);
+		ret = ad9361_set_muldiv(clk_priv, 2, 1);
 		break;
 	default:
 		return -EINVAL;
 
 	}
 
-	return 0;
+	#undef CLK_SCALER_READ
+	return ret;
 }
 
 /**
@@ -7298,15 +7316,31 @@ static int32_t ad9361_set_clk_scaler(struct refclk_scale *clk_priv, bool set)
  * @param parent_rate The parent clock rate.
  * @return The clock rate.
  */
+int32_t ad9361_clk_factor_recalc_rate_checked(struct refclk_scale *clk_priv,
+					      uint32_t parent_rate,
+					      uint32_t *rate)
+{
+	uint64_t result;
+	int32_t ret;
+
+	ret = ad9361_get_clk_scaler(clk_priv);
+	if (ret < 0)
+		return ret;
+	if (!clk_priv->div)
+		return -EINVAL;
+
+	result = (uint64_t)parent_rate * clk_priv->mult / clk_priv->div;
+	*rate = (uint32_t)result;
+	return 0;
+}
+
 uint32_t ad9361_clk_factor_recalc_rate(struct refclk_scale *clk_priv,
 				       uint32_t parent_rate)
 {
-	uint64_t rate;
+	uint32_t rate = 0;
 
-	ad9361_get_clk_scaler(clk_priv);
-	rate = (parent_rate * clk_priv->mult) / clk_priv->div;
-
-	return (uint32_t)rate;
+	ad9361_clk_factor_recalc_rate_checked(clk_priv, parent_rate, &rate);
+	return rate;
 }
 
 /**
@@ -7381,15 +7415,19 @@ int32_t ad9361_clk_factor_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
  * @param parent_rate The parent clock rate.
  * @return The clock rate.
  */
-uint32_t ad9361_bbpll_recalc_rate(struct refclk_scale *clk_priv,
-				  uint32_t parent_rate)
+int32_t ad9361_bbpll_recalc_rate_checked(struct refclk_scale *clk_priv,
+					 uint32_t parent_rate,
+					 uint32_t *rate_out)
 {
 	uint64_t rate;
 	uint32_t fract, integer;
 	uint8_t buf[4];
+	int32_t ret;
 
-	ad9361_spi_readm(clk_priv->spi, REG_INTEGER_BB_FREQ_WORD, &buf[0],
-			 REG_INTEGER_BB_FREQ_WORD - REG_FRACT_BB_FREQ_WORD_1 + 1);
+	ret = ad9361_spi_readm(clk_priv->spi, REG_INTEGER_BB_FREQ_WORD, &buf[0],
+			       REG_INTEGER_BB_FREQ_WORD - REG_FRACT_BB_FREQ_WORD_1 + 1);
+	if (ret < 0)
+		return ret;
 
 	fract = (buf[3] << 16) | (buf[2] << 8) | buf[1];
 	integer = buf[0];
@@ -7398,7 +7436,17 @@ uint32_t ad9361_bbpll_recalc_rate(struct refclk_scale *clk_priv,
 	no_os_do_div(&rate, BBPLL_MODULUS);
 	rate += (uint64_t)parent_rate * integer;
 
-	return (uint32_t)rate;
+	*rate_out = (uint32_t)rate;
+	return 0;
+}
+
+uint32_t ad9361_bbpll_recalc_rate(struct refclk_scale *clk_priv,
+				  uint32_t parent_rate)
+{
+	uint32_t rate = 0;
+
+	ad9361_bbpll_recalc_rate_checked(clk_priv, parent_rate, &rate);
+	return rate;
 }
 
 /**
@@ -7946,39 +7994,55 @@ int32_t ad9361_rfpll_dummy_set_rate(struct refclk_scale *clk_priv,
  * @param clk_priv The refclk_scale structure.
  * @return The clock rate.
  */
-uint32_t ad9361_rfpll_recalc_rate(struct refclk_scale *clk_priv)
+int32_t ad9361_rfpll_recalc_rate_checked(struct refclk_scale *clk_priv,
+					 uint32_t *rate)
 {
 	struct ad9361_rf_phy *phy = clk_priv->phy;
-	uint32_t rate;
+	int32_t ret;
 
 	switch (clk_priv->source) {
 	case RX_RFPLL:
 		if (phy->pdata->use_ext_rx_lo) {
 			if (phy->ad9361_rfpll_ext_recalc_rate)
-				rate = phy->ad9361_rfpll_ext_recalc_rate(clk_priv);
+				*rate = phy->ad9361_rfpll_ext_recalc_rate(clk_priv);
 			else
-				rate = ad9361_rfpll_dummy_recalc_rate(phy->ref_clk_scale[RX_RFPLL_DUMMY]);
+				*rate = ad9361_rfpll_dummy_recalc_rate(
+					phy->ref_clk_scale[RX_RFPLL_DUMMY]);
 		} else {
-			rate = ad9361_rfpll_int_recalc_rate(phy->ref_clk_scale[RX_RFPLL_INT],
-							    phy->clks[RX_REFCLK]->rate);
+			ret = ad9361_rfpll_int_recalc_rate_checked(
+				phy->ref_clk_scale[RX_RFPLL_INT],
+				phy->clks[RX_REFCLK]->rate, rate);
+			if (ret < 0)
+				return ret;
 		}
 		break;
 	case TX_RFPLL:
 		if (phy->pdata->use_ext_tx_lo) {
 			if (phy->ad9361_rfpll_ext_recalc_rate)
-				rate = phy->ad9361_rfpll_ext_recalc_rate(clk_priv);
+				*rate = phy->ad9361_rfpll_ext_recalc_rate(clk_priv);
 			else
-				rate = ad9361_rfpll_dummy_recalc_rate(phy->ref_clk_scale[TX_RFPLL_DUMMY]);
+				*rate = ad9361_rfpll_dummy_recalc_rate(
+					phy->ref_clk_scale[TX_RFPLL_DUMMY]);
 		} else {
-			rate = ad9361_rfpll_int_recalc_rate(phy->ref_clk_scale[TX_RFPLL_INT],
-							    phy->clks[TX_REFCLK]->rate);
+			ret = ad9361_rfpll_int_recalc_rate_checked(
+				phy->ref_clk_scale[TX_RFPLL_INT],
+				phy->clks[TX_REFCLK]->rate, rate);
+			if (ret < 0)
+				return ret;
 		}
 		break;
 	default:
-		rate = 0;
-		break;
+		return -EINVAL;
 	}
 
+	return 0;
+}
+
+uint32_t ad9361_rfpll_recalc_rate(struct refclk_scale *clk_priv)
+{
+	uint32_t rate = 0;
+
+	ad9361_rfpll_recalc_rate_checked(clk_priv, &rate);
 	return rate;
 }
 

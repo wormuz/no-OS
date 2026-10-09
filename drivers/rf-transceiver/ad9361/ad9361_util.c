@@ -129,8 +129,11 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 							 phy->clk_refin->rate);
 			if (ret < 0)
 				return ret;
-			phy->clks[source]->rate = ad9361_clk_factor_recalc_rate(clk_priv,
-						  phy->clk_refin->rate);
+			ret = ad9361_clk_factor_recalc_rate_checked(
+				clk_priv, phy->clk_refin->rate,
+				&phy->clks[source]->rate);
+			if (ret < 0)
+				return ret;
 			break;
 		case TX_RFPLL_INT:
 		case RX_RFPLL_INT:
@@ -140,8 +143,11 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 							phy->clks[clk_priv->parent_source]->rate);
 			if (ret < 0)
 				return ret;
-			phy->clks[source]->rate = ad9361_rfpll_int_recalc_rate(clk_priv,
-						  phy->clks[clk_priv->parent_source]->rate);
+			ret = ad9361_rfpll_int_recalc_rate_checked(
+				clk_priv, phy->clks[clk_priv->parent_source]->rate,
+				&phy->clks[source]->rate);
+			if (ret < 0)
+				return ret;
 			break;
 		case RX_RFPLL_DUMMY:
 		case TX_RFPLL_DUMMY:
@@ -171,7 +177,10 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 			ret = ad9361_rfpll_set_rate(clk_priv, round_rate);
 			if (ret < 0)
 				return ret;
-			phy->clks[source]->rate = ad9361_rfpll_recalc_rate(clk_priv);
+			ret = ad9361_rfpll_recalc_rate_checked(clk_priv,
+							&phy->clks[source]->rate);
+			if (ret < 0)
+				return ret;
 			phy->rfpll_requested[source == TX_RFPLL] =
 				(uint32_t)round_rate;
 			phy->rfpll_requested_valid[source == TX_RFPLL] = true;
@@ -185,8 +194,11 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 						     phy->clks[clk_priv->parent_source]->rate);
 			if (ret < 0)
 				return ret;
-			phy->clks[source]->rate = ad9361_bbpll_recalc_rate(clk_priv,
-						  phy->clks[clk_priv->parent_source]->rate);
+			ret = ad9361_bbpll_recalc_rate_checked(
+				clk_priv, phy->clks[clk_priv->parent_source]->rate,
+				&phy->clks[source]->rate);
+			if (ret < 0)
+				return ret;
 			phy->bbpll_initialized = true;
 			break;
 		case ADC_CLK:
@@ -207,32 +219,52 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 							 phy->clks[clk_priv->parent_source]->rate);
 			if (ret < 0)
 				return ret;
-			phy->clks[source]->rate = ad9361_clk_factor_recalc_rate(clk_priv,
-						  phy->clks[clk_priv->parent_source]->rate);
+			ret = ad9361_clk_factor_recalc_rate_checked(
+				clk_priv, phy->clks[clk_priv->parent_source]->rate,
+				&phy->clks[source]->rate);
+			if (ret < 0)
+				return ret;
 			break;
 		default:
 			break;
 		}
 		for (i = BB_REFCLK; i < BBPLL_CLK; i++) {
-			phy->clks[i]->rate = ad9361_clk_factor_recalc_rate(phy->ref_clk_scale[i],
-					     phy->clk_refin->rate);
+			ret = ad9361_clk_factor_recalc_rate_checked(
+				phy->ref_clk_scale[i], phy->clk_refin->rate,
+				&phy->clks[i]->rate);
+			if (ret < 0)
+				return ret;
 		}
-		phy->clks[BBPLL_CLK]->rate = ad9361_bbpll_recalc_rate(
-						     phy->ref_clk_scale[BBPLL_CLK],
-						     phy->clks[phy->ref_clk_scale[BBPLL_CLK]->parent_source]->rate);
+		ret = ad9361_bbpll_recalc_rate_checked(
+			phy->ref_clk_scale[BBPLL_CLK],
+			phy->clks[phy->ref_clk_scale[BBPLL_CLK]->parent_source]->rate,
+			&phy->clks[BBPLL_CLK]->rate);
+		if (ret < 0)
+			return ret;
 		for (i = ADC_CLK; i < RX_RFPLL_INT; i++) {
-			phy->clks[i]->rate = ad9361_clk_factor_recalc_rate(phy->ref_clk_scale[i],
-					     phy->clks[phy->ref_clk_scale[i]->parent_source]->rate);
+			ret = ad9361_clk_factor_recalc_rate_checked(
+				phy->ref_clk_scale[i],
+				phy->clks[phy->ref_clk_scale[i]->parent_source]->rate,
+				&phy->clks[i]->rate);
+			if (ret < 0)
+				return ret;
 		}
 		for (i = RX_RFPLL_INT; i < RX_RFPLL_DUMMY; i++) {
-			phy->clks[i]->rate = ad9361_rfpll_int_recalc_rate(phy->ref_clk_scale[i],
-					     phy->clks[phy->ref_clk_scale[i]->parent_source]->rate);
+			ret = ad9361_rfpll_int_recalc_rate_checked(
+				phy->ref_clk_scale[i],
+				phy->clks[phy->ref_clk_scale[i]->parent_source]->rate,
+				&phy->clks[i]->rate);
+			if (ret < 0)
+				return ret;
 		}
 		for (i = RX_RFPLL_DUMMY; i < RX_RFPLL; i++) {
 			phy->clks[i]->rate = ad9361_rfpll_dummy_recalc_rate(phy->ref_clk_scale[i]);
 		}
 		for (i = RX_RFPLL; i < NUM_AD9361_CLKS; i++) {
-			phy->clks[i]->rate = ad9361_rfpll_recalc_rate(phy->ref_clk_scale[i]);
+			ret = ad9361_rfpll_recalc_rate_checked(
+				phy->ref_clk_scale[i], &phy->clks[i]->rate);
+			if (ret < 0)
+				return ret;
 		}
 	} else {
 		if ((source == BBPLL_CLK) && !phy->bbpll_initialized) {
@@ -244,8 +276,11 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 							     phy->clks[clk_priv->parent_source]->rate);
 			if (ret < 0)
 				return ret;
-			phy->clks[source]->rate = ad9361_bbpll_recalc_rate(clk_priv,
-						  phy->clks[clk_priv->parent_source]->rate);
+			ret = ad9361_bbpll_recalc_rate_checked(
+				clk_priv, phy->clks[clk_priv->parent_source]->rate,
+				&phy->clks[source]->rate);
+			if (ret < 0)
+				return ret;
 			phy->bbpll_initialized = true;
 		}
 	}

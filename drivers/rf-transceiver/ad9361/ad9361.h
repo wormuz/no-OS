@@ -3509,6 +3509,9 @@ int32_t ad9361_set_tx_atten(struct ad9361_rf_phy *phy, uint32_t atten_mdb,
 int32_t ad9361_get_tx_atten(struct ad9361_rf_phy *phy, uint32_t tx_num);
 uint32_t ad9361_clk_factor_recalc_rate(struct refclk_scale *clk_priv,
 				       uint32_t parent_rate);
+int32_t ad9361_clk_factor_recalc_rate_checked(struct refclk_scale *clk_priv,
+					      uint32_t parent_rate,
+					      uint32_t *rate);
 int32_t ad9361_clk_factor_round_rate(struct refclk_scale *clk_priv,
 				     uint32_t rate,
 				     uint32_t *prate);
@@ -3516,6 +3519,9 @@ int32_t ad9361_clk_factor_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 				   uint32_t parent_rate);
 uint32_t ad9361_bbpll_recalc_rate(struct refclk_scale *clk_priv,
 				  uint32_t parent_rate);
+int32_t ad9361_bbpll_recalc_rate_checked(struct refclk_scale *clk_priv,
+					 uint32_t parent_rate,
+					 uint32_t *rate);
 int32_t ad9361_bbpll_round_rate(struct refclk_scale *clk_priv, uint32_t rate,
 				uint32_t *prate);
 int32_t ad9361_bbpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
@@ -3534,6 +3540,8 @@ uint32_t ad9361_rfpll_dummy_recalc_rate(struct refclk_scale *clk_priv);
 int32_t ad9361_rfpll_dummy_set_rate(struct refclk_scale *clk_priv,
 				    uint32_t rate);
 uint32_t ad9361_rfpll_recalc_rate(struct refclk_scale *clk_priv);
+int32_t ad9361_rfpll_recalc_rate_checked(struct refclk_scale *clk_priv,
+					 uint32_t *rate);
 int32_t ad9361_rfpll_round_rate(struct refclk_scale *clk_priv, uint32_t rate);
 int32_t ad9361_rfpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate);
 int32_t ad9361_clk_mux_set_parent(struct refclk_scale *clk_priv, uint8_t index);
