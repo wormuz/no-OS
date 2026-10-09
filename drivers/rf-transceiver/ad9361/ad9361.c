@@ -3263,29 +3263,41 @@ static int32_t __ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
 static int32_t __ad9361_tx_quad_calib(struct ad9361_rf_phy *phy, uint32_t phase,
 				      uint32_t rxnco_word, uint32_t decim, uint8_t *res)
 {
-	int32_t ret;
+	int32_t ret, val;
 
-	ad9361_spi_write(phy->spi, REG_QUAD_CAL_NCO_FREQ_PHASE_OFFSET,
-			 RX_NCO_FREQ(rxnco_word) | RX_NCO_PHASE_OFFSET(phase));
-	ad9361_spi_write(phy->spi, REG_QUAD_CAL_CTRL,
-			 SETTLE_MAIN_ENABLE | DC_OFFSET_ENABLE | QUAD_CAL_SOFT_RESET |
-			 GAIN_ENABLE | PHASE_ENABLE | M_DECIM(decim));
-	ad9361_spi_write(phy->spi, REG_QUAD_CAL_CTRL,
-			 SETTLE_MAIN_ENABLE | DC_OFFSET_ENABLE |
-			 GAIN_ENABLE | PHASE_ENABLE | M_DECIM(decim));
+	ret = ad9361_spi_write(phy->spi, REG_QUAD_CAL_NCO_FREQ_PHASE_OFFSET,
+			       RX_NCO_FREQ(rxnco_word) | RX_NCO_PHASE_OFFSET(phase));
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_QUAD_CAL_CTRL,
+			       SETTLE_MAIN_ENABLE | DC_OFFSET_ENABLE |
+			       QUAD_CAL_SOFT_RESET | GAIN_ENABLE | PHASE_ENABLE |
+			       M_DECIM(decim));
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_QUAD_CAL_CTRL,
+			       SETTLE_MAIN_ENABLE | DC_OFFSET_ENABLE |
+			       GAIN_ENABLE | PHASE_ENABLE | M_DECIM(decim));
+	if (ret < 0)
+		return ret;
 
 	ret =  ad9361_run_calibration(phy, TX_QUAD_CAL);
 	if (ret < 0)
 		return ret;
 
 	if (res) {
-		*res = ad9361_spi_read(phy->spi,
+		val = ad9361_spi_read(phy->spi,
 				       (phy->pdata->rx1tx1_mode_use_tx_num == 2) ?
-				       REG_QUAD_CAL_STATUS_TX2 : REG_QUAD_CAL_STATUS_TX1) &
-		       (TX1_LO_CONV | TX1_SSB_CONV);
-		if (phy->pdata->rx2tx2)
-			*res &= ad9361_spi_read(phy->spi, REG_QUAD_CAL_STATUS_TX2) &
-				(TX2_LO_CONV | TX2_SSB_CONV);
+				       REG_QUAD_CAL_STATUS_TX2 : REG_QUAD_CAL_STATUS_TX1);
+		if (val < 0)
+			return val;
+		*res = val & (TX1_LO_CONV | TX1_SSB_CONV);
+		if (phy->pdata->rx2tx2) {
+			val = ad9361_spi_read(phy->spi, REG_QUAD_CAL_STATUS_TX2);
+			if (val < 0)
+				return val;
+			*res &= val & (TX2_LO_CONV | TX2_SSB_CONV);
+		}
 	}
 
 	return 0;
@@ -3365,13 +3377,16 @@ static int ad9361_tx_quad_calib(struct ad9361_rf_phy *phy,
 	uint32_t clktf, clkrf;
 	int32_t txnco_word, rxnco_word, txnco_freq, ret;
 	uint8_t __rx_phase = 0, reg_inv_bits = 0, val, decim;
-	bool phase_inversion_en;
+	bool phase_inversion_en, phase_inversion_touched = false;
+	bool reg_inv_bits_valid = false, bandwidth_changed = false;
 
 	ret = 0;
 	if (phy->cached_synth_pd[0] & TX_LO_POWER_DOWN) {
 		if (phy->pdata->lo_powerdown_managed_en) {
-			ad9361_spi_writef(spi, REG_TX_SYNTH_POWER_DOWN_OVERRIDE,
-					  TX_LO_POWER_DOWN, 0);
+			ret = ad9361_spi_writef(spi, REG_TX_SYNTH_POWER_DOWN_OVERRIDE,
+						TX_LO_POWER_DOWN, 0);
+			if (ret < 0)
+				return ret;
 		} else {
 			dev_err(dev,
 				"%s : Tx QUAD Cal abort due to TX LO in powerdown\n",
@@ -3432,8 +3447,10 @@ static int ad9361_tx_quad_calib(struct ad9361_rf_phy *phy,
 			__rx_phase = 0x1F;
 			break;
 		case 1:
-			if (ad9361_spi_readf(spi,
-					     REG_TX_ENABLE_FILTER_CTRL, 0x3F) == 0x22)
+			ret = ad9361_spi_readf(spi, REG_TX_ENABLE_FILTER_CTRL, 0x3F);
+			if (ret < 0)
+				return ret;
+			if (ret == 0x22)
 				__rx_phase = 0x15; 	/* REVISIT */
 			else
 				__rx_phase = 0x1A;
@@ -3453,48 +3470,71 @@ static int ad9361_tx_quad_calib(struct ad9361_rf_phy *phy,
 		ret = __ad9361_update_rf_bandwidth(phy, txnco_freq * 8, txnco_freq * 8);
 		if (ret < 0)
 			goto out_restore;
+		bandwidth_changed = true;
 	}
 
 	phase_inversion_en = phy->pdata->rx1rx2_phase_inversion_en ||
 			     (phy->pdata->port_ctrl.pp_conf[1] & INVERT_RX2);
 
 	if (phase_inversion_en) {
-		ad9361_spi_writef(spi, REG_PARALLEL_PORT_CONF_2, INVERT_RX2, 0);
+		ret = ad9361_spi_writef(spi, REG_PARALLEL_PORT_CONF_2,
+					INVERT_RX2, 0);
+		if (ret < 0)
+			goto tx_quad_cleanup;
+		phase_inversion_touched = true;
 
-		reg_inv_bits = ad9361_spi_read(spi, REG_INVERT_BITS);
+		ret = ad9361_spi_read(spi, REG_INVERT_BITS);
+		if (ret < 0)
+			goto tx_quad_cleanup;
+		reg_inv_bits = ret;
+		reg_inv_bits_valid = true;
 
-		ad9361_spi_write(spi, REG_INVERT_BITS,
-				 INVERT_RX1_RF_DC_CGOUT_WORD |
-				 INVERT_RX2_RF_DC_CGOUT_WORD);
+		ret = ad9361_spi_write(spi, REG_INVERT_BITS,
+					INVERT_RX1_RF_DC_CGOUT_WORD |
+					INVERT_RX2_RF_DC_CGOUT_WORD);
+		if (ret < 0)
+			goto tx_quad_cleanup;
 	}
 
-	ad9361_spi_writef(spi, REG_KEXP_2, TX_NCO_FREQ(~0), txnco_word);
-	ad9361_spi_write(spi, REG_QUAD_CAL_COUNT, 0xFF);
-	ad9361_spi_write(spi, REG_KEXP_1, KEXP_TX(1) | KEXP_TX_COMP(3) |
-			 KEXP_DC_I(3) | KEXP_DC_Q(3));
-	ad9361_spi_write(spi, REG_MAG_FTEST_THRESH, 0x03);
-	ad9361_spi_write(spi, REG_MAG_FTEST_THRESH_2, 0x03);
+#define TX_QUAD_CHECK_SPI(_expr) do { \
+	ret = (_expr); \
+	if (ret < 0) \
+		goto tx_quad_cleanup; \
+} while (0)
+	TX_QUAD_CHECK_SPI(ad9361_spi_writef(spi, REG_KEXP_2,
+					    TX_NCO_FREQ(~0), txnco_word));
+	TX_QUAD_CHECK_SPI(ad9361_spi_write(spi, REG_QUAD_CAL_COUNT, 0xFF));
+	TX_QUAD_CHECK_SPI(ad9361_spi_write(spi, REG_KEXP_1,
+					    KEXP_TX(1) | KEXP_TX_COMP(3) |
+					    KEXP_DC_I(3) | KEXP_DC_Q(3)));
+	TX_QUAD_CHECK_SPI(ad9361_spi_write(spi, REG_MAG_FTEST_THRESH, 0x03));
+	TX_QUAD_CHECK_SPI(ad9361_spi_write(spi, REG_MAG_FTEST_THRESH_2, 0x03));
 
 	if (phy->tx_quad_lpf_tia_match < 0) /* set in ad9361_load_gt() */
 		dev_err(dev, "failed to find suitable LPF TIA value in gain table\n");
 	else
-		ad9361_spi_write(spi, REG_TX_QUAD_FULL_LMT_GAIN,
-				 phy->tx_quad_lpf_tia_match);
+		TX_QUAD_CHECK_SPI(ad9361_spi_write(spi, REG_TX_QUAD_FULL_LMT_GAIN,
+						    phy->tx_quad_lpf_tia_match));
 
-	ad9361_spi_write(spi, REG_QUAD_SETTLE_COUNT, 0xF0);
-	ad9361_spi_write(spi, REG_TX_QUAD_LPF_GAIN, 0x00);
+	TX_QUAD_CHECK_SPI(ad9361_spi_write(spi, REG_QUAD_SETTLE_COUNT, 0xF0));
+	TX_QUAD_CHECK_SPI(ad9361_spi_write(spi, REG_TX_QUAD_LPF_GAIN, 0x00));
 
 	if (rx_phase != -2) {
 		ret = __ad9361_tx_quad_calib(phy, __rx_phase, rxnco_word, decim, &val);
+		if (ret < 0)
+			goto tx_quad_cleanup;
 
 		dev_dbg(dev, "LO leakage: %d Quadrature Calibration: %d : rx_phase %d\n",
 			!!(val & TX1_LO_CONV), !!(val & TX1_SSB_CONV), __rx_phase);
 
 		/* Calibration failed -> try last phase offset */
 		if (val != (TX1_LO_CONV | TX1_SSB_CONV)) {
-			if (phy->last_tx_quad_cal_phase < 31)
+			if (phy->last_tx_quad_cal_phase < 31) {
 				ret = __ad9361_tx_quad_calib(phy, phy->last_tx_quad_cal_phase,
 							     rxnco_word, decim, &val);
+				if (ret < 0)
+					goto tx_quad_cleanup;
+			}
 		} else {
 			phy->last_tx_quad_cal_phase = __rx_phase;
 		}
@@ -3505,24 +3545,52 @@ static int ad9361_tx_quad_calib(struct ad9361_rf_phy *phy,
 	/* Calibration failed -> loop through all 32 phase offsets */
 	if (val != (TX1_LO_CONV | TX1_SSB_CONV))
 		ret = ad9361_tx_quad_phase_search(phy, rxnco_word, decim);
+	if (ret < 0)
+		goto tx_quad_cleanup;
 
-	if (phase_inversion_en) {
-		ad9361_spi_writef(spi, REG_PARALLEL_PORT_CONF_2, INVERT_RX2, 1);
-		ad9361_spi_write(spi, REG_INVERT_BITS, reg_inv_bits);
+tx_quad_cleanup:
+	if (phase_inversion_touched) {
+		int32_t restore_ret;
+
+		restore_ret = ad9361_spi_writef(spi, REG_PARALLEL_PORT_CONF_2,
+						 INVERT_RX2, 1);
+		if (ret >= 0 && restore_ret < 0)
+			ret = restore_ret;
+		if (reg_inv_bits_valid) {
+			restore_ret = ad9361_spi_write(spi, REG_INVERT_BITS,
+						       reg_inv_bits);
+			if (ret >= 0 && restore_ret < 0)
+				ret = restore_ret;
+		}
+	}
+	if (bandwidth_changed) {
+		int32_t restore_ret = __ad9361_update_rf_bandwidth(
+			phy, phy->current_rx_bw_Hz, phy->current_tx_bw_Hz);
+		if (ret >= 0 && restore_ret < 0)
+			ret = restore_ret;
 	}
 
-	if (txnco_freq > (int64_t)(bw_rx / 4) || txnco_freq > (int64_t)(bw_tx / 4)) {
-		__ad9361_update_rf_bandwidth(phy,
-					     phy->current_rx_bw_Hz,
-					     phy->current_tx_bw_Hz);
-	}
-
-out_restore:
 	/* Restore synthesizer powerdown configuration */
 	if (phy->pdata->lo_powerdown_managed_en &&
-	    (phy->cached_synth_pd[0] & TX_LO_POWER_DOWN))
-		ad9361_synth_lo_powerdown(phy, LO_DONTCARE, LO_DONTCARE);
+	    (phy->cached_synth_pd[0] & TX_LO_POWER_DOWN)) {
+		int32_t restore_ret = ad9361_synth_lo_powerdown(
+			phy, LO_DONTCARE, LO_DONTCARE);
+		if (ret >= 0 && restore_ret < 0)
+			ret = restore_ret;
+	}
 
+#undef TX_QUAD_CHECK_SPI
+
+	return ret;
+
+out_restore:
+	if (phy->pdata->lo_powerdown_managed_en &&
+	    (phy->cached_synth_pd[0] & TX_LO_POWER_DOWN)) {
+		int32_t restore_ret = ad9361_synth_lo_powerdown(
+			phy, LO_DONTCARE, LO_DONTCARE);
+		if (ret >= 0 && restore_ret < 0)
+			ret = restore_ret;
+	}
 	return ret;
 }
 
