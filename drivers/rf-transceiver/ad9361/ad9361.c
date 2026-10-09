@@ -1075,8 +1075,15 @@ int32_t ad9361_reset(struct ad9361_rf_phy *phy)
 	 * Please specify a RESET GPIO.
 	 */
 
-	ad9361_spi_write(phy->spi, REG_SPI_CONF, SOFT_RESET | _SOFT_RESET);
-	ad9361_spi_write(phy->spi, REG_SPI_CONF, 0x0);
+	{
+		int32_t ret = ad9361_spi_write(phy->spi, REG_SPI_CONF,
+					       SOFT_RESET | _SOFT_RESET);
+		if (ret < 0)
+			return ret;
+		ret = ad9361_spi_write(phy->spi, REG_SPI_CONF, 0x0);
+		if (ret < 0)
+			return ret;
+	}
 	dev_err(&phy->spi->dev,
 		"%s: by SPI, this may cause unpredicted behavior!", __func__);
 
@@ -1821,6 +1828,9 @@ int32_t ad9361_get_tx_atten(struct ad9361_rf_phy *phy, uint32_t tx_num)
 	int32_t ret = 0;
 	uint32_t code;
 
+	if (tx_num != 1 && tx_num != 2)
+		return -EINVAL;
+
 	ret = ad9361_spi_readm(phy->spi, (tx_num == 1) ?
 			       REG_TX1_ATTEN_1 : REG_TX2_ATTEN_1, buf, 2);
 
@@ -1842,11 +1852,17 @@ int32_t ad9361_get_tx_atten(struct ad9361_rf_phy *phy, uint32_t tx_num)
  */
 int32_t ad9361_tx_mute(struct ad9361_rf_phy *phy, uint32_t state)
 {
-	int32_t ret;
+	int32_t ret, tx1_atten, tx2_atten;
 
 	if (state) {
-		phy->tx1_atten_cached = ad9361_get_tx_atten(phy, 1);
-		phy->tx2_atten_cached = ad9361_get_tx_atten(phy, 2);
+		tx1_atten = ad9361_get_tx_atten(phy, 1);
+		if (tx1_atten < 0)
+			return tx1_atten;
+		tx2_atten = ad9361_get_tx_atten(phy, 2);
+		if (tx2_atten < 0)
+			return tx2_atten;
+		phy->tx1_atten_cached = tx1_atten;
+		phy->tx2_atten_cached = tx2_atten;
 
 		return ad9361_set_tx_atten(phy, 89750, true, true, true);
 	} else {
@@ -1856,8 +1872,10 @@ int32_t ad9361_tx_mute(struct ad9361_rf_phy *phy, uint32_t state)
 
 		ret = ad9361_set_tx_atten(phy, phy->tx1_atten_cached,
 					  true, false, true);
-		ret |= ad9361_set_tx_atten(phy, phy->tx2_atten_cached,
-					   false, true, true);
+		if (ret < 0)
+			return ret;
+		ret = ad9361_set_tx_atten(phy, phy->tx2_atten_cached,
+					  false, true, true);
 
 		return ret;
 	}
@@ -2020,38 +2038,74 @@ static int32_t ad9361_get_split_table_gain(struct ad9361_rf_phy *phy,
 		struct rf_rx_gain *rx_gain)
 {
 	struct no_os_spi_desc *spi = phy->spi;
-	uint32_t val, tbl_addr;
-	int32_t rc = 0;
+	uint32_t val, tbl_addr, gt_index;
+	int32_t rc;
 
+	rc = ad9361_spi_readf(spi, idx_reg, FULL_TABLE_GAIN_INDEX(~0));
+	if (rc < 0)
+		return rc;
+	rx_gain->fgt_lmt_index = rc;
+	rc = ad9361_spi_read(spi, REG_GAIN_TABLE_ADDRESS);
+	if (rc < 0)
+		return rc;
+	tbl_addr = rc;
 
-	rx_gain->fgt_lmt_index = ad9361_spi_readf(spi, idx_reg,
-				 FULL_TABLE_GAIN_INDEX(~0));
-	tbl_addr = ad9361_spi_read(spi, REG_GAIN_TABLE_ADDRESS);
+	rc = ad9361_spi_write(spi, REG_GAIN_TABLE_ADDRESS,
+			      rx_gain->fgt_lmt_index);
+	if (rc < 0)
+		return rc;
 
-	ad9361_spi_write(spi, REG_GAIN_TABLE_ADDRESS, rx_gain->fgt_lmt_index);
-
-	val = ad9361_spi_read(spi, REG_GAIN_TABLE_READ_DATA1);
+	rc = ad9361_spi_read(spi, REG_GAIN_TABLE_READ_DATA1);
+	if (rc < 0)
+		goto restore_gain_table_address;
+	val = rc;
 	rx_gain->lna_index = TO_LNA_GAIN(val);
 	rx_gain->mixer_index = TO_MIXER_GM_GAIN(val);
 
-	rx_gain->tia_index = ad9361_spi_readf(spi, REG_GAIN_TABLE_READ_DATA2, TIA_GAIN);
+	rc = ad9361_spi_readf(spi, REG_GAIN_TABLE_READ_DATA2, TIA_GAIN);
+	if (rc < 0)
+		goto restore_gain_table_address;
+	rx_gain->tia_index = rc;
+	gt_index = ad9361_gt(phy) - RXGAIN_TBLS_END;
+	if (gt_index >= RXGAIN_TBLS_END || rx_gain->lna_index >= 4 ||
+	    rx_gain->mixer_index >= 16 || rx_gain->tia_index >= NO_OS_ARRAY_SIZE(tia_table)) {
+		rc = -EIO;
+		goto restore_gain_table_address;
+	}
 
-	rx_gain->lmt_gain = lna_table[ad9361_gt(phy) -
-				      RXGAIN_TBLS_END][rx_gain->lna_index] +
-			    mixer_table[ad9361_gt(phy) - RXGAIN_TBLS_END][rx_gain->mixer_index] +
+	rx_gain->lmt_gain = lna_table[gt_index][rx_gain->lna_index] +
+			    mixer_table[gt_index][rx_gain->mixer_index] +
 			    tia_table[rx_gain->tia_index];
 
-	ad9361_spi_write(spi, REG_GAIN_TABLE_ADDRESS, tbl_addr);
+	/* Restore the indirect table address even if a later read fails. */
+	rc = ad9361_spi_write(spi, REG_GAIN_TABLE_ADDRESS, tbl_addr);
+	if (rc < 0)
+		return rc;
 
 	/* Read LPF Index */
-	rx_gain->lpf_gain = ad9361_spi_readf(spi, idx_reg + 1, LPF_GAIN_RX(~0));
+	rc = ad9361_spi_readf(spi, idx_reg + 1, LPF_GAIN_RX(~0));
+	if (rc < 0)
+		return rc;
+	rx_gain->lpf_gain = rc;
 
 	/* Read Digital Gain */
-	rx_gain->digital_gain = ad9361_spi_readf(spi, idx_reg + 2,
-				DIGITAL_GAIN_RX(~0));
+	rc = ad9361_spi_readf(spi, idx_reg + 2, DIGITAL_GAIN_RX(~0));
+	if (rc < 0)
+		return rc;
+	rx_gain->digital_gain = rc;
 
 	rx_gain->gain_db = rx_gain->lmt_gain + rx_gain->lpf_gain +
 			   rx_gain->digital_gain;
+	return 0;
+
+restore_gain_table_address:
+	{
+		int32_t restore_ret = ad9361_spi_write(spi,
+						       REG_GAIN_TABLE_ADDRESS,
+						       tbl_addr);
+		if (restore_ret < 0)
+			return restore_ret;
+	}
 	return rc;
 }
 
@@ -2069,11 +2123,19 @@ static int32_t ad9361_get_full_table_gain(struct ad9361_rf_phy *phy,
 	struct no_os_spi_desc *spi = phy->spi;
 	uint32_t val;
 
-	rx_gain->fgt_lmt_index = val = ad9361_spi_readf(spi, idx_reg,
-				       FULL_TABLE_GAIN_INDEX(~0));
+	int32_t ret;
+
+	ret = ad9361_spi_readf(spi, idx_reg, FULL_TABLE_GAIN_INDEX(~0));
+	if (ret < 0)
+		return ret;
+	rx_gain->fgt_lmt_index = val = ret;
 	/* Read Digital Gain */
-	rx_gain->digital_gain = ad9361_spi_readf(spi, idx_reg + 2,
-				DIGITAL_GAIN_RX(~0));
+	ret = ad9361_spi_readf(spi, idx_reg + 2, DIGITAL_GAIN_RX(~0));
+	if (ret < 0)
+		return ret;
+	rx_gain->digital_gain = ret;
+	if (val >= phy->gt_info[ad9361_gt(phy)].max_index)
+		return -EIO;
 
 	rx_gain->gain_db = phy->gt_info[ad9361_gt(phy)].abs_gain_tbl[val];
 
@@ -2092,9 +2154,10 @@ int32_t ad9361_get_rx_gain(struct ad9361_rf_phy *phy,
 {
 	struct no_os_spi_desc *spi = phy->spi;
 	uint32_t val, idx_reg;
+	struct rf_rx_gain result;
 	uint8_t gain_ctl_shift, rx_enable_mask;
 	uint8_t fast_atk_shift;
-	int32_t rc = 0;
+	int32_t rc = 0, spi_ret;
 
 	if (rx_id == 1) {
 		gain_ctl_shift = RX1_GAIN_CTRL_SHIFT;
@@ -2113,7 +2176,12 @@ int32_t ad9361_get_rx_gain(struct ad9361_rf_phy *phy,
 		goto out;
 	}
 
-	val = ad9361_spi_readf(spi, REG_RX_ENABLE_FILTER_CTRL, rx_enable_mask);
+	spi_ret = ad9361_spi_readf(spi, REG_RX_ENABLE_FILTER_CTRL, rx_enable_mask);
+	if (spi_ret < 0) {
+		rc = spi_ret;
+		goto out;
+	}
+	val = spi_ret;
 
 	if (!val) {
 		dev_dbg(dev, "Rx%"PRIu32" is not enabled", rx_gain->ant);
@@ -2121,7 +2189,12 @@ int32_t ad9361_get_rx_gain(struct ad9361_rf_phy *phy,
 		goto out;
 	}
 
-	val = ad9361_spi_read(spi, REG_AGC_CONFIG_1);
+	spi_ret = ad9361_spi_read(spi, REG_AGC_CONFIG_1);
+	if (spi_ret < 0) {
+		rc = spi_ret;
+		goto out;
+	}
+	val = spi_ret;
 
 	val = (val >> gain_ctl_shift) & RX_GAIN_CTL_MASK;
 
@@ -2129,7 +2202,12 @@ int32_t ad9361_get_rx_gain(struct ad9361_rf_phy *phy,
 		/* In fast attack mode check whether Fast attack state machine
 		* has locked gain, if not then we can not read gain.
 		*/
-		val = ad9361_spi_read(spi, REG_FAST_ATTACK_STATE);
+		spi_ret = ad9361_spi_read(spi, REG_FAST_ATTACK_STATE);
+		if (spi_ret < 0) {
+			rc = spi_ret;
+			goto out;
+		}
+		val = spi_ret;
 		val = (val >> fast_atk_shift) & FAST_ATK_MASK;
 		if (val != FAST_ATK_GAIN_LOCKED) {
 			dev_warn(dev, "Failed to read gain, state m/c at %"PRIx32,
@@ -2139,10 +2217,13 @@ int32_t ad9361_get_rx_gain(struct ad9361_rf_phy *phy,
 		}
 	}
 
+	result = *rx_gain;
 	if (has_split_gt && phy->pdata->split_gt)
-		rc = ad9361_get_split_table_gain(phy, idx_reg, rx_gain);
+		rc = ad9361_get_split_table_gain(phy, idx_reg, &result);
 	else
-		rc = ad9361_get_full_table_gain(phy, idx_reg, rx_gain);
+		rc = ad9361_get_full_table_gain(phy, idx_reg, &result);
+	if (rc >= 0)
+		*rx_gain = result;
 
 out:
 	return rc;
@@ -2445,7 +2526,7 @@ int32_t ad9361_set_rx_gain(struct ad9361_rf_phy *phy,
 	struct no_os_spi_desc *spi = phy->spi;
 	uint32_t val, idx_reg;
 	uint8_t gain_ctl_shift;
-	int32_t rc = 0;
+	int32_t rc = 0, spi_ret;
 
 	if (rx_id == 1) {
 		gain_ctl_shift = RX1_GAIN_CTRL_SHIFT;
@@ -2461,7 +2542,12 @@ int32_t ad9361_set_rx_gain(struct ad9361_rf_phy *phy,
 
 	}
 
-	val = ad9361_spi_read(spi, REG_AGC_CONFIG_1);
+	spi_ret = ad9361_spi_read(spi, REG_AGC_CONFIG_1);
+	if (spi_ret < 0) {
+		rc = spi_ret;
+		goto out;
+	}
+	val = spi_ret;
 	val = (val >> gain_ctl_shift) & RX_GAIN_CTL_MASK;
 
 	if (val != RX_GAIN_CTL_MGC) {
@@ -4772,11 +4858,21 @@ static int32_t ad9361_auxadc_setup(struct ad9361_rf_phy *phy,
  */
 int32_t ad9361_get_temp(struct ad9361_rf_phy *phy)
 {
+	int32_t ret, restore_ret;
 	uint32_t val;
 
-	ad9361_spi_writef(phy->spi, REG_AUXADC_CONFIG, AUXADC_POWER_DOWN, 1);
-	val = ad9361_spi_read(phy->spi, REG_TEMPERATURE);
-	ad9361_spi_writef(phy->spi, REG_AUXADC_CONFIG, AUXADC_POWER_DOWN, 0);
+	ret = ad9361_spi_writef(phy->spi, REG_AUXADC_CONFIG, AUXADC_POWER_DOWN, 1);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_read(phy->spi, REG_TEMPERATURE);
+	if (ret >= 0)
+		val = ret;
+	restore_ret = ad9361_spi_writef(phy->spi, REG_AUXADC_CONFIG,
+					AUXADC_POWER_DOWN, 0);
+	if (ret < 0)
+		return ret;
+	if (restore_ret < 0)
+		return restore_ret;
 
 	return NO_OS_DIV_ROUND_CLOSEST(val * 1000000, 1140);
 }
@@ -4789,10 +4885,19 @@ int32_t ad9361_get_temp(struct ad9361_rf_phy *phy)
 int32_t ad9361_get_auxadc(struct ad9361_rf_phy *phy)
 {
 	uint8_t buf[2];
+	int32_t ret, restore_ret;
 
-	ad9361_spi_writef(phy->spi, REG_AUXADC_CONFIG, AUXADC_POWER_DOWN, 1);
-	ad9361_spi_readm(phy->spi, REG_AUXADC_LSB, buf, 2);
-	ad9361_spi_writef(phy->spi, REG_AUXADC_CONFIG, AUXADC_POWER_DOWN, 0);
+	ret = ad9361_spi_writef(phy->spi, REG_AUXADC_CONFIG,
+				AUXADC_POWER_DOWN, 1);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_readm(phy->spi, REG_AUXADC_LSB, buf, 2);
+	restore_ret = ad9361_spi_writef(phy->spi, REG_AUXADC_CONFIG,
+					AUXADC_POWER_DOWN, 0);
+	if (ret < 0)
+		return ret;
+	if (restore_ret < 0)
+		return restore_ret;
 
 	return (buf[1] << 4) | AUXADC_WORD_LSB(buf[0]);
 }
@@ -5767,7 +5872,7 @@ int32_t ad9361_fastlock_exit_foreign(struct ad9361_rf_phy *phy, bool tx)
 {
 	uint32_t offs = tx ? REG_TX_FAST_LOCK_SETUP - REG_RX_FAST_LOCK_SETUP : 0;
 	uint32_t ready_mask = tx ? TX_SYNTH_READY_MASK : RX_SYNTH_READY_MASK;
-	int32_t setup;
+	int32_t setup, ret;
 
 	setup = ad9361_spi_read(phy->spi, REG_RX_FAST_LOCK_SETUP + offs);
 	if (setup < 0)
@@ -5777,22 +5882,37 @@ int32_t ad9361_fastlock_exit_foreign(struct ad9361_rf_phy *phy, bool tx)
 	if (!(setup & RX_FAST_LOCK_MODE_ENABLE))
 		return 0;
 
-	ad9361_spi_write(phy->spi, REG_RX_FAST_LOCK_SETUP + offs, 0);
+	ret = ad9361_spi_write(phy->spi, REG_RX_FAST_LOCK_SETUP + offs, 0);
+	if (ret < 0)
+		return ret;
 
 	/* Workaround: Exiting Fastlock Mode. Same sequence as the one in
 	 * ad9361_fastlock_prepare(); it is repeated rather than shared because
 	 * that function is gated on this driver's own bookkeeping, which by
 	 * definition does not cover a foreign recall.
 	 */
-	ad9361_spi_writef(phy->spi, REG_RX_FORCE_ALC + offs, FORCE_ALC_ENABLE, 1);
-	ad9361_spi_writef(phy->spi, REG_RX_FORCE_VCO_TUNE_1 + offs, FORCE_VCO_TUNE,
-			  1);
-	ad9361_spi_writef(phy->spi, REG_RX_FORCE_ALC + offs, FORCE_ALC_ENABLE, 0);
-	ad9361_spi_writef(phy->spi, REG_RX_FORCE_VCO_TUNE_1 + offs, FORCE_VCO_TUNE,
-			  0);
-
-	ad9361_trx_vco_cal_control(phy, tx, true);
-	ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2, ready_mask, 0);
+	ret = ad9361_spi_writef(phy->spi, REG_RX_FORCE_ALC + offs,
+				FORCE_ALC_ENABLE, 1);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_writef(phy->spi, REG_RX_FORCE_VCO_TUNE_1 + offs,
+				FORCE_VCO_TUNE, 1);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_writef(phy->spi, REG_RX_FORCE_ALC + offs,
+				FORCE_ALC_ENABLE, 0);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_writef(phy->spi, REG_RX_FORCE_VCO_TUNE_1 + offs,
+				FORCE_VCO_TUNE, 0);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_trx_vco_cal_control(phy, tx, true);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2, ready_mask, 0);
+	if (ret < 0)
+		return ret;
 
 	phy->fastlock.current_profile[tx] = 0;
 
@@ -6639,23 +6759,38 @@ static int32_t ad9361_verify_fir_filter_coef(struct ad9361_rf_phy *phy,
 		enum fir_dest dest,
 		uint32_t ntaps, short *coef)
 {
-	struct no_os_spi_desc *spi = phy->spi;
-	uint32_t val, offs = 0, gain = 0, conf, sel, cnt;
-	int32_t ret = 0;
-
 #ifndef DEBUG
+	(void)phy;
+	(void)dest;
+	(void)ntaps;
+	(void)coef;
 	return 0;
-#endif
+#else
+	struct no_os_spi_desc *spi = phy->spi;
+	uint32_t val, offs = 0, gain = 0, conf = 0, sel, cnt;
+	int32_t ret = 0, cleanup_ret;
+	bool gain_saved = false, conf_saved = false;
+
 	dev_dbg(&phy->spi->dev, "%s: TAPS %"PRIu32", dest %d",
 		__func__, ntaps, dest);
 
 	if (dest & FIR_IS_RX) {
-		gain = ad9361_spi_read(spi, REG_RX_FILTER_GAIN);
+		ret = ad9361_spi_read(spi, REG_RX_FILTER_GAIN);
+		if (ret < 0)
+			return ret;
+		gain = ret;
+		gain_saved = true;
 		offs = REG_RX_FILTER_COEF_ADDR - REG_TX_FILTER_COEF_ADDR;
-		ad9361_spi_write(spi, REG_RX_FILTER_GAIN, 0);
+		ret = ad9361_spi_write(spi, REG_RX_FILTER_GAIN, 0);
+		if (ret < 0)
+			goto restore;
 	}
 
-	conf = ad9361_spi_read(spi, REG_TX_FILTER_CONF + offs);
+	ret = ad9361_spi_read(spi, REG_TX_FILTER_CONF + offs);
+	if (ret < 0)
+		goto restore;
+	conf = ret;
+	conf_saved = true;
 
 	if ((dest & 3) == 3) {
 		sel = 1;
@@ -6667,15 +6802,31 @@ static int32_t ad9361_verify_fir_filter_coef(struct ad9361_rf_phy *phy,
 
 	for (; cnt > 0; cnt--, sel++) {
 
-		ad9361_spi_write(spi, REG_TX_FILTER_CONF + offs,
-				 FIR_NUM_TAPS(ntaps / 16 - 1) |
-				 FIR_SELECT(sel) | FIR_START_CLK);
+		ret = ad9361_spi_write(spi, REG_TX_FILTER_CONF + offs,
+					FIR_NUM_TAPS(ntaps / 16 - 1) |
+					FIR_SELECT(sel) | FIR_START_CLK);
+		if (ret < 0)
+			goto restore;
 		for (val = 0; val < ntaps; val++) {
-			short tmp;
-			ad9361_spi_write(spi, REG_TX_FILTER_COEF_ADDR + offs, val);
+			int32_t low, high;
+			uint16_t tmp;
 
-			tmp = (ad9361_spi_read(spi, REG_TX_FILTER_COEF_READ_DATA_1 + offs) & 0xFF) |
-			      (ad9361_spi_read(spi, REG_TX_FILTER_COEF_READ_DATA_2 + offs) << 8);
+			ret = ad9361_spi_write(spi, REG_TX_FILTER_COEF_ADDR + offs, val);
+			if (ret < 0)
+				goto restore;
+			low = ad9361_spi_read(spi,
+					      REG_TX_FILTER_COEF_READ_DATA_1 + offs);
+			if (low < 0) {
+				ret = low;
+				goto restore;
+			}
+			high = ad9361_spi_read(spi,
+					       REG_TX_FILTER_COEF_READ_DATA_2 + offs);
+			if (high < 0) {
+				ret = high;
+				goto restore;
+			}
+			tmp = (low & 0xFF) | ((high & 0xFF) << 8);
 
 			if (tmp != coef[val]) {
 				dev_err(&phy->spi->dev, "%s%"PRIu32" read verify failed TAP%"PRIu32" %d =! %d",
@@ -6686,13 +6837,20 @@ static int32_t ad9361_verify_fir_filter_coef(struct ad9361_rf_phy *phy,
 		}
 	}
 
-	if (dest & FIR_IS_RX) {
-		ad9361_spi_write(spi, REG_RX_FILTER_GAIN, gain);
+	restore:
+	if (conf_saved) {
+		cleanup_ret = ad9361_spi_write(spi, REG_TX_FILTER_CONF + offs, conf);
+		if (ret >= 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
+	}
+	if (gain_saved) {
+		cleanup_ret = ad9361_spi_write(spi, REG_RX_FILTER_GAIN, gain);
+		if (ret >= 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
 	}
 
-	ad9361_spi_write(spi, REG_TX_FILTER_CONF + offs, conf);
-
 	return ret;
+#endif
 }
 
 /**
@@ -6710,7 +6868,9 @@ int32_t ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
 {
 	struct no_os_spi_desc *spi = phy->spi;
 	uint32_t val, offs = 0, fir_conf = 0, fir_enable = 0;
-	int32_t ret;
+	uint32_t fir_enable_mask;
+	int32_t ret, cleanup_ret;
+	bool ensm_forced = false, fir_enable_saved = false, fir_clock_started = false;
 
 	dev_dbg(&phy->spi->dev, "%s: TAPS %"PRIu32", gain %"PRId32", dest %d",
 		__func__, ntaps, gain_dB, dest);
@@ -6723,61 +6883,116 @@ int32_t ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
 		return -EINVAL;
 	}
 
-	ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
+	ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
+	if (ret < 0)
+		return ret;
+	ensm_forced = true;
 
 	if (dest & FIR_IS_RX) {
 		val = 3 - (gain_dB + 12) / 6;
-		ad9361_spi_write(spi, REG_RX_FILTER_GAIN, val & 0x3);
 		offs = REG_RX_FILTER_COEF_ADDR - REG_TX_FILTER_COEF_ADDR;
-		phy->rx_fir_ntaps = ntaps;
-		fir_enable = ad9361_spi_readf(phy->spi,
-					      REG_RX_ENABLE_FILTER_CTRL, RX_FIR_ENABLE_DECIMATION(~0));
-		ad9361_spi_writef(phy->spi, REG_RX_ENABLE_FILTER_CTRL,
-				  RX_FIR_ENABLE_DECIMATION(~0),
-				  (phy->rx_fir_dec == 4) ? 3 : phy->rx_fir_dec);
+		fir_enable_mask = RX_FIR_ENABLE_DECIMATION(~0);
+		ret = ad9361_spi_write(spi, REG_RX_FILTER_GAIN, val & 0x3);
+		if (ret < 0)
+			goto fir_restore;
+		ret = ad9361_spi_readf(spi, REG_RX_ENABLE_FILTER_CTRL,
+				       fir_enable_mask);
+		if (ret < 0)
+			goto fir_restore;
+		fir_enable = ret;
+		fir_enable_saved = true;
+		ret = ad9361_spi_writef(spi, REG_RX_ENABLE_FILTER_CTRL,
+					fir_enable_mask,
+					(phy->rx_fir_dec == 4) ? 3 : phy->rx_fir_dec);
+		if (ret < 0)
+			goto fir_restore;
 	} else {
 		if (gain_dB == -6)
 			fir_conf = TX_FIR_GAIN_6DB;
-		phy->tx_fir_ntaps = ntaps;
-		fir_enable = ad9361_spi_readf(phy->spi,
-					      REG_TX_ENABLE_FILTER_CTRL, TX_FIR_ENABLE_INTERPOLATION(~0));
-		ad9361_spi_writef(phy->spi, REG_TX_ENABLE_FILTER_CTRL,
-				  TX_FIR_ENABLE_INTERPOLATION(~0),
-				  (phy->tx_fir_int == 4) ? 3 : phy->tx_fir_int);
+		fir_enable_mask = TX_FIR_ENABLE_INTERPOLATION(~0);
+		ret = ad9361_spi_readf(spi, REG_TX_ENABLE_FILTER_CTRL,
+				       fir_enable_mask);
+		if (ret < 0)
+			goto fir_restore;
+		fir_enable = ret;
+		fir_enable_saved = true;
+		ret = ad9361_spi_writef(spi, REG_TX_ENABLE_FILTER_CTRL,
+					fir_enable_mask,
+					(phy->tx_fir_int == 4) ? 3 : phy->tx_fir_int);
+		if (ret < 0)
+			goto fir_restore;
 	}
 
 	val = ntaps / 16 - 1;
 
 	fir_conf |= FIR_NUM_TAPS(val) | FIR_SELECT(dest) | FIR_START_CLK;
 
-	ad9361_spi_write(spi, REG_TX_FILTER_CONF + offs, fir_conf);
+	ret = ad9361_spi_write(spi, REG_TX_FILTER_CONF + offs, fir_conf);
+	if (ret < 0)
+		goto fir_restore;
+	fir_clock_started = true;
 
 	for (val = 0; val < ntaps; val++) {
-		ad9361_spi_write(spi, REG_TX_FILTER_COEF_ADDR + offs, val);
-		ad9361_spi_write(spi, REG_TX_FILTER_COEF_WRITE_DATA_1 + offs,
-				 coef[val] & 0xFF);
-		ad9361_spi_write(spi, REG_TX_FILTER_COEF_WRITE_DATA_2 + offs,
-				 coef[val] >> 8);
-		ad9361_spi_write(spi, REG_TX_FILTER_CONF + offs,
-				 fir_conf | FIR_WRITE);
-		ad9361_spi_write(spi, REG_TX_FILTER_COEF_READ_DATA_2 + offs, 0);
-		ad9361_spi_write(spi, REG_TX_FILTER_COEF_READ_DATA_2 + offs, 0);
+		ret = ad9361_spi_write(spi, REG_TX_FILTER_COEF_ADDR + offs, val);
+		if (ret < 0)
+			goto fir_restore;
+		ret = ad9361_spi_write(spi, REG_TX_FILTER_COEF_WRITE_DATA_1 + offs,
+				       coef[val] & 0xFF);
+		if (ret < 0)
+			goto fir_restore;
+		ret = ad9361_spi_write(spi, REG_TX_FILTER_COEF_WRITE_DATA_2 + offs,
+				       coef[val] >> 8);
+		if (ret < 0)
+			goto fir_restore;
+		ret = ad9361_spi_write(spi, REG_TX_FILTER_CONF + offs,
+				       fir_conf | FIR_WRITE);
+		if (ret < 0)
+			goto fir_restore;
+		ret = ad9361_spi_write(spi, REG_TX_FILTER_COEF_READ_DATA_2 + offs, 0);
+		if (ret < 0)
+			goto fir_restore;
+		ret = ad9361_spi_write(spi, REG_TX_FILTER_COEF_READ_DATA_2 + offs, 0);
+		if (ret < 0)
+			goto fir_restore;
 	}
 
-	ad9361_spi_write(spi, REG_TX_FILTER_CONF + offs, fir_conf);
+	ret = ad9361_spi_write(spi, REG_TX_FILTER_CONF + offs, fir_conf);
+	if (ret < 0)
+		goto fir_restore;
 	fir_conf &= ~FIR_START_CLK;
-	ad9361_spi_write(spi, REG_TX_FILTER_CONF + offs, fir_conf);
+	ret = ad9361_spi_write(spi, REG_TX_FILTER_CONF + offs, fir_conf);
+	if (ret < 0)
+		goto fir_restore;
+	fir_clock_started = false;
 
 	ret = ad9361_verify_fir_filter_coef(phy, dest, ntaps, coef);
 
-	if (dest & FIR_IS_RX)
-		ad9361_spi_writef(phy->spi, REG_RX_ENABLE_FILTER_CTRL,
-				  RX_FIR_ENABLE_DECIMATION(~0), fir_enable);
-	else
-		ad9361_spi_writef(phy->spi, REG_TX_ENABLE_FILTER_CTRL,
-				  TX_FIR_ENABLE_INTERPOLATION(~0), fir_enable);
-
-	ad9361_ensm_restore_prev_state(phy);
+	fir_restore:
+	if (fir_clock_started) {
+		fir_conf &= ~FIR_START_CLK;
+		cleanup_ret = ad9361_spi_write(spi, REG_TX_FILTER_CONF + offs,
+					       fir_conf);
+		if (ret >= 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
+	}
+	if (fir_enable_saved) {
+		cleanup_ret = ad9361_spi_writef(spi,
+						(dest & FIR_IS_RX) ? REG_RX_ENABLE_FILTER_CTRL : REG_TX_ENABLE_FILTER_CTRL,
+						fir_enable_mask, fir_enable);
+		if (ret >= 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
+	}
+	if (ensm_forced) {
+		cleanup_ret = ad9361_ensm_restore_prev_state_checked(phy);
+		if (ret >= 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
+	}
+	if (ret >= 0) {
+		if (dest & FIR_IS_RX)
+			phy->rx_fir_ntaps = ntaps;
+		else
+			phy->tx_fir_ntaps = ntaps;
+	}
 
 	return ret;
 }
@@ -8681,10 +8896,16 @@ cleanup:
  */
 int32_t ad9361_read_clock_data_delays(struct ad9361_rf_phy *phy)
 {
-	phy->pdata->port_ctrl.rx_clk_data_delay =
-		ad9361_spi_read(phy->spi, REG_RX_CLOCK_DATA_DELAY);
-	phy->pdata->port_ctrl.tx_clk_data_delay =
-		ad9361_spi_read(phy->spi, REG_TX_CLOCK_DATA_DELAY);
+	int32_t rx_delay, tx_delay;
+
+	rx_delay = ad9361_spi_read(phy->spi, REG_RX_CLOCK_DATA_DELAY);
+	if (rx_delay < 0)
+		return rx_delay;
+	tx_delay = ad9361_spi_read(phy->spi, REG_TX_CLOCK_DATA_DELAY);
+	if (tx_delay < 0)
+		return tx_delay;
+	phy->pdata->port_ctrl.rx_clk_data_delay = rx_delay;
+	phy->pdata->port_ctrl.tx_clk_data_delay = tx_delay;
 	return 0;
 }
 
@@ -8696,11 +8917,14 @@ int32_t ad9361_read_clock_data_delays(struct ad9361_rf_phy *phy)
  */
 int32_t ad9361_write_clock_data_delays(struct ad9361_rf_phy *phy)
 {
-	ad9361_spi_write(phy->spi, REG_RX_CLOCK_DATA_DELAY,
-			 phy->pdata->port_ctrl.rx_clk_data_delay);
-	ad9361_spi_write(phy->spi, REG_TX_CLOCK_DATA_DELAY,
-			 phy->pdata->port_ctrl.tx_clk_data_delay);
-	return 0;
+	int32_t ret;
+
+	ret = ad9361_spi_write(phy->spi, REG_RX_CLOCK_DATA_DELAY,
+			       phy->pdata->port_ctrl.rx_clk_data_delay);
+	if (ret < 0)
+		return ret;
+	return ad9361_spi_write(phy->spi, REG_TX_CLOCK_DATA_DELAY,
+				phy->pdata->port_ctrl.tx_clk_data_delay);
 }
 
 /**
