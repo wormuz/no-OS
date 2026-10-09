@@ -2115,31 +2115,49 @@ uint8_t ad9361_ensm_get_state(struct ad9361_rf_phy *phy)
  *                   ENSM_STATE_TX, ENSM_STATE_TX_FLUSH, ENSM_STATE_RX,
  *                   ENSM_STATE_RX_FLUSH, ENSM_STATE_FDD, ENSM_STATE_FDD_FLUSH].
  */
-void ad9361_ensm_force_state(struct ad9361_rf_phy *phy, uint8_t ensm_state)
+static int32_t ad9361_ensm_read_state_checked(struct ad9361_rf_phy *phy,
+		uint8_t *ensm_state)
 {
-	struct no_os_spi_desc *spi = phy->spi;
+	int32_t state;
+
+	if (!phy || !phy->spi || !ensm_state)
+		return -EINVAL;
+
+	state = ad9361_spi_readf(phy->spi, REG_STATE, ENSM_STATE(~0));
+	if (state < 0)
+		return state;
+
+	*ensm_state = (uint8_t)state;
+	return 0;
+}
+
+int32_t ad9361_ensm_force_state_checked(struct ad9361_rf_phy *phy,
+		uint8_t ensm_state)
+{
+	struct no_os_spi_desc *spi;
 	uint8_t dev_ensm_state;
-	int32_t rc, timeout = 10;
+	int32_t rc, read_val, timeout = 10;
 	uint32_t val;
 
-	dev_ensm_state = ad9361_spi_readf(spi, REG_STATE, ENSM_STATE(~0));
+	if (!phy || !phy->spi)
+		return -EINVAL;
+	spi = phy->spi;
+
+	/* Do not let a failed state read reuse a stale saved state. */
+	phy->prev_ensm_state = ENSM_STATE_INVALID;
+	rc = ad9361_ensm_read_state_checked(phy, &dev_ensm_state);
+	if (rc < 0)
+		return rc;
 
 	phy->prev_ensm_state = dev_ensm_state;
+	if (dev_ensm_state == ensm_state)
+		return 0;
 
-	if (dev_ensm_state == ensm_state) {
-		dev_dbg(dev, "Nothing to do, device is already in %d state",
-			ensm_state);
-		goto out;
-	}
+	read_val = ad9361_spi_read(spi, REG_ENSM_CONFIG_1);
+	if (read_val < 0)
+		return read_val;
+	val = (uint32_t)read_val;
 
-	dev_dbg(dev, "Device is in %x state, forcing to %x", dev_ensm_state,
-		ensm_state);
-
-	val = ad9361_spi_read(spi, REG_ENSM_CONFIG_1);
-
-	/* Enable control through SPI writes, and take out from
-	* Alert
-	*/
 	if (val & ENABLE_ENSM_PIN_CTRL) {
 		val &= ~ENABLE_ENSM_PIN_CTRL;
 		phy->ensm_pin_ctl_en = true;
@@ -2151,7 +2169,6 @@ void ad9361_ensm_force_state(struct ad9361_rf_phy *phy, uint8_t ensm_state)
 		val &= ~(TO_ALERT);
 
 	switch (ensm_state) {
-
 	case ENSM_STATE_TX:
 	case ENSM_STATE_FDD:
 		val |= FORCE_TX_ON;
@@ -2164,47 +2181,53 @@ void ad9361_ensm_force_state(struct ad9361_rf_phy *phy, uint8_t ensm_state)
 		val |= TO_ALERT | FORCE_ALERT_STATE;
 		break;
 	default:
-		dev_err(dev, "No handling for forcing %d ensm state",
-			ensm_state);
-		goto out;
+		dev_err(dev, "No handling for forcing %d ENSM state", ensm_state);
+		return -EINVAL;
 	}
 
-	ad9361_spi_write(spi, REG_ENSM_CONFIG_1, TO_ALERT | FORCE_ALERT_STATE);
-
+	rc = ad9361_spi_write(spi, REG_ENSM_CONFIG_1,
+			      TO_ALERT | FORCE_ALERT_STATE);
+	if (rc < 0)
+		return rc;
 	rc = ad9361_spi_write(spi, REG_ENSM_CONFIG_1, val);
-	if (rc) {
-		dev_err(dev, "Failed to write ENSM_CONFIG_1\n");
-		goto out;
-	}
+	if (rc < 0)
+		return rc;
 
-	while (ad9361_ensm_get_state(phy) != ensm_state && --timeout) {
+	while (timeout-- > 0) {
+		rc = ad9361_ensm_read_state_checked(phy, &dev_ensm_state);
+		if (rc < 0)
+			return rc;
+		if (dev_ensm_state == ensm_state)
+			return 0;
 		no_os_mdelay(1);
 	}
 
-	if (timeout == 0)
-		dev_err(dev, "Failed to restore state");
-
-out:
-	return;
-
+	dev_err(dev, "Failed to force ENSM state %d", ensm_state);
+	return -ETIMEDOUT;
 }
 
-/**
- * Restore an Enable State Machine (ENSM) state.
- * @param phy The AD9361 state structure.
- * @param ensm_state The state.
- */
-void ad9361_ensm_restore_state(struct ad9361_rf_phy *phy, uint8_t ensm_state)
+void ad9361_ensm_force_state(struct ad9361_rf_phy *phy, uint8_t ensm_state)
 {
-	struct no_os_spi_desc *spi = phy->spi;
-	int32_t rc;
+	(void)ad9361_ensm_force_state_checked(phy, ensm_state);
+}
+
+int32_t ad9361_ensm_restore_state_checked(struct ad9361_rf_phy *phy,
+		uint8_t ensm_state)
+{
+	struct no_os_spi_desc *spi;
+	int32_t rc, read_val, timeout = 10;
+	uint8_t dev_ensm_state;
 	uint32_t val;
 
-	val = ad9361_spi_read(spi, REG_ENSM_CONFIG_1);
+	if (!phy || !phy->spi)
+		return -EINVAL;
+	spi = phy->spi;
 
-	/* We are restoring state only, so clear State bits first
-	* which might have set while forcing a particular state
-	*/
+	read_val = ad9361_spi_read(spi, REG_ENSM_CONFIG_1);
+	if (read_val < 0)
+		return read_val;
+	val = (uint32_t)read_val;
+
 	val &= ~(FORCE_TX_ON | FORCE_RX_ON | FORCE_ALERT_STATE);
 	val |= TO_ALERT;
 
@@ -2220,37 +2243,54 @@ void ad9361_ensm_restore_state(struct ad9361_rf_phy *phy, uint8_t ensm_state)
 		val |= TO_ALERT;
 		break;
 	case ENSM_STATE_INVALID:
-		dev_dbg(dev, "No need to restore, ENSM state wasn't saved");
-		return;
+		return 0;
 	default:
-		dev_dbg(dev, "Could not restore to %d ENSM state",
-			ensm_state);
-		return;
+		return -EINVAL;
 	}
 
-	ad9361_spi_write(spi, REG_ENSM_CONFIG_1, TO_ALERT | FORCE_ALERT_STATE);
-
+	rc = ad9361_spi_write(spi, REG_ENSM_CONFIG_1,
+			      TO_ALERT | FORCE_ALERT_STATE);
+	if (rc < 0)
+		return rc;
 	rc = ad9361_spi_write(spi, REG_ENSM_CONFIG_1, val);
-	if (rc) {
-		dev_err(dev, "Failed to write ENSM_CONFIG_1");
-		return;
-	}
+	if (rc < 0)
+		return rc;
 
 	if (phy->ensm_pin_ctl_en) {
 		val |= ENABLE_ENSM_PIN_CTRL;
 		rc = ad9361_spi_write(spi, REG_ENSM_CONFIG_1, val);
-		if (rc)
-			dev_err(dev, "Failed to write ENSM_CONFIG_1");
+		if (rc < 0)
+			return rc;
 	}
+
+	while (timeout-- > 0) {
+		rc = ad9361_ensm_read_state_checked(phy, &dev_ensm_state);
+		if (rc < 0)
+			return rc;
+		if (dev_ensm_state == ensm_state)
+			return 0;
+		no_os_mdelay(1);
+	}
+
+	dev_err(dev, "Failed to restore ENSM state %d", ensm_state);
+	return -ETIMEDOUT;
 }
 
-/**
- * Restore the previous Enable State Machine (ENSM) state.
- * @param phy The AD9361 state structure.
- */
+void ad9361_ensm_restore_state(struct ad9361_rf_phy *phy, uint8_t ensm_state)
+{
+	(void)ad9361_ensm_restore_state_checked(phy, ensm_state);
+}
+
+int32_t ad9361_ensm_restore_prev_state_checked(struct ad9361_rf_phy *phy)
+{
+	if (!phy)
+		return -EINVAL;
+	return ad9361_ensm_restore_state_checked(phy, phy->prev_ensm_state);
+}
+
 void ad9361_ensm_restore_prev_state(struct ad9361_rf_phy *phy)
 {
-	return ad9361_ensm_restore_state(phy, phy->prev_ensm_state);
+	(void)ad9361_ensm_restore_prev_state_checked(phy);
 }
 
 /**
@@ -5960,7 +6000,7 @@ int32_t ad9361_setup(struct ad9361_rf_phy *phy)
 int32_t ad9361_do_calib_run(struct ad9361_rf_phy *phy, uint32_t cal,
 			    int32_t arg)
 {
-	int32_t ret, ret2;
+	int32_t ret, ret2, restore_ret;
 
 	dev_dbg(&phy->spi->dev, "%s: CAL %"PRIu32" ARG %"PRId32, __func__, cal, arg);
 
@@ -5968,27 +6008,32 @@ int32_t ad9361_do_calib_run(struct ad9361_rf_phy *phy, uint32_t cal,
 	if (ret < 0)
 		return ret;
 
-	ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
-
-	switch (cal) {
-	case TX_QUAD_CAL:
-		ret = ad9361_tx_quad_calib(phy, phy->current_rx_bw_Hz / 2,
-					   phy->current_tx_bw_Hz / 2, arg);
-		break;
-	case RFDC_CAL:
-		ret = ad9361_rf_dc_offset_calib(phy,
-						ad9361_from_clk(clk_get_rate(phy, phy->ref_clk_scale[RX_RFPLL])));
-		break;
-	default:
-		ret = -EINVAL;
-		break;
+	ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
+	if (ret >= 0) {
+		switch (cal) {
+		case TX_QUAD_CAL:
+			ret = ad9361_tx_quad_calib(phy, phy->current_rx_bw_Hz / 2,
+						   phy->current_tx_bw_Hz / 2, arg);
+			break;
+		case RFDC_CAL:
+			ret = ad9361_rf_dc_offset_calib(phy,
+							ad9361_from_clk(clk_get_rate(phy, phy->ref_clk_scale[RX_RFPLL])));
+			break;
+		default:
+			ret = -EINVAL;
+			break;
+		}
 	}
 
 	ret2 = ad9361_tracking_control(phy, phy->bbdc_track_en,
 				       phy->rfdc_track_en, phy->quad_track_en);
-	ad9361_ensm_restore_prev_state(phy);
+	restore_ret = ad9361_ensm_restore_prev_state_checked(phy);
 
-	return ret ? ret : ret2;
+	if (ret < 0)
+		return ret;
+	if (ret2 < 0)
+		return ret2;
+	return restore_ret;
 }
 
 /* Run only RX RFDC calibration with a caller-supplied completion budget.
@@ -5997,7 +6042,7 @@ int32_t ad9361_do_calib_run(struct ad9361_rf_phy *phy, uint32_t cal,
 int32_t ad9361_do_calib_timeout(struct ad9361_rf_phy *phy, uint32_t cal,
 		int32_t arg, uint32_t timeout_us)
 {
-	int32_t ret, ret2;
+	int32_t ret, ret2, restore_ret;
 
 	(void)arg;
 	if (cal != RFDC_CAL || timeout_us == 0)
@@ -6007,15 +6052,20 @@ int32_t ad9361_do_calib_timeout(struct ad9361_rf_phy *phy, uint32_t cal,
 	if (ret < 0)
 		return ret;
 
-	ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
-	ret = ad9361_rf_dc_offset_calib_with_timeout(
-		phy, ad9361_from_clk(clk_get_rate(
-			phy, phy->ref_clk_scale[RX_RFPLL])), timeout_us);
+	ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
+	if (ret >= 0)
+		ret = ad9361_rf_dc_offset_calib_with_timeout(
+			phy, ad9361_from_clk(clk_get_rate(
+				phy, phy->ref_clk_scale[RX_RFPLL])), timeout_us);
 	ret2 = ad9361_tracking_control(phy, phy->bbdc_track_en,
 				       phy->rfdc_track_en, phy->quad_track_en);
-	ad9361_ensm_restore_prev_state(phy);
+	restore_ret = ad9361_ensm_restore_prev_state_checked(phy);
 
-	return ret ? ret : ret2;
+	if (ret < 0)
+		return ret;
+	if (ret2 < 0)
+		return ret2;
+	return restore_ret;
 }
 
 /**
@@ -6028,17 +6078,19 @@ int32_t ad9361_do_calib_timeout(struct ad9361_rf_phy *phy, uint32_t cal,
 int32_t ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
 				   uint32_t rf_rx_bw, uint32_t rf_tx_bw)
 {
-	int32_t ret;
+	int32_t ret, tracking_ret, restore_ret;
 
 	ret = ad9361_tracking_control(phy, false, false, false);
 	if (ret < 0)
 		return ret;
 
-	ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
+	ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
+	if (ret < 0)
+		goto restore;
 
 	ret = __ad9361_update_rf_bandwidth(phy, rf_rx_bw, rf_tx_bw);
 	if (ret < 0)
-		return ret;
+		goto restore;
 
 	phy->current_rx_bw_Hz = rf_rx_bw;
 	phy->current_tx_bw_Hz = rf_tx_bw;
@@ -6046,17 +6098,20 @@ int32_t ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
 	if (phy->manual_tx_quad_cal_en == false) {
 		ret = ad9361_tx_quad_calib(phy, rf_rx_bw / 2, rf_tx_bw / 2, -1);
 		if (ret < 0)
-			return ret;
+			goto restore;
 	}
 
-	ret = ad9361_tracking_control(phy, phy->bbdc_track_en,
-				      phy->rfdc_track_en, phy->quad_track_en);
+	restore:
+	tracking_ret = ad9361_tracking_control(phy, phy->bbdc_track_en,
+					       phy->rfdc_track_en,
+					       phy->quad_track_en);
+
+	restore_ret = ad9361_ensm_restore_prev_state_checked(phy);
 	if (ret < 0)
 		return ret;
-
-	ad9361_ensm_restore_prev_state(phy);
-
-	return 0;
+	if (tracking_ret < 0)
+		return tracking_ret;
+	return restore_ret;
 }
 
 /**
@@ -7537,11 +7592,15 @@ int32_t ad9361_rfpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate)
 int32_t ad9361_clk_mux_set_parent(struct refclk_scale *clk_priv, uint8_t index)
 {
 	struct ad9361_rf_phy *phy = clk_priv->phy;
-	int32_t ret;
+	int32_t ret, restore_ret;
 
 	dev_dbg(&clk_priv->spi->dev, "%s: index %d", __func__, index);
 
-	ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
+	ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
+	if (ret < 0) {
+		(void)ad9361_ensm_restore_prev_state_checked(phy);
+		return ret;
+	}
 
 	ret = ad9361_trx_ext_lo_control(phy, clk_priv->source == TX_RFPLL, index == 1);
 	if (ret >= 0)
@@ -7575,9 +7634,8 @@ int32_t ad9361_clk_mux_set_parent(struct refclk_scale *clk_priv, uint8_t index)
 		}
 	}
 
-	ad9361_ensm_restore_prev_state(phy);
-
-	return ret;
+	restore_ret = ad9361_ensm_restore_prev_state_checked(phy);
+	return ret < 0 ? ret : restore_ret;
 }
 
 /**
