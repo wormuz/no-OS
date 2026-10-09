@@ -3912,16 +3912,22 @@ static int32_t ad9361_set_ref_clk_cycles(struct ad9361_rf_phy *phy,
 int32_t ad9361_set_dcxo_tune(struct ad9361_rf_phy *phy,
 			     uint32_t coarse, uint32_t fine)
 {
+	int32_t ret;
+
 	dev_dbg(&phy->spi->dev, "%s : coarse %"PRIu32" fine %"PRIu32,
 		__func__, coarse, fine);
 
 	if (phy->pdata->use_extclk)
 		return -ENODEV;
 
-	ad9361_spi_write(phy->spi, REG_DCXO_COARSE_TUNE,
-			 DCXO_TUNE_COARSE(coarse));
-	ad9361_spi_write(phy->spi, REG_DCXO_FINE_TUNE_LOW,
-			 DCXO_TUNE_FINE_LOW(fine));
+	ret = ad9361_spi_write(phy->spi, REG_DCXO_COARSE_TUNE,
+				DCXO_TUNE_COARSE(coarse));
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_DCXO_FINE_TUNE_LOW,
+				DCXO_TUNE_FINE_LOW(fine));
+	if (ret < 0)
+		return ret;
 	return ad9361_spi_write(phy->spi, REG_DCXO_FINE_TUNE_HIGH,
 				DCXO_TUNE_FINE_HIGH(fine));
 }
@@ -3936,33 +3942,42 @@ static int32_t ad9361_txmon_setup(struct ad9361_rf_phy *phy,
 				  struct tx_monitor_control *ctrl)
 {
 	struct no_os_spi_desc *spi = phy->spi;
+	int32_t ret;
+
+#define AD9361_SETUP_TRY(call) do { \
+		ret = (call); \
+		if (ret < 0) \
+			return ret; \
+	} while (0)
 
 	dev_dbg(&phy->spi->dev, "%s", __func__);
 
-	ad9361_spi_write(spi, REG_TPM_MODE_ENABLE,
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_TPM_MODE_ENABLE,
 			 (ctrl->one_shot_mode_en ? ONE_SHOT_MODE : 0) |
-			 TX_MON_DURATION(ilog2(ctrl->tx_mon_duration / 16)));
+			 TX_MON_DURATION(ilog2(ctrl->tx_mon_duration / 16))));
 
-	ad9361_spi_write(spi, REG_TX_MON_DELAY, ctrl->tx_mon_delay & 0xFF);
-	ad9361_spi_writef(spi, REG_TX_LEVEL_THRESH,
-			  TX_MON_DELAY_COUNTER(~0), ctrl->tx_mon_delay >> 8);
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_TX_MON_DELAY, ctrl->tx_mon_delay & 0xFF));
+	AD9361_SETUP_TRY(ad9361_spi_writef(spi, REG_TX_LEVEL_THRESH,
+			  TX_MON_DELAY_COUNTER(~0), ctrl->tx_mon_delay >> 8));
 
-	ad9361_spi_write(spi, REG_TX_MON_1_CONFIG,
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_TX_MON_1_CONFIG,
 			 TX_MON_1_LO_CM(ctrl->tx1_mon_lo_cm) |
-			 TX_MON_1_GAIN(ctrl->tx1_mon_front_end_gain));
-	ad9361_spi_write(spi, REG_TX_MON_2_CONFIG,
+			 TX_MON_1_GAIN(ctrl->tx1_mon_front_end_gain)));
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_TX_MON_2_CONFIG,
 			 TX_MON_2_LO_CM(ctrl->tx2_mon_lo_cm) |
-			 TX_MON_2_GAIN(ctrl->tx2_mon_front_end_gain));
+			 TX_MON_2_GAIN(ctrl->tx2_mon_front_end_gain)));
 
-	ad9361_spi_write(spi, REG_TX_ATTEN_THRESH,
-			 ctrl->low_high_gain_threshold_mdB / 250);
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_TX_ATTEN_THRESH,
+			 ctrl->low_high_gain_threshold_mdB / 250));
 
-	ad9361_spi_write(spi, REG_TX_MON_HIGH_GAIN,
-			 TX_MON_HIGH_GAIN(ctrl->high_gain_dB));
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_TX_MON_HIGH_GAIN,
+			 TX_MON_HIGH_GAIN(ctrl->high_gain_dB)));
 
-	ad9361_spi_write(spi, REG_TX_MON_LOW_GAIN,
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_TX_MON_LOW_GAIN,
 			 (ctrl->tx_mon_track_en ? TX_MON_TRACK : 0) |
-			 TX_MON_LOW_GAIN(ctrl->low_gain_dB));
+			 TX_MON_LOW_GAIN(ctrl->low_gain_dB)));
+
+#undef AD9361_SETUP_TRY
 
 	return 0;
 }
@@ -4063,6 +4078,13 @@ static int32_t ad9361_pp_port_setup(struct ad9361_rf_phy *phy, bool restore_c3)
 {
 	struct no_os_spi_desc *spi = phy->spi;
 	struct ad9361_phy_platform_data *pd = phy->pdata;
+	int32_t ret;
+
+#define AD9361_SETUP_TRY(call) do { \
+		ret = (call); \
+		if (ret < 0) \
+			return ret; \
+	} while (0)
 
 	dev_dbg(&phy->spi->dev, "%s", __func__);
 
@@ -4079,40 +4101,42 @@ static int32_t ad9361_pp_port_setup(struct ad9361_rf_phy *phy, bool restore_c3)
 	if (pd->port_ctrl.pp_conf[2] & FULL_PORT)
 		pd->port_ctrl.pp_conf[2] &= ~(HALF_DUPLEX_MODE | SINGLE_PORT_MODE);
 
-	ad9361_spi_write(spi, REG_PARALLEL_PORT_CONF_1, pd->port_ctrl.pp_conf[0]);
-	ad9361_spi_write(spi, REG_PARALLEL_PORT_CONF_2, pd->port_ctrl.pp_conf[1]);
-	ad9361_spi_write(spi, REG_PARALLEL_PORT_CONF_3, pd->port_ctrl.pp_conf[2]);
-	ad9361_spi_write(spi, REG_RX_CLOCK_DATA_DELAY, pd->port_ctrl.rx_clk_data_delay);
-	ad9361_spi_write(spi, REG_TX_CLOCK_DATA_DELAY, pd->port_ctrl.tx_clk_data_delay);
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_PARALLEL_PORT_CONF_1, pd->port_ctrl.pp_conf[0]));
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_PARALLEL_PORT_CONF_2, pd->port_ctrl.pp_conf[1]));
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_PARALLEL_PORT_CONF_3, pd->port_ctrl.pp_conf[2]));
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_RX_CLOCK_DATA_DELAY, pd->port_ctrl.rx_clk_data_delay));
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_TX_CLOCK_DATA_DELAY, pd->port_ctrl.tx_clk_data_delay));
 
 	/* Slew rate and drive strength of the digital interface outputs. Both
 	 * registers hold other fields too, so the slew values go in with the
 	 * write that carries them and the single-bit drive strengths follow as
 	 * read-modify-write. All six default to zero, which reproduces the
 	 * previous behaviour of writing lvds_bias_ctrl alone. */
-	ad9361_spi_write(spi, REG_LVDS_BIAS_CTRL,
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_LVDS_BIAS_CTRL,
 			 pd->port_ctrl.lvds_bias_ctrl |
-			 CLK_OUT_SLEW(pd->port_ctrl.clk_out_slew));
-	ad9361_spi_write(spi, REG_DIGITAL_IO_CTRL,
+			 CLK_OUT_SLEW(pd->port_ctrl.clk_out_slew)));
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_DIGITAL_IO_CTRL,
 			 DATACLK_SLEW(pd->port_ctrl.dataclk_slew) |
-			 DATA_PORT_SLEW(pd->port_ctrl.data_port_slew));
-	ad9361_spi_writef(spi, REG_DIGITAL_IO_CTRL, DATACLK_DRIVE,
-			  pd->port_ctrl.dataclk_drive);
-	ad9361_spi_writef(spi, REG_DIGITAL_IO_CTRL, DATA_PORT_DRIVE,
-			  pd->port_ctrl.data_port_drive);
-	ad9361_spi_writef(spi, REG_DIGITAL_IO_CTRL, CLK_OUT_DRIVE,
-			  pd->port_ctrl.clk_out_drive);
-	//	ad9361_spi_write(spi, REG_DIGITAL_IO_CTRL, pd->port_ctrl.digital_io_ctrl);
-	ad9361_spi_write(spi, REG_LVDS_INVERT_CTRL1, pd->port_ctrl.lvds_invert[0]);
-	ad9361_spi_write(spi, REG_LVDS_INVERT_CTRL2, pd->port_ctrl.lvds_invert[1]);
+			 DATA_PORT_SLEW(pd->port_ctrl.data_port_slew)));
+	AD9361_SETUP_TRY(ad9361_spi_writef(spi, REG_DIGITAL_IO_CTRL, DATACLK_DRIVE,
+			  pd->port_ctrl.dataclk_drive));
+	AD9361_SETUP_TRY(ad9361_spi_writef(spi, REG_DIGITAL_IO_CTRL, DATA_PORT_DRIVE,
+			  pd->port_ctrl.data_port_drive));
+	AD9361_SETUP_TRY(ad9361_spi_writef(spi, REG_DIGITAL_IO_CTRL, CLK_OUT_DRIVE,
+			  pd->port_ctrl.clk_out_drive));
+	//	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_DIGITAL_IO_CTRL, pd->port_ctrl.digital_io_ctrl));
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_LVDS_INVERT_CTRL1, pd->port_ctrl.lvds_invert[0]));
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_LVDS_INVERT_CTRL2, pd->port_ctrl.lvds_invert[1]));
 
 	if (pd->rx1rx2_phase_inversion_en ||
 	    (pd->port_ctrl.pp_conf[1] & INVERT_RX2)) {
 
-		ad9361_spi_writef(spi, REG_PARALLEL_PORT_CONF_2, INVERT_RX2, 1);
-		ad9361_spi_writef(spi, REG_INVERT_BITS,
-				  INVERT_RX2_RF_DC_CGOUT_WORD, 0);
+		AD9361_SETUP_TRY(ad9361_spi_writef(spi, REG_PARALLEL_PORT_CONF_2, INVERT_RX2, 1));
+		AD9361_SETUP_TRY(ad9361_spi_writef(spi, REG_INVERT_BITS,
+				  INVERT_RX2_RF_DC_CGOUT_WORD, 0));
 	}
+
+#undef AD9361_SETUP_TRY
 
 	return 0;
 }
@@ -4128,6 +4152,13 @@ static int32_t ad9361_gc_setup(struct ad9361_rf_phy *phy,
 {
 	struct no_os_spi_desc *spi = phy->spi;
 	uint32_t reg, tmp1, tmp2;
+	int32_t ret;
+
+#define AD9361_GC_TRY(call) do { \
+		ret = (call); \
+		if (ret < 0) \
+			return ret; \
+	} while (0)
 
 	dev_dbg(&phy->spi->dev, "%s", __func__);
 
@@ -4144,15 +4175,15 @@ static int32_t ad9361_gc_setup(struct ad9361_rf_phy *phy,
 	phy->agc_mode[0] = ctrl->rx1_mode;
 	phy->agc_mode[1] = ctrl->rx2_mode;
 
-	ad9361_spi_write(spi, REG_AGC_CONFIG_1, reg); // Gain Control Mode Select
+	AD9361_GC_TRY(ad9361_spi_write(spi, REG_AGC_CONFIG_1, reg)); // Gain Control Mode Select
 
 	/* AGC_USE_FULL_GAIN_TABLE handled in ad9361_load_gt() */
-	ad9361_spi_writef(spi, REG_AGC_CONFIG_2, MAN_GAIN_CTRL_RX1,
-			  ctrl->mgc_rx1_ctrl_inp_en);
-	ad9361_spi_writef(spi, REG_AGC_CONFIG_2, MAN_GAIN_CTRL_RX2,
-			  ctrl->mgc_rx2_ctrl_inp_en);
-	ad9361_spi_writef(spi, REG_AGC_CONFIG_2, DIG_GAIN_EN,
-			  ctrl->dig_gain_en);
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_AGC_CONFIG_2, MAN_GAIN_CTRL_RX1,
+			  ctrl->mgc_rx1_ctrl_inp_en));
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_AGC_CONFIG_2, MAN_GAIN_CTRL_RX2,
+			  ctrl->mgc_rx2_ctrl_inp_en));
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_AGC_CONFIG_2, DIG_GAIN_EN,
+			  ctrl->dig_gain_en));
 
 	ctrl->adc_ovr_sample_size = no_os_clamp_t(uint8_t, ctrl->adc_ovr_sample_size,
 				    1U, 8U);
@@ -4177,64 +4208,64 @@ static int32_t ad9361_gc_setup(struct ad9361_rf_phy *phy,
 	ctrl->mgc_inc_gain_step = no_os_clamp_t(uint8_t, ctrl->mgc_inc_gain_step, 1U,
 						8U);
 	reg |= MANUAL_INCR_STEP_SIZE(ctrl->mgc_inc_gain_step - 1);
-	ad9361_spi_write(spi, REG_AGC_CONFIG_3,
-			 reg); // Incr Step Size, ADC Overrange Size
+	AD9361_GC_TRY(ad9361_spi_write(spi, REG_AGC_CONFIG_3,
+			 reg)); // Incr Step Size, ADC Overrange Size
 
 	ctrl->mgc_dec_gain_step = no_os_clamp_t(uint8_t, ctrl->mgc_dec_gain_step, 1U,
 						8U);
 	reg = MANUAL_CTRL_IN_DECR_GAIN_STP_SIZE(ctrl->mgc_dec_gain_step - 1);
-	ad9361_spi_write(spi, REG_PEAK_WAIT_TIME,
-			 reg); // Decr Step Size, Peak Overload Time
+	AD9361_GC_TRY(ad9361_spi_write(spi, REG_PEAK_WAIT_TIME,
+			 reg)); // Decr Step Size, Peak Overload Time
 
 	if (ctrl->dig_gain_en)
-		ad9361_spi_write(spi, REG_DIGITAL_GAIN,
+		AD9361_GC_TRY(ad9361_spi_write(spi, REG_DIGITAL_GAIN,
 				 MAXIMUM_DIGITAL_GAIN(ctrl->max_dig_gain) |
-				 DIG_GAIN_STP_SIZE(ctrl->dig_gain_step_size));
+				 DIG_GAIN_STP_SIZE(ctrl->dig_gain_step_size)));
 
 	if (ctrl->adc_large_overload_thresh >= ctrl->adc_small_overload_thresh) {
-		ad9361_spi_write(spi, REG_ADC_SMALL_OVERLOAD_THRESH,
-				 ctrl->adc_small_overload_thresh); // ADC Small Overload Threshold
-		ad9361_spi_write(spi, REG_ADC_LARGE_OVERLOAD_THRESH,
-				 ctrl->adc_large_overload_thresh); // ADC Large Overload Threshold
+		AD9361_GC_TRY(ad9361_spi_write(spi, REG_ADC_SMALL_OVERLOAD_THRESH,
+				 ctrl->adc_small_overload_thresh)); // ADC Small Overload Threshold
+		AD9361_GC_TRY(ad9361_spi_write(spi, REG_ADC_LARGE_OVERLOAD_THRESH,
+				 ctrl->adc_large_overload_thresh)); // ADC Large Overload Threshold
 	} else {
-		ad9361_spi_write(spi, REG_ADC_SMALL_OVERLOAD_THRESH,
-				 ctrl->adc_large_overload_thresh); // ADC Small Overload Threshold
-		ad9361_spi_write(spi, REG_ADC_LARGE_OVERLOAD_THRESH,
-				 ctrl->adc_small_overload_thresh); // ADC Large Overload Threshold
+		AD9361_GC_TRY(ad9361_spi_write(spi, REG_ADC_SMALL_OVERLOAD_THRESH,
+				 ctrl->adc_large_overload_thresh)); // ADC Small Overload Threshold
+		AD9361_GC_TRY(ad9361_spi_write(spi, REG_ADC_LARGE_OVERLOAD_THRESH,
+				 ctrl->adc_small_overload_thresh)); // ADC Large Overload Threshold
 	}
 
 	reg = (ctrl->lmt_overload_high_thresh / 16) - 1;
 	reg = no_os_clamp(reg, 0U, 63U);
-	ad9361_spi_write(spi, REG_LARGE_LMT_OVERLOAD_THRESH, reg);
+	AD9361_GC_TRY(ad9361_spi_write(spi, REG_LARGE_LMT_OVERLOAD_THRESH, reg));
 	reg = (ctrl->lmt_overload_low_thresh / 16) - 1;
 	reg = no_os_clamp(reg, 0U, 63U);
-	ad9361_spi_writef(spi, REG_SMALL_LMT_OVERLOAD_THRESH,
-			  SMALL_LMT_OVERLOAD_THRESH(~0), reg);
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_SMALL_LMT_OVERLOAD_THRESH,
+			  SMALL_LMT_OVERLOAD_THRESH(~0), reg));
 
 	if (has_split_gt && phy->pdata->split_gt) {
 		/* REVIST */
-		ad9361_spi_write(spi, REG_RX1_MANUAL_LPF_GAIN, 0x58); // Rx1 LPF Gain Index
-		ad9361_spi_write(spi, REG_RX2_MANUAL_LPF_GAIN, 0x18); // Rx2 LPF Gain Index
-		ad9361_spi_write(spi, REG_FAST_INITIAL_LMT_GAIN_LIMIT,
-				 0x27); // Initial LMT Gain Limit
+		AD9361_GC_TRY(ad9361_spi_write(spi, REG_RX1_MANUAL_LPF_GAIN, 0x58)); // Rx1 LPF Gain Index
+		AD9361_GC_TRY(ad9361_spi_write(spi, REG_RX2_MANUAL_LPF_GAIN, 0x18)); // Rx2 LPF Gain Index
+		AD9361_GC_TRY(ad9361_spi_write(spi, REG_FAST_INITIAL_LMT_GAIN_LIMIT,
+				 0x27)); // Initial LMT Gain Limit
 	}
 
-	ad9361_spi_write(spi, REG_RX1_MANUAL_DIGITALFORCED_GAIN,
-			 0x00); // Rx1 Digital Gain Index
-	ad9361_spi_write(spi, REG_RX2_MANUAL_DIGITALFORCED_GAIN,
-			 0x00); // Rx2 Digital Gain Index
+	AD9361_GC_TRY(ad9361_spi_write(spi, REG_RX1_MANUAL_DIGITALFORCED_GAIN,
+			 0x00)); // Rx1 Digital Gain Index
+	AD9361_GC_TRY(ad9361_spi_write(spi, REG_RX2_MANUAL_DIGITALFORCED_GAIN,
+			 0x00)); // Rx2 Digital Gain Index
 
 	reg = no_os_clamp_t(uint8_t, ctrl->low_power_thresh, 0U, 64U) * 2;
-	ad9361_spi_write(spi, REG_FAST_LOW_POWER_THRESH, reg); // Low Power Threshold
-	ad9361_spi_write(spi, REG_TX_SYMBOL_ATTEN_CONFIG,
-			 0x00); // Tx Symbol Gain Control
+	AD9361_GC_TRY(ad9361_spi_write(spi, REG_FAST_LOW_POWER_THRESH, reg)); // Low Power Threshold
+	AD9361_GC_TRY(ad9361_spi_write(spi, REG_TX_SYMBOL_ATTEN_CONFIG,
+			 0x00)); // Tx Symbol Gain Control
 
-	ad9361_spi_writef(spi, REG_DEC_POWER_MEASURE_DURATION_0,
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_DEC_POWER_MEASURE_DURATION_0,
 			  USE_HB1_OUT_FOR_DEC_PWR_MEAS,
-			  !ctrl->use_rx_fir_out_for_dec_pwr_meas); // USE HB1 or FIR output for power measurements
+			  !ctrl->use_rx_fir_out_for_dec_pwr_meas)); // USE HB1 or FIR output for power measurements
 
-	ad9361_spi_writef(spi, REG_DEC_POWER_MEASURE_DURATION_0,
-			  ENABLE_DEC_PWR_MEAS, 1); // Power Measurement Duration
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_DEC_POWER_MEASURE_DURATION_0,
+			  ENABLE_DEC_PWR_MEAS, 1)); // Power Measurement Duration
 
 	if (ctrl->rx1_mode == RF_GAIN_FASTATTACK_AGC ||
 	    ctrl->rx2_mode == RF_GAIN_FASTATTACK_AGC)
@@ -4242,29 +4273,29 @@ static int32_t ad9361_gc_setup(struct ad9361_rf_phy *phy,
 	else
 		reg = ilog2(ctrl->dec_pow_measuremnt_duration / 16);
 
-	ad9361_spi_writef(spi, REG_DEC_POWER_MEASURE_DURATION_0,
-			  DEC_POWER_MEASUREMENT_DURATION(~0), reg); // Power Measurement Duration
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_DEC_POWER_MEASURE_DURATION_0,
+			  DEC_POWER_MEASUREMENT_DURATION(~0), reg)); // Power Measurement Duration
 
 	/* AGC */
 
 	tmp1 = reg = no_os_clamp_t(uint8_t, ctrl->agc_inner_thresh_high, 0U, 127U);
-	ad9361_spi_writef(spi, REG_AGC_LOCK_LEVEL,
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_AGC_LOCK_LEVEL,
 			  AGC_LOCK_LEVEL_FAST_AGC_INNER_HIGH_THRESH_SLOW(~0),
-			  reg);
+			  reg));
 
 	tmp2 = reg = no_os_clamp_t(uint8_t, ctrl->agc_inner_thresh_low, 0U, 127U);
 	reg |= (ctrl->adc_lmt_small_overload_prevent_gain_inc ?
 		PREVENT_GAIN_INC : 0);
-	ad9361_spi_write(spi, REG_AGC_INNER_LOW_THRESH, reg);
+	AD9361_GC_TRY(ad9361_spi_write(spi, REG_AGC_INNER_LOW_THRESH, reg));
 
 	reg = AGC_OUTER_HIGH_THRESH(tmp1 - ctrl->agc_outer_thresh_high) |
 	      AGC_OUTER_LOW_THRESH(ctrl->agc_outer_thresh_low - tmp2);
-	ad9361_spi_write(spi, REG_OUTER_POWER_THRESHS, reg);
+	AD9361_GC_TRY(ad9361_spi_write(spi, REG_OUTER_POWER_THRESHS, reg));
 
 	reg = AGC_OUTER_HIGH_THRESH_EXED_STP_SIZE(ctrl->agc_outer_thresh_high_dec_steps)
 	      |
 	      AGC_OUTER_LOW_THRESH_EXED_STP_SIZE(ctrl->agc_outer_thresh_low_inc_steps);
-	ad9361_spi_write(spi, REG_GAIN_STP_2, reg);
+	AD9361_GC_TRY(ad9361_spi_write(spi, REG_GAIN_STP_2, reg));
 
 	reg = ((ctrl->immed_gain_change_if_large_adc_overload) ?
 	       IMMED_GAIN_CHANGE_IF_LG_ADC_OVERLOAD : 0) |
@@ -4272,98 +4303,98 @@ static int32_t ad9361_gc_setup(struct ad9361_rf_phy *phy,
 	       IMMED_GAIN_CHANGE_IF_LG_LMT_OVERLOAD : 0) |
 	      AGC_INNER_HIGH_THRESH_EXED_STP_SIZE(ctrl->agc_inner_thresh_high_dec_steps) |
 	      AGC_INNER_LOW_THRESH_EXED_STP_SIZE(ctrl->agc_inner_thresh_low_inc_steps);
-	ad9361_spi_write(spi, REG_GAIN_STP1, reg);
+	AD9361_GC_TRY(ad9361_spi_write(spi, REG_GAIN_STP1, reg));
 
 	reg = LARGE_ADC_OVERLOAD_EXED_COUNTER(ctrl->adc_large_overload_exceed_counter) |
 	      SMALL_ADC_OVERLOAD_EXED_COUNTER(ctrl->adc_small_overload_exceed_counter);
-	ad9361_spi_write(spi, REG_ADC_OVERLOAD_COUNTERS, reg);
+	AD9361_GC_TRY(ad9361_spi_write(spi, REG_ADC_OVERLOAD_COUNTERS, reg));
 
 	reg = DECREMENT_STP_SIZE_FOR_SMALL_LPF_GAIN_CHANGE(
 		      ctrl->f_agc_large_overload_inc_steps) |
 	      LARGE_LPF_GAIN_STEP(ctrl->adc_large_overload_inc_steps);
-	ad9361_spi_write(spi, REG_GAIN_STP_CONFIG_2, reg);
+	AD9361_GC_TRY(ad9361_spi_write(spi, REG_GAIN_STP_CONFIG_2, reg));
 
 	reg = LARGE_LMT_OVERLOAD_EXED_COUNTER(ctrl->lmt_overload_large_exceed_counter) |
 	      SMALL_LMT_OVERLOAD_EXED_COUNTER(ctrl->lmt_overload_small_exceed_counter);
-	ad9361_spi_write(spi, REG_LMT_OVERLOAD_COUNTERS, reg);
+	AD9361_GC_TRY(ad9361_spi_write(spi, REG_LMT_OVERLOAD_COUNTERS, reg));
 
-	ad9361_spi_writef(spi, REG_GAIN_STP_CONFIG1,
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_GAIN_STP_CONFIG1,
 			  DEC_STP_SIZE_FOR_LARGE_LMT_OVERLOAD(~0),
-			  ctrl->lmt_overload_large_inc_steps);
+			  ctrl->lmt_overload_large_inc_steps));
 
 	reg = DIG_SATURATION_EXED_COUNTER(ctrl->dig_saturation_exceed_counter) |
 	      (ctrl->sync_for_gain_counter_en ?
 	       ENABLE_SYNC_FOR_GAIN_COUNTER : 0);
-	ad9361_spi_write(spi, REG_DIGITAL_SAT_COUNTER, reg);
+	AD9361_GC_TRY(ad9361_spi_write(spi, REG_DIGITAL_SAT_COUNTER, reg));
 
 	/*
 	* Fast AGC
 	*/
 
 	/* Fast AGC - Low Power */
-	ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
 			  ENABLE_INCR_GAIN,
-			  ctrl->f_agc_allow_agc_gain_increase);
+			  ctrl->f_agc_allow_agc_gain_increase));
 
-	ad9361_spi_write(spi, REG_FAST_INCREMENT_TIME,
-			 ctrl->f_agc_lp_thresh_increment_time);
+	AD9361_GC_TRY(ad9361_spi_write(spi, REG_FAST_INCREMENT_TIME,
+			 ctrl->f_agc_lp_thresh_increment_time));
 
 	reg = ctrl->f_agc_lp_thresh_increment_steps - 1;
 	reg = no_os_clamp_t(uint32_t, reg, 0U, 7U);
-	ad9361_spi_writef(spi, REG_FAST_ENERGY_DETECT_COUNT,
-			  INCREMENT_GAIN_STP_LPFLMT(~0), reg);
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_ENERGY_DETECT_COUNT,
+			  INCREMENT_GAIN_STP_LPFLMT(~0), reg));
 
 	/* Fast AGC - Lock Level */
 	/* Dual use see also agc_inner_thresh_high */
-	ad9361_spi_writef(spi, REG_FAST_CONFIG_2_SETTLING_DELAY,
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_2_SETTLING_DELAY,
 			  ENABLE_LMT_GAIN_INC_FOR_LOCK_LEVEL,
-			  ctrl->f_agc_lock_level_lmt_gain_increase_en);
+			  ctrl->f_agc_lock_level_lmt_gain_increase_en));
 
 	reg = ctrl->f_agc_lock_level_gain_increase_upper_limit;
 	reg = no_os_clamp_t(uint32_t, reg, 0U, 63U);
-	ad9361_spi_writef(spi, REG_FAST_AGCLL_UPPER_LIMIT,
-			  AGCLL_MAX_INCREASE(~0), reg);
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_AGCLL_UPPER_LIMIT,
+			  AGCLL_MAX_INCREASE(~0), reg));
 
 	/* Fast AGC - Peak Detectors and Final Settling */
 	reg = ctrl->f_agc_lpf_final_settling_steps;
 	reg = no_os_clamp_t(uint32_t, reg, 0U, 3U);
-	ad9361_spi_writef(spi, REG_FAST_ENERGY_LOST_THRESH,
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_ENERGY_LOST_THRESH,
 			  POST_LOCK_LEVEL_STP_SIZE_FOR_LPF_TABLE_FULL_TABLE(~0),
-			  reg);
+			  reg));
 
 	reg = ctrl->f_agc_lmt_final_settling_steps;
 	reg = no_os_clamp_t(uint32_t, reg, 0U, 3U);
-	ad9361_spi_writef(spi, REG_FAST_STRONGER_SIGNAL_THRESH,
-			  POST_LOCK_LEVEL_STP_FOR_LMT_TABLE(~0), reg);
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_STRONGER_SIGNAL_THRESH,
+			  POST_LOCK_LEVEL_STP_FOR_LMT_TABLE(~0), reg));
 
 	reg = ctrl->f_agc_final_overrange_count;
 	reg = no_os_clamp_t(uint32_t, reg, 0U, 7U);
-	ad9361_spi_writef(spi, REG_FAST_FINAL_OVER_RANGE_AND_OPT_GAIN,
-			  FINAL_OVER_RANGE_COUNT(~0), reg);
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_FINAL_OVER_RANGE_AND_OPT_GAIN,
+			  FINAL_OVER_RANGE_COUNT(~0), reg));
 
 	/* Fast AGC - Final Power Test */
-	ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
 			  ENABLE_GAIN_INC_AFTER_GAIN_LOCK,
-			  ctrl->f_agc_gain_increase_after_gain_lock_en);
+			  ctrl->f_agc_gain_increase_after_gain_lock_en));
 
 	/* Fast AGC - Unlocking the Gain */
 	/* 0 = MAX Gain, 1 = Optimized Gain, 2 = Set Gain */
 
 	reg = ctrl->f_agc_gain_index_type_after_exit_rx_mode;
-	ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
-			  GOTO_SET_GAIN_IF_EXIT_RX_STATE, reg == SET_GAIN);
-	ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
+			  GOTO_SET_GAIN_IF_EXIT_RX_STATE, reg == SET_GAIN));
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
 			  GOTO_OPTIMIZED_GAIN_IF_EXIT_RX_STATE,
-			  reg == OPTIMIZED_GAIN);
+			  reg == OPTIMIZED_GAIN));
 
-	ad9361_spi_writef(spi, REG_FAST_CONFIG_2_SETTLING_DELAY,
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_2_SETTLING_DELAY,
 			  USE_LAST_LOCK_LEVEL_FOR_SET_GAIN,
-			  ctrl->f_agc_use_last_lock_level_for_set_gain_en);
+			  ctrl->f_agc_use_last_lock_level_for_set_gain_en));
 
 	reg = ctrl->f_agc_optimized_gain_offset;
 	reg = no_os_clamp_t(uint32_t, reg, 0U, 15U);
-	ad9361_spi_writef(spi, REG_FAST_FINAL_OVER_RANGE_AND_OPT_GAIN,
-			  OPTIMIZE_GAIN_OFFSET(~0), reg);
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_FINAL_OVER_RANGE_AND_OPT_GAIN,
+			  OPTIMIZE_GAIN_OFFSET(~0), reg));
 
 	tmp1 = !ctrl->f_agc_rst_gla_stronger_sig_thresh_exceeded_en ||
 	       !ctrl->f_agc_rst_gla_engergy_lost_sig_thresh_exceeded_en ||
@@ -4371,98 +4402,100 @@ static int32_t ad9361_gc_setup(struct ad9361_rf_phy *phy,
 	       !ctrl->f_agc_rst_gla_large_lmt_overload_en ||
 	       ctrl->f_agc_rst_gla_en_agc_pulled_high_en;
 
-	ad9361_spi_writef(spi, REG_AGC_CONFIG_2,
-			  AGC_GAIN_UNLOCK_CTRL, tmp1);
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_AGC_CONFIG_2,
+			  AGC_GAIN_UNLOCK_CTRL, tmp1));
 
 	reg = !ctrl->f_agc_rst_gla_stronger_sig_thresh_exceeded_en;
-	ad9361_spi_writef(spi, REG_FAST_STRONG_SIGNAL_FREEZE,
-			  DONT_UNLOCK_GAIN_IF_STRONGER_SIGNAL, reg);
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_STRONG_SIGNAL_FREEZE,
+			  DONT_UNLOCK_GAIN_IF_STRONGER_SIGNAL, reg));
 
 	reg = ctrl->f_agc_rst_gla_stronger_sig_thresh_above_ll;
 	reg = no_os_clamp_t(uint32_t, reg, 0U, 63U);
-	ad9361_spi_writef(spi, REG_FAST_STRONGER_SIGNAL_THRESH,
-			  STRONGER_SIGNAL_THRESH(~0), reg);
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_STRONGER_SIGNAL_THRESH,
+			  STRONGER_SIGNAL_THRESH(~0), reg));
 
 	reg = ctrl->f_agc_rst_gla_engergy_lost_sig_thresh_below_ll;
 	reg = no_os_clamp_t(uint32_t, reg, 0U, 63U);
-	ad9361_spi_writef(spi, REG_FAST_ENERGY_LOST_THRESH,
-			  ENERGY_LOST_THRESH(~0),  reg);
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_ENERGY_LOST_THRESH,
+			  ENERGY_LOST_THRESH(~0),  reg));
 
 	reg = ctrl->f_agc_rst_gla_engergy_lost_goto_optim_gain_en;
-	ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
-			  GOTO_OPT_GAIN_IF_ENERGY_LOST_OR_EN_AGC_HIGH, reg);
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
+			  GOTO_OPT_GAIN_IF_ENERGY_LOST_OR_EN_AGC_HIGH, reg));
 
 	reg = !ctrl->f_agc_rst_gla_engergy_lost_sig_thresh_exceeded_en;
-	ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
-			  DONT_UNLOCK_GAIN_IF_ENERGY_LOST, reg);
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
+			  DONT_UNLOCK_GAIN_IF_ENERGY_LOST, reg));
 
 	reg = ctrl->f_agc_energy_lost_stronger_sig_gain_lock_exit_cnt;
 	reg = no_os_clamp_t(uint32_t, reg, 0U, 63U);
-	ad9361_spi_writef(spi, REG_FAST_GAIN_LOCK_EXIT_COUNT,
-			  GAIN_LOCK_EXIT_COUNT(~0), reg);
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_GAIN_LOCK_EXIT_COUNT,
+			  GAIN_LOCK_EXIT_COUNT(~0), reg));
 
 	reg = !ctrl->f_agc_rst_gla_large_adc_overload_en ||
 	      !ctrl->f_agc_rst_gla_large_lmt_overload_en;
-	ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
-			  DONT_UNLOCK_GAIN_IF_LG_ADC_OR_LMT_OVRG, reg);
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
+			  DONT_UNLOCK_GAIN_IF_LG_ADC_OR_LMT_OVRG, reg));
 
 	reg = !ctrl->f_agc_rst_gla_large_adc_overload_en;
-	ad9361_spi_writef(spi, REG_FAST_LOW_POWER_THRESH,
-			  DONT_UNLOCK_GAIN_IF_ADC_OVRG, reg);
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_LOW_POWER_THRESH,
+			  DONT_UNLOCK_GAIN_IF_ADC_OVRG, reg));
 
 	/* 0 = Max Gain, 1 = Set Gain, 2 = Optimized Gain, 3 = No Gain Change */
 
 	if (ctrl->f_agc_rst_gla_en_agc_pulled_high_en) {
 		switch (ctrl->f_agc_rst_gla_if_en_agc_pulled_high_mode) {
 		case MAX_GAIN:
-			ad9361_spi_writef(spi, REG_FAST_CONFIG_2_SETTLING_DELAY,
-					  GOTO_MAX_GAIN_OR_OPT_GAIN_IF_EN_AGC_HIGH, 1);
+			AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_2_SETTLING_DELAY,
+					  GOTO_MAX_GAIN_OR_OPT_GAIN_IF_EN_AGC_HIGH, 1));
 
-			ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
-					  GOTO_SET_GAIN_IF_EN_AGC_HIGH, 0);
+			AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
+					  GOTO_SET_GAIN_IF_EN_AGC_HIGH, 0));
 
-			ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
-					  GOTO_OPT_GAIN_IF_ENERGY_LOST_OR_EN_AGC_HIGH, 0);
+			AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
+					  GOTO_OPT_GAIN_IF_ENERGY_LOST_OR_EN_AGC_HIGH, 0));
 			break;
 		case SET_GAIN:
-			ad9361_spi_writef(spi, REG_FAST_CONFIG_2_SETTLING_DELAY,
-					  GOTO_MAX_GAIN_OR_OPT_GAIN_IF_EN_AGC_HIGH, 0);
+			AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_2_SETTLING_DELAY,
+					  GOTO_MAX_GAIN_OR_OPT_GAIN_IF_EN_AGC_HIGH, 0));
 
-			ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
-					  GOTO_SET_GAIN_IF_EN_AGC_HIGH, 1);
+			AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
+					  GOTO_SET_GAIN_IF_EN_AGC_HIGH, 1));
 			break;
 		case OPTIMIZED_GAIN:
-			ad9361_spi_writef(spi, REG_FAST_CONFIG_2_SETTLING_DELAY,
-					  GOTO_MAX_GAIN_OR_OPT_GAIN_IF_EN_AGC_HIGH, 1);
+			AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_2_SETTLING_DELAY,
+					  GOTO_MAX_GAIN_OR_OPT_GAIN_IF_EN_AGC_HIGH, 1));
 
-			ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
-					  GOTO_SET_GAIN_IF_EN_AGC_HIGH, 0);
+			AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
+					  GOTO_SET_GAIN_IF_EN_AGC_HIGH, 0));
 
-			ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
-					  GOTO_OPT_GAIN_IF_ENERGY_LOST_OR_EN_AGC_HIGH, 1);
+			AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
+					  GOTO_OPT_GAIN_IF_ENERGY_LOST_OR_EN_AGC_HIGH, 1));
 			break;
 		case NO_GAIN_CHANGE:
-			ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
-					  GOTO_SET_GAIN_IF_EN_AGC_HIGH, 0);
-			ad9361_spi_writef(spi, REG_FAST_CONFIG_2_SETTLING_DELAY,
-					  GOTO_MAX_GAIN_OR_OPT_GAIN_IF_EN_AGC_HIGH, 0);
+			AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
+					  GOTO_SET_GAIN_IF_EN_AGC_HIGH, 0));
+			AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_2_SETTLING_DELAY,
+					  GOTO_MAX_GAIN_OR_OPT_GAIN_IF_EN_AGC_HIGH, 0));
 			break;
 		}
 	} else {
-		ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
-				  GOTO_SET_GAIN_IF_EN_AGC_HIGH, 0);
-		ad9361_spi_writef(spi, REG_FAST_CONFIG_2_SETTLING_DELAY,
-				  GOTO_MAX_GAIN_OR_OPT_GAIN_IF_EN_AGC_HIGH, 0);
+		AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_1,
+				  GOTO_SET_GAIN_IF_EN_AGC_HIGH, 0));
+		AD9361_GC_TRY(ad9361_spi_writef(spi, REG_FAST_CONFIG_2_SETTLING_DELAY,
+				  GOTO_MAX_GAIN_OR_OPT_GAIN_IF_EN_AGC_HIGH, 0));
 	}
 
 	reg = ilog2(ctrl->f_agc_power_measurement_duration_in_state5 / 16);
 	reg = no_os_clamp_t(uint32_t, reg, 0U, 15U);
-	ad9361_spi_writef(spi, REG_RX1_MANUAL_LPF_GAIN,
-			  POWER_MEAS_IN_STATE_5(~0), reg);
-	ad9361_spi_writef(spi, REG_RX1_MANUAL_LMT_FULL_GAIN,
-			  POWER_MEAS_IN_STATE_5_MSB, reg >> 3);
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_RX1_MANUAL_LPF_GAIN,
+			  POWER_MEAS_IN_STATE_5(~0), reg));
+	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_RX1_MANUAL_LMT_FULL_GAIN,
+			  POWER_MEAS_IN_STATE_5_MSB, reg >> 3));
 
-	return ad9361_gc_update(phy);
+	ret = ad9361_gc_update(phy);
+#undef AD9361_GC_TRY
+	return ret;
 }
 
 /**
@@ -4477,13 +4510,16 @@ static int32_t ad9361_auxdac_set(struct ad9361_rf_phy *phy, int32_t dac,
 {
 	struct no_os_spi_desc *spi = phy->spi;
 	uint32_t val, tmp;
+	int32_t ret;
 
 	dev_dbg(&phy->spi->dev, "%s DAC%"PRId32" = %"PRId32" mV", __func__, dac,
 		val_mV);
 
 	/* Disable DAC if val == 0, Ignored in ENSM Auto Mode */
-	ad9361_spi_writef(spi, REG_AUXDAC_ENABLE_CTRL,
-			  AUXDAC_MANUAL_BAR(dac), val_mV ? 0 : 1);
+	ret = ad9361_spi_writef(spi, REG_AUXDAC_ENABLE_CTRL,
+				AUXDAC_MANUAL_BAR(dac), val_mV ? 0 : 1);
+	if (ret < 0)
+		return ret;
 
 	if (val_mV < 306)
 		val_mV = 306;
@@ -4500,13 +4536,23 @@ static int32_t ad9361_auxdac_set(struct ad9361_rf_phy *phy, int32_t dac,
 
 	switch (dac) {
 	case 1:
-		ad9361_spi_write(spi, REG_AUXDAC_1_WORD, val >> 2);
-		ad9361_spi_write(spi, REG_AUXDAC_1_CONFIG, AUXDAC_1_WORD_LSB(val) | tmp);
+		ret = ad9361_spi_write(spi, REG_AUXDAC_1_WORD, val >> 2);
+		if (ret < 0)
+			return ret;
+		ret = ad9361_spi_write(spi, REG_AUXDAC_1_CONFIG,
+				       AUXDAC_1_WORD_LSB(val) | tmp);
+		if (ret < 0)
+			return ret;
 		phy->auxdac1_value = val_mV;
 		break;
 	case 2:
-		ad9361_spi_write(spi, REG_AUXDAC_2_WORD, val >> 2);
-		ad9361_spi_write(spi, REG_AUXDAC_2_CONFIG, AUXDAC_2_WORD_LSB(val) | tmp);
+		ret = ad9361_spi_write(spi, REG_AUXDAC_2_WORD, val >> 2);
+		if (ret < 0)
+			return ret;
+		ret = ad9361_spi_write(spi, REG_AUXDAC_2_CONFIG,
+				       AUXDAC_2_WORD_LSB(val) | tmp);
+		if (ret < 0)
+			return ret;
 		phy->auxdac2_value = val_mV;
 		break;
 	default:
@@ -4548,28 +4594,45 @@ static int32_t ad9361_auxdac_setup(struct ad9361_rf_phy *phy,
 {
 	struct no_os_spi_desc *spi = phy->spi;
 	uint8_t tmp;
+	int32_t ret;
 
 	dev_dbg(&phy->spi->dev, "%s", __func__);
 
-	ad9361_auxdac_set(phy, 1, ctrl->dac1_default_value);
-	ad9361_auxdac_set(phy, 2, ctrl->dac2_default_value);
+	ret = ad9361_auxdac_set(phy, 1, ctrl->dac1_default_value);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_auxdac_set(phy, 2, ctrl->dac2_default_value);
+	if (ret < 0)
+		return ret;
 
 	tmp = ~(AUXDAC_AUTO_TX_BAR(ctrl->dac2_in_tx_en << 1 | ctrl->dac1_in_tx_en) |
 		AUXDAC_AUTO_RX_BAR(ctrl->dac2_in_rx_en << 1 | ctrl->dac1_in_rx_en) |
 		AUXDAC_INIT_BAR(ctrl->dac2_in_alert_en << 1 | ctrl->dac1_in_alert_en));
 
-	ad9361_spi_writef(spi, REG_AUXDAC_ENABLE_CTRL,
-			  AUXDAC_AUTO_TX_BAR(~0) |
-			  AUXDAC_AUTO_RX_BAR(~0) |
-			  AUXDAC_INIT_BAR(~0),
-			  tmp); /* Auto Control */
+	ret = ad9361_spi_writef(spi, REG_AUXDAC_ENABLE_CTRL,
+				 AUXDAC_AUTO_TX_BAR(~0) |
+				 AUXDAC_AUTO_RX_BAR(~0) |
+				 AUXDAC_INIT_BAR(~0),
+				 tmp); /* Auto Control */
+	if (ret < 0)
+		return ret;
 
-	ad9361_spi_writef(spi, REG_EXTERNAL_LNA_CTRL,
-			  AUXDAC_MANUAL_SELECT, ctrl->auxdac_manual_mode_en);
-	ad9361_spi_write(spi, REG_AUXDAC1_RX_DELAY, ctrl->dac1_rx_delay_us);
-	ad9361_spi_write(spi, REG_AUXDAC1_TX_DELAY, ctrl->dac1_tx_delay_us);
-	ad9361_spi_write(spi, REG_AUXDAC2_RX_DELAY, ctrl->dac2_rx_delay_us);
-	ad9361_spi_write(spi, REG_AUXDAC2_TX_DELAY, ctrl->dac2_tx_delay_us);
+	ret = ad9361_spi_writef(spi, REG_EXTERNAL_LNA_CTRL,
+				AUXDAC_MANUAL_SELECT, ctrl->auxdac_manual_mode_en);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(spi, REG_AUXDAC1_RX_DELAY, ctrl->dac1_rx_delay_us);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(spi, REG_AUXDAC1_TX_DELAY, ctrl->dac1_tx_delay_us);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(spi, REG_AUXDAC2_RX_DELAY, ctrl->dac2_rx_delay_us);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(spi, REG_AUXDAC2_TX_DELAY, ctrl->dac2_tx_delay_us);
+	if (ret < 0)
+		return ret;
 
 	return 0;
 }
@@ -4667,10 +4730,13 @@ static int32_t ad9361_ctrl_outs_setup(struct ad9361_rf_phy *phy,
 				      struct ctrl_outs_control *ctrl)
 {
 	struct no_os_spi_desc *spi = phy->spi;
+	int32_t ret;
 
 	dev_dbg(&phy->spi->dev, "%s", __func__);
 
-	ad9361_spi_write(spi, REG_CTRL_OUTPUT_POINTER, ctrl->index); // Ctrl Out index
+	ret = ad9361_spi_write(spi, REG_CTRL_OUTPUT_POINTER, ctrl->index);
+	if (ret < 0)
+		return ret;
 	return ad9361_spi_write(spi, REG_CTRL_OUTPUT_ENABLE,
 				ctrl->en_mask); // Ctrl Out [7:0] output enable
 }
@@ -4684,10 +4750,11 @@ static int32_t ad9361_gpo_setup(struct ad9361_rf_phy *phy,
 				struct gpo_control *ctrl)
 {
 	struct no_os_spi_desc *spi = phy->spi;
+	int32_t ret;
 
 	dev_dbg(&phy->spi->dev, "%s", __func__);
 
-	ad9361_spi_write(spi, REG_AUTO_GPO,
+	ret = ad9361_spi_write(spi, REG_AUTO_GPO,
 			 GPO_ENABLE_AUTO_RX(ctrl->gpo0_slave_rx_en |
 					    (ctrl->gpo1_slave_rx_en << 1) |
 					    (ctrl->gpo2_slave_rx_en << 2) |
@@ -4696,30 +4763,48 @@ static int32_t ad9361_gpo_setup(struct ad9361_rf_phy *phy,
 					    (ctrl->gpo1_slave_tx_en << 1) |
 					    (ctrl->gpo2_slave_tx_en << 2) |
 					    (ctrl->gpo3_slave_tx_en << 3)));
+	if (ret < 0)
+		return ret;
 
-	ad9361_spi_write(spi, REG_GPO_FORCE_AND_INIT,
+	ret = ad9361_spi_write(spi, REG_GPO_FORCE_AND_INIT,
 			 GPO_MANUAL_CTRL(ctrl->gpo_manual_mode_enable_mask) |
 			 GPO_INIT_STATE(ctrl->gpo0_inactive_state_high_en |
 					(ctrl->gpo1_inactive_state_high_en << 1) |
 					(ctrl->gpo2_inactive_state_high_en << 2) |
 					(ctrl->gpo3_inactive_state_high_en << 3)));
+	if (ret < 0)
+		return ret;
 
-	ad9361_spi_write(spi, REG_GPO0_RX_DELAY, ctrl->gpo0_rx_delay_us);
-	ad9361_spi_write(spi, REG_GPO0_TX_DELAY, ctrl->gpo0_tx_delay_us);
-	ad9361_spi_write(spi, REG_GPO1_RX_DELAY, ctrl->gpo1_rx_delay_us);
-	ad9361_spi_write(spi, REG_GPO1_TX_DELAY, ctrl->gpo1_tx_delay_us);
-	ad9361_spi_write(spi, REG_GPO2_RX_DELAY, ctrl->gpo2_rx_delay_us);
-	ad9361_spi_write(spi, REG_GPO2_TX_DELAY, ctrl->gpo2_tx_delay_us);
-	ad9361_spi_write(spi, REG_GPO3_RX_DELAY, ctrl->gpo3_rx_delay_us);
-	ad9361_spi_write(spi, REG_GPO3_TX_DELAY, ctrl->gpo3_tx_delay_us);
+	ret = ad9361_spi_write(spi, REG_GPO0_RX_DELAY, ctrl->gpo0_rx_delay_us);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(spi, REG_GPO0_TX_DELAY, ctrl->gpo0_tx_delay_us);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(spi, REG_GPO1_RX_DELAY, ctrl->gpo1_rx_delay_us);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(spi, REG_GPO1_TX_DELAY, ctrl->gpo1_tx_delay_us);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(spi, REG_GPO2_RX_DELAY, ctrl->gpo2_rx_delay_us);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(spi, REG_GPO2_TX_DELAY, ctrl->gpo2_tx_delay_us);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(spi, REG_GPO3_RX_DELAY, ctrl->gpo3_rx_delay_us);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(spi, REG_GPO3_TX_DELAY, ctrl->gpo3_tx_delay_us);
+	if (ret < 0)
+		return ret;
 
 	/*
 	 * GPO manual mode conflicts with automatic ENSM slave and eLNA mode
 	 */
-	ad9361_spi_writef(phy->spi, REG_EXTERNAL_LNA_CTRL, GPO_MANUAL_SELECT,
-			  ctrl->gpo_manual_mode_en);
-
-	return 0;
+	return ad9361_spi_writef(phy->spi, REG_EXTERNAL_LNA_CTRL,
+				 GPO_MANUAL_SELECT, ctrl->gpo_manual_mode_en);
 }
 
 /**
@@ -4894,13 +4979,22 @@ int32_t ad9361_ensm_set_state(struct ad9361_rf_phy *phy, uint8_t ensm_state,
 
 
 	if (phy->curr_ensm_state == ENSM_STATE_SLEEP) {
-		ad9361_spi_write(spi, REG_CLOCK_ENABLE,
-				 DIGITAL_POWER_UP | CLOCK_ENABLE_DFLT | BBPLL_ENABLE |
-				 (phy->pdata->use_extclk ? XO_BYPASS : 0)); /* Enable Clocks */
+		rc = ad9361_spi_write(spi, REG_CLOCK_ENABLE,
+				      DIGITAL_POWER_UP | CLOCK_ENABLE_DFLT | BBPLL_ENABLE |
+				      (phy->pdata->use_extclk ? XO_BYPASS : 0)); /* Enable Clocks */
+		if (rc < 0)
+			goto out;
 		no_os_udelay(20);
-		ad9361_spi_write(spi, REG_ENSM_CONFIG_1, TO_ALERT | FORCE_ALERT_STATE);
-		ad9361_trx_vco_cal_control(phy, false, true); /* Enable VCO Cal */
-		ad9361_trx_vco_cal_control(phy, true, true);
+		rc = ad9361_spi_write(spi, REG_ENSM_CONFIG_1,
+				      TO_ALERT | FORCE_ALERT_STATE);
+		if (rc < 0)
+			goto out;
+		rc = ad9361_trx_vco_cal_control(phy, false, true); /* Enable VCO Cal */
+		if (rc < 0)
+			goto out;
+		rc = ad9361_trx_vco_cal_control(phy, true, true);
+		if (rc < 0)
+			goto out;
 	}
 
 	val = (phy->pdata->ensm_pin_pulse_mode ? 0 : LEVEL_MODE) |
@@ -4935,17 +5029,29 @@ int32_t ad9361_ensm_set_state(struct ad9361_rf_phy *phy, uint8_t ensm_state,
 	case ENSM_STATE_SLEEP_WAIT:
 		break;
 	case ENSM_STATE_SLEEP:
-		ad9361_trx_vco_cal_control(phy, false, false); /* Disable VCO Cal */
-		ad9361_trx_vco_cal_control(phy, true, false);
-		ad9361_spi_write(spi, REG_ENSM_CONFIG_1, 0); /* Clear To Alert */
-		ad9361_spi_write(spi, REG_ENSM_CONFIG_1,
-				 phy->pdata->fdd ? FORCE_TX_ON : FORCE_RX_ON);
+		rc = ad9361_trx_vco_cal_control(phy, false, false); /* Disable VCO Cal */
+		if (rc < 0)
+			goto out;
+		rc = ad9361_trx_vco_cal_control(phy, true, false);
+		if (rc < 0)
+			goto out;
+		rc = ad9361_spi_write(spi, REG_ENSM_CONFIG_1, 0); /* Clear To Alert */
+		if (rc < 0)
+			goto out;
+		rc = ad9361_spi_write(spi, REG_ENSM_CONFIG_1,
+				      phy->pdata->fdd ? FORCE_TX_ON : FORCE_RX_ON);
+		if (rc < 0)
+			goto out;
 		/* Delay Flush Time 384 ADC clock cycles */
 		no_os_udelay(384000000UL / clk_get_rate(phy, phy->ref_clk_scale[ADC_CLK]));
-		ad9361_spi_write(spi, REG_ENSM_CONFIG_1, 0); /* Move to Wait*/
+		rc = ad9361_spi_write(spi, REG_ENSM_CONFIG_1, 0); /* Move to Wait*/
+		if (rc < 0)
+			goto out;
 		no_os_udelay(1); /* Wait for ENSM settle */
-		ad9361_spi_write(spi, REG_CLOCK_ENABLE,
-				 (phy->pdata->use_extclk ? XO_BYPASS : 0)); /* Turn off all clocks */
+		rc = ad9361_spi_write(spi, REG_CLOCK_ENABLE,
+				      (phy->pdata->use_extclk ? XO_BYPASS : 0)); /* Turn off all clocks */
+		if (rc < 0)
+			goto out;
 		phy->curr_ensm_state = ensm_state;
 		return 0;
 
@@ -4962,9 +5068,13 @@ int32_t ad9361_ensm_set_state(struct ad9361_rf_phy *phy, uint8_t ensm_state,
 
 			val2 &= ~(FORCE_TX_ON | FORCE_RX_ON);
 			val2 |= TO_ALERT | FORCE_ALERT_STATE;
-			ad9361_spi_write(spi, REG_ENSM_CONFIG_1, val2);
-
-			ad9361_check_cal_done(phy, REG_STATE, ENSM_STATE(~0), ENSM_STATE_ALERT);
+			rc = ad9361_spi_write(spi, REG_ENSM_CONFIG_1, val2);
+			if (rc < 0)
+				goto out;
+			rc = ad9361_check_cal_done(phy, REG_STATE,
+						   ENSM_STATE(~0), ENSM_STATE_ALERT);
+			if (rc < 0)
+				goto out;
 		} else {
 			dev_err(dev, "Invalid ENSM state transition in %s mode",
 				phy->pdata->fdd ? "FDD" : "TDD");
@@ -4986,27 +5096,41 @@ int32_t ad9361_ensm_set_state(struct ad9361_rf_phy *phy, uint8_t ensm_state,
 				  RX_SYNTH_VCO_POWER_DOWN);
 		}
 
-		ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
-				  TXNRX_SPI_CTRL, ensm_state == ENSM_STATE_TX);
+		rc = ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
+					TXNRX_SPI_CTRL, ensm_state == ENSM_STATE_TX);
+		if (rc < 0)
+			goto out;
 
-		if (check)
-			ad9361_check_cal_done(phy, reg, VCO_LOCK, 1);
+		if (check) {
+			rc = ad9361_check_cal_done(phy, reg, VCO_LOCK, 1);
+			if (rc < 0)
+				goto out;
+		}
 	}
 
 	rc = ad9361_spi_write(spi, REG_ENSM_CONFIG_1, val);
-	if (rc)
+	if (rc < 0) {
 		dev_err(dev, "Failed to restore state");
+		goto out;
+	}
 
 	if ((val & FORCE_RX_ON) &&
 	    (phy->agc_mode[0] == RF_GAIN_MGC ||
 	     phy->agc_mode[1] == RF_GAIN_MGC)) {
-		tmp = ad9361_spi_read(spi, REG_SMALL_LMT_OVERLOAD_THRESH);
-		ad9361_spi_write(spi, REG_SMALL_LMT_OVERLOAD_THRESH,
-				 (tmp & SMALL_LMT_OVERLOAD_THRESH(~0)) |
-				 (phy->agc_mode[0] == RF_GAIN_MGC ? FORCE_PD_RESET_RX1 : 0) |
-				 (phy->agc_mode[1] == RF_GAIN_MGC ? FORCE_PD_RESET_RX2 : 0));
-		ad9361_spi_write(spi, REG_SMALL_LMT_OVERLOAD_THRESH,
-				 tmp & SMALL_LMT_OVERLOAD_THRESH(~0));
+		rc = ad9361_spi_read(spi, REG_SMALL_LMT_OVERLOAD_THRESH);
+		if (rc < 0)
+			goto out;
+		tmp = rc;
+		rc = ad9361_spi_write(spi, REG_SMALL_LMT_OVERLOAD_THRESH,
+				      (tmp & SMALL_LMT_OVERLOAD_THRESH(~0)) |
+				      (phy->agc_mode[0] == RF_GAIN_MGC ? FORCE_PD_RESET_RX1 : 0) |
+				      (phy->agc_mode[1] == RF_GAIN_MGC ? FORCE_PD_RESET_RX2 : 0));
+		if (rc < 0)
+			goto out;
+		rc = ad9361_spi_write(spi, REG_SMALL_LMT_OVERLOAD_THRESH,
+				      tmp & SMALL_LMT_OVERLOAD_THRESH(~0));
+		if (rc < 0)
+			goto out;
 	}
 
 	phy->curr_ensm_state = ensm_state;
@@ -5886,6 +6010,12 @@ int32_t ad9361_setup(struct ad9361_rf_phy *phy)
 
 	dev_dbg(dev, "%s", __func__);
 
+#define AD9361_SETUP_TRY(_expr) do { \
+	ret = (_expr); \
+	if (ret < 0) \
+		return ret; \
+} while (0)
+
 	pd->rf_rx_bandwidth_Hz = ad9361_validate_rf_bw(phy, pd->rf_rx_bandwidth_Hz);
 	pd->rf_tx_bandwidth_Hz = ad9361_validate_rf_bw(phy, pd->rf_tx_bandwidth_Hz);
 
@@ -5913,13 +6043,14 @@ int32_t ad9361_setup(struct ad9361_rf_phy *phy)
 	if (pd->port_ctrl.pp_conf[2] & FDD_RX_RATE_2TX_RATE)
 		phy->rx_eq_2tx = true;
 
-	ad9361_spi_write(spi, REG_CTRL, CTRL_ENABLE);
-	ad9361_spi_write(spi, REG_BANDGAP_CONFIG0,
-			 MASTER_BIAS_TRIM(0x0E)); /* Enable Master Bias */
-	ad9361_spi_write(spi, REG_BANDGAP_CONFIG1,
-			 BANDGAP_TEMP_TRIM(0x0E)); /* Set Bandgap Trim */
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_CTRL, CTRL_ENABLE));
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_BANDGAP_CONFIG0,
+					   MASTER_BIAS_TRIM(0x0E)));
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_BANDGAP_CONFIG1,
+					   BANDGAP_TEMP_TRIM(0x0E)));
 
-	ad9361_set_dcxo_tune(phy, pd->dcxo_coarse, pd->dcxo_fine);
+	AD9361_SETUP_TRY(ad9361_set_dcxo_tune(phy, pd->dcxo_coarse,
+					       pd->dcxo_fine));
 
 	refin_Hz = phy->clk_refin->rate;
 
@@ -5927,16 +6058,19 @@ int32_t ad9361_setup(struct ad9361_rf_phy *phy)
 	if (!ref_freq)
 		return -EINVAL;
 
-	ad9361_spi_writef(spi, REG_REF_DIVIDE_CONFIG_1, RX_REF_RESET_BAR, 1);
-	ad9361_spi_writef(spi, REG_REF_DIVIDE_CONFIG_2, TX_REF_RESET_BAR, 1);
-	ad9361_spi_writef(spi, REG_REF_DIVIDE_CONFIG_2,
-			  TX_REF_DOUBLER_FB_DELAY(~0), 3); /* FB DELAY */
-	ad9361_spi_writef(spi, REG_REF_DIVIDE_CONFIG_2,
-			  RX_REF_DOUBLER_FB_DELAY(~0), 3); /* FB DELAY */
+	AD9361_SETUP_TRY(ad9361_spi_writef(spi, REG_REF_DIVIDE_CONFIG_1,
+					   RX_REF_RESET_BAR, 1));
+	AD9361_SETUP_TRY(ad9361_spi_writef(spi, REG_REF_DIVIDE_CONFIG_2,
+					   TX_REF_RESET_BAR, 1));
+	AD9361_SETUP_TRY(ad9361_spi_writef(spi, REG_REF_DIVIDE_CONFIG_2,
+					   TX_REF_DOUBLER_FB_DELAY(~0), 3));
+	AD9361_SETUP_TRY(ad9361_spi_writef(spi, REG_REF_DIVIDE_CONFIG_2,
+					   RX_REF_DOUBLER_FB_DELAY(~0), 3));
 
-	ad9361_spi_write(spi, REG_CLOCK_ENABLE,
-			 DIGITAL_POWER_UP | CLOCK_ENABLE_DFLT | BBPLL_ENABLE |
-			 (pd->use_extclk ? XO_BYPASS : 0)); /* Enable Clocks */
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_CLOCK_ENABLE,
+					   DIGITAL_POWER_UP | CLOCK_ENABLE_DFLT |
+					   BBPLL_ENABLE |
+					   (pd->use_extclk ? XO_BYPASS : 0)));
 
 	ret = clk_set_rate(phy, phy->ref_clk_scale[BB_REFCLK], ref_freq);
 	if (ret < 0) {
@@ -5952,8 +6086,8 @@ int32_t ad9361_setup(struct ad9361_rf_phy *phy)
 		return ret;
 	}
 
-	ad9361_spi_write(spi, REG_FRACT_BB_FREQ_WORD_2, 0x12);
-	ad9361_spi_write(spi, REG_FRACT_BB_FREQ_WORD_3, 0x34);
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_FRACT_BB_FREQ_WORD_2, 0x12));
+	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_FRACT_BB_FREQ_WORD_3, 0x34));
 
 	ret = ad9361_set_trx_clock_chain(phy, pd->rx_path_clks,
 					 pd->tx_path_clks);
@@ -5966,11 +6100,13 @@ int32_t ad9361_setup(struct ad9361_rf_phy *phy)
 		pd->rx1tx1_mode_use_rx_num =
 			no_os_clamp_t(uint32_t, pd->rx1tx1_mode_use_rx_num, RX_1, RX_2);
 
-		ad9361_en_dis_tx(phy, TX_1 | TX_2, pd->rx1tx1_mode_use_tx_num);
-		ad9361_en_dis_rx(phy, TX_1 | TX_2, pd->rx1tx1_mode_use_rx_num);
+		AD9361_SETUP_TRY(ad9361_en_dis_tx(
+			phy, TX_1 | TX_2, pd->rx1tx1_mode_use_tx_num));
+		AD9361_SETUP_TRY(ad9361_en_dis_rx(
+			phy, TX_1 | TX_2, pd->rx1tx1_mode_use_rx_num));
 	} else {
-		ad9361_en_dis_tx(phy, TX_1 | TX_2, TX_1 | TX_2);
-		ad9361_en_dis_rx(phy, RX_1 | RX_2, RX_1 | RX_2);
+		AD9361_SETUP_TRY(ad9361_en_dis_tx(phy, TX_1 | TX_2, TX_1 | TX_2));
+		AD9361_SETUP_TRY(ad9361_en_dis_rx(phy, RX_1 | RX_2, RX_1 | RX_2));
 	}
 
 	ret = ad9361_rf_port_setup(phy, true, pd->rf_rx_input_sel,
@@ -6074,11 +6210,14 @@ int32_t ad9361_setup(struct ad9361_rf_phy *phy)
 	phy->pdata->use_ext_rx_lo = tmp_use_ext_rx_lo;
 	phy->pdata->use_ext_tx_lo = tmp_use_ext_tx_lo;
 
-	ad9361_clk_mux_set_parent(phy->ref_clk_scale[RX_RFPLL],
-				  pd->use_ext_rx_lo);
-
-	ad9361_clk_mux_set_parent(phy->ref_clk_scale[TX_RFPLL],
-				  pd->use_ext_tx_lo);
+	ret = ad9361_clk_mux_set_parent(phy->ref_clk_scale[RX_RFPLL],
+					pd->use_ext_rx_lo);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_clk_mux_set_parent(phy->ref_clk_scale[TX_RFPLL],
+					pd->use_ext_tx_lo);
+	if (ret < 0)
+		return ret;
 
 	ret = ad9361_load_mixer_gm_subtable(phy);
 	if (ret < 0)
@@ -6135,14 +6274,18 @@ int32_t ad9361_setup(struct ad9361_rf_phy *phy)
 	if (ret < 0)
 		return ret;
 
-	ad9361_pp_port_setup(phy, true);
+	ret = ad9361_pp_port_setup(phy, true);
+	if (ret < 0)
+		return ret;
 
 	ret = ad9361_set_ensm_mode(phy, pd->fdd, pd->ensm_pin_ctrl);
 	if (ret < 0)
 		return ret;
 
-	ad9361_spi_writef(phy->spi, REG_TX_ATTEN_OFFSET,
-			  MASK_CLR_ATTEN_UPDATE, 0);
+	ret = ad9361_spi_writef(phy->spi, REG_TX_ATTEN_OFFSET,
+				MASK_CLR_ATTEN_UPDATE, 0);
+	if (ret < 0)
+		return ret;
 
 	ret = ad9361_set_tx_atten(phy, pd->tx_atten,
 				  pd->rx2tx2 ? true : pd->rx1tx1_mode_use_tx_num == 1,
@@ -6200,13 +6343,20 @@ int32_t ad9361_setup(struct ad9361_rf_phy *phy)
 	if (ret < 0)
 		return ret;
 
-	phy->curr_ensm_state = ad9361_spi_readf(spi, REG_STATE, ENSM_STATE(~0));
-	ad9361_ensm_set_state(phy, pd->fdd ? ENSM_STATE_FDD : ENSM_STATE_RX,
-			      pd->ensm_pin_ctrl);
+	ret = ad9361_spi_readf(spi, REG_STATE, ENSM_STATE(~0));
+	if (ret < 0)
+		return ret;
+	phy->curr_ensm_state = ret;
+	ret = ad9361_ensm_set_state(phy,
+				    pd->fdd ? ENSM_STATE_FDD : ENSM_STATE_RX,
+				    pd->ensm_pin_ctrl);
+	if (ret < 0)
+		return ret;
 
 	phy->auto_cal_en = true;
 	phy->cal_threshold_freq = 100000000ULL; /* 100 MHz */
 
+	#undef AD9361_SETUP_TRY
 	return 0;
 
 }
