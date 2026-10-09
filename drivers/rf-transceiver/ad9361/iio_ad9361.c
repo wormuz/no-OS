@@ -124,6 +124,42 @@ static int parse_i32_attr(const char *buf, int32_t *value)
 	return 0;
 }
 
+static int parse_fastlock_line(char *line, uint32_t *first,
+			       uint32_t *second, bool *has_second)
+{
+	char *end;
+	unsigned long long parsed;
+
+	while (isspace((unsigned char)*line))
+		line++;
+	if (!isdigit((unsigned char)*line))
+		return -EINVAL;
+	errno = 0;
+	parsed = strtoull(line, &end, 10);
+	if (errno == ERANGE || parsed > UINT32_MAX)
+		return -ERANGE;
+	*first = (uint32_t)parsed;
+	while (isspace((unsigned char)*end))
+		end++;
+	if (*end == '\0') {
+		*has_second = false;
+		return 0;
+	}
+	if (!isdigit((unsigned char)*end))
+		return -EINVAL;
+	errno = 0;
+	parsed = strtoull(end, &end, 10);
+	if (errno == ERANGE || parsed > UINT32_MAX)
+		return -ERANGE;
+	*second = (uint32_t)parsed;
+	while (isspace((unsigned char)*end))
+		end++;
+	if (*end != '\0')
+		return -EINVAL;
+	*has_second = true;
+	return 0;
+}
+
 /**
  * @brief get_rf_port_select().
  * @param device- Physical instance of a iio_axi_adc device.
@@ -1226,16 +1262,17 @@ static int set_fastlock_load(void *device, char *buf, uint32_t len,
 	uint32_t profile = 0, val, val2, i = 0;
 
 	while ((line = strsep(&ptr, ","))) {
+		bool has_second;
 		if (line >= buf + len)
 			break;
-
-		ret = sscanf(line, "%"PRIu32" %"PRIu32"", &val, &val2);
-		if (ret == 1) {
+		ret = parse_fastlock_line(line, &val, &val2, &has_second);
+		if (ret < 0)
+			return ret;
+		if (!has_second) {
 			if (val > UINT8_MAX || i >= NO_OS_ARRAY_SIZE(faslock_vals))
 				return -EINVAL;
 			faslock_vals[i++] = val;
-			continue;
-		} else if (ret == 2) {
+		} else {
 			if (i != 0 || val >= AD9361_FASTLOCK_PROFILE_COUNT ||
 			    val2 > UINT8_MAX)
 				return -EINVAL;
