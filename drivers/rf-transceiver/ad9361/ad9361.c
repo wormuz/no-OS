@@ -1688,12 +1688,12 @@ static int32_t ad9361_clkout_control(struct ad9361_rf_phy *phy,
 static int32_t ad9361_load_mixer_gm_subtable(struct ad9361_rf_phy *phy)
 {
 	int32_t i, addr;
-	int32_t ret;
+	int32_t ret, cleanup_ret;
 
 #define AD9361_GM_TRY(call) do { \
 		ret = (call); \
 		if (ret < 0) \
-			return ret; \
+			goto cleanup; \
 	} while (0)
 
 	dev_dbg(&phy->spi->dev, "%s", __func__);
@@ -1729,8 +1729,16 @@ static int32_t ad9361_load_mixer_gm_subtable(struct ad9361_rf_phy *phy)
 	no_os_udelay(2); /* Was two dummy register reads, ~1us each */
 	AD9361_GM_TRY(ad9361_spi_write(phy->spi, REG_GM_SUB_TABLE_CONFIG, 0)); /* Stop Clock */
 
+	ret = 0;
+	goto out;
+
+cleanup:
+	cleanup_ret = ad9361_spi_write(phy->spi, REG_GM_SUB_TABLE_CONFIG, 0);
+	if (ret >= 0 && cleanup_ret < 0)
+		ret = cleanup_ret;
+out:
 	#undef AD9361_GM_TRY
-	return 0;
+	return ret;
 }
 
 /**
@@ -8008,7 +8016,10 @@ int32_t ad9361_rfpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate)
 		if (ret < 0)
 			return ret;
 		/* trigger external band switching on RX LO change */
-		ad9361_adjust_rx_ext_band_settings(phy, ad9361_from_clk(rate));
+		ret = ad9361_adjust_rx_ext_band_settings(phy,
+						ad9361_from_clk(rate));
+		if (ret < 0)
+			return ret;
 		break;
 	case TX_RFPLL:
 		if (phy->pdata->use_ext_tx_lo) {
@@ -8031,13 +8042,18 @@ int32_t ad9361_rfpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate)
 			if ((diff_abs(phy->last_tx_quad_cal_freq, ad9361_from_clk(rate))) >
 			    phy->cal_threshold_freq) {
 				ret = ad9361_do_calib_run(phy, TX_QUAD_CAL, -1);
-				if (ret < 0)
+				if (ret < 0) {
 					dev_err(&phy->spi->dev,
 						"%s: TX QUAD cal failed", __func__);
+					return ret;
+				}
 				phy->last_tx_quad_cal_freq = ad9361_from_clk(rate);
 			}
 		/* trigger external band switching on TX LO change */
-		ad9361_adjust_tx_ext_band_settings(phy, ad9361_from_clk(rate));
+		ret = ad9361_adjust_tx_ext_band_settings(phy,
+						ad9361_from_clk(rate));
+		if (ret < 0)
+			return ret;
 		break;
 	default:
 		break;
