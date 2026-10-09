@@ -1152,25 +1152,40 @@ static int32_t ad9361_int_loopback_fix_ch_cross(struct ad9361_rf_phy *phy,
 int32_t ad9361_bist_loopback(struct ad9361_rf_phy *phy, int32_t mode)
 {
 	uint32_t sp_hd, reg;
+	int32_t ret;
 
 	dev_dbg(&phy->spi->dev, "%s: mode %"PRId32, __func__, mode);
+	if (mode < 0 || mode > 2)
+		return -EINVAL;
 
-	reg = ad9361_spi_read(phy->spi, REG_OBSERVE_CONFIG);
-
-	phy->bist_loopback_mode = mode;
+	ret = ad9361_spi_read(phy->spi, REG_OBSERVE_CONFIG);
+	if (ret < 0)
+		return ret;
+	reg = ret;
 
 	switch (mode) {
 	case 0:
-		ad9361_hdl_loopback(phy, false);
-		ad9361_int_loopback_fix_ch_cross(phy, false);
+		ret = ad9361_hdl_loopback(phy, false);
+		if (ret < 0)
+			return ret;
+		ret = ad9361_int_loopback_fix_ch_cross(phy, false);
+		if (ret < 0)
+			return ret;
 		reg &= ~(DATA_PORT_SP_HD_LOOP_TEST_OE |
 			 DATA_PORT_LOOP_TEST_ENABLE);
-		return ad9361_spi_write(phy->spi, REG_OBSERVE_CONFIG, reg);
+		break;
 	case 1:
 		/* loopback (AD9361 internal) TX->RX */
-		ad9361_hdl_loopback(phy, false);
-		ad9361_int_loopback_fix_ch_cross(phy, true);
-		sp_hd = ad9361_spi_read(phy->spi, REG_PARALLEL_PORT_CONF_3);
+		ret = ad9361_hdl_loopback(phy, false);
+		if (ret < 0)
+			return ret;
+		ret = ad9361_int_loopback_fix_ch_cross(phy, true);
+		if (ret < 0)
+			return ret;
+		ret = ad9361_spi_read(phy->spi, REG_PARALLEL_PORT_CONF_3);
+		if (ret < 0)
+			return ret;
+		sp_hd = ret;
 		if ((sp_hd & SINGLE_PORT_MODE) && (sp_hd & HALF_DUPLEX_MODE))
 			reg |= DATA_PORT_SP_HD_LOOP_TEST_OE;
 		else
@@ -1178,17 +1193,27 @@ int32_t ad9361_bist_loopback(struct ad9361_rf_phy *phy, int32_t mode)
 
 		reg |= DATA_PORT_LOOP_TEST_ENABLE;
 
-		return ad9361_spi_write(phy->spi, REG_OBSERVE_CONFIG, reg);
+		break;
 	case 2:
 		/* loopback (FPGA internal) RX->TX */
-		ad9361_hdl_loopback(phy, true);
-		ad9361_int_loopback_fix_ch_cross(phy, false);
+		ret = ad9361_hdl_loopback(phy, true);
+		if (ret < 0)
+			return ret;
+		ret = ad9361_int_loopback_fix_ch_cross(phy, false);
+		if (ret < 0)
+			return ret;
 		reg &= ~(DATA_PORT_SP_HD_LOOP_TEST_OE |
 			 DATA_PORT_LOOP_TEST_ENABLE);
-		return ad9361_spi_write(phy->spi, REG_OBSERVE_CONFIG, reg);
+		break;
 	default:
 		return -EINVAL;
 	}
+
+	ret = ad9361_spi_write(phy->spi, REG_OBSERVE_CONFIG, reg);
+	if (ret < 0)
+		return ret;
+	phy->bist_loopback_mode = mode;
+	return 0;
 }
 
 /**
@@ -3935,79 +3960,90 @@ static int32_t ad9361_trx_ext_lo_control(struct ad9361_rf_phy *phy,
 		bool tx, bool enable)
 {
 	uint32_t val = enable ? ~0 : 0;
+	uint8_t synth_pd;
 	int32_t ret;
 
 	/* REVIST:
 	 * POWER_DOWN_TRX_SYNTH and MCS_RF_ENABLE somehow conflict
 	 */
 
-	bool mcs_rf_enable = ad9361_spi_readf(phy->spi,
-					      REG_MULTICHIP_SYNC_AND_TX_MON_CTRL,
-					      MCS_RF_ENABLE);
+	ret = ad9361_spi_readf(phy->spi,
+			       REG_MULTICHIP_SYNC_AND_TX_MON_CTRL, MCS_RF_ENABLE);
+	if (ret < 0)
+		return ret;
+	{
+		bool mcs_rf_enable = ret;
+
+#define EXT_LO_TRY(call) do { \
+		ret = (call); \
+		if (ret < 0) \
+			return ret; \
+	} while (0)
 
 	dev_dbg(&phy->spi->dev, "%s : %s state %d", __func__,
 		tx ? "TX" : "RX", enable);
 
 	if (tx) {
-		ret = ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
-					POWER_DOWN_TX_SYNTH, mcs_rf_enable ? 0 : enable);
-
-		ret = ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
-					TX_SYNTH_READY_MASK, enable);
-
-		ret |= ad9361_spi_writef(phy->spi, REG_RFPLL_DIVIDERS,
+		EXT_LO_TRY(ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
+					     POWER_DOWN_TX_SYNTH,
+					     mcs_rf_enable ? 0 : enable));
+		EXT_LO_TRY(ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
+					     TX_SYNTH_READY_MASK, enable));
+		EXT_LO_TRY(ad9361_spi_writef(phy->spi, REG_RFPLL_DIVIDERS,
 					 TX_VCO_DIVIDER(~0), enable ? 7 :
-					 phy->cached_tx_rfpll_div);
+					 phy->cached_tx_rfpll_div));
 
+		synth_pd = phy->cached_synth_pd[0];
 		if (enable)
-			phy->cached_synth_pd[0] |= TX_SYNTH_VCO_ALC_POWER_DOWN |
-						   TX_SYNTH_PTAT_POWER_DOWN |
-						   TX_SYNTH_VCO_POWER_DOWN;
+			synth_pd |= TX_SYNTH_VCO_ALC_POWER_DOWN |
+				    TX_SYNTH_PTAT_POWER_DOWN |
+				    TX_SYNTH_VCO_POWER_DOWN;
 		else
-			phy->cached_synth_pd[0] &= ~(TX_SYNTH_VCO_ALC_POWER_DOWN |
-						     TX_SYNTH_PTAT_POWER_DOWN |
-						     TX_SYNTH_VCO_POWER_DOWN);
+			synth_pd &= ~(TX_SYNTH_VCO_ALC_POWER_DOWN |
+				      TX_SYNTH_PTAT_POWER_DOWN |
+				      TX_SYNTH_VCO_POWER_DOWN);
 
-
-		ret |= ad9361_spi_write(phy->spi, REG_TX_SYNTH_POWER_DOWN_OVERRIDE,
-					phy->cached_synth_pd[0]);
-
-		ret |= ad9361_spi_writef(phy->spi, REG_ANALOG_POWER_DOWN_OVERRIDE,
-					 TX_EXT_VCO_BUFFER_POWER_DOWN, !enable);
-
-		ret |= ad9361_spi_write(phy->spi, REG_TX_LO_GEN_POWER_MODE,
-					TX_LO_GEN_POWER_MODE(val));
+		EXT_LO_TRY(ad9361_spi_write(phy->spi, REG_TX_SYNTH_POWER_DOWN_OVERRIDE,
+					     synth_pd));
+		EXT_LO_TRY(ad9361_spi_writef(phy->spi, REG_ANALOG_POWER_DOWN_OVERRIDE,
+					     TX_EXT_VCO_BUFFER_POWER_DOWN,
+					     !enable));
+		EXT_LO_TRY(ad9361_spi_write(phy->spi, REG_TX_LO_GEN_POWER_MODE,
+					     TX_LO_GEN_POWER_MODE(val)));
+		phy->cached_synth_pd[0] = synth_pd;
 	} else {
-		ret = ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
-					POWER_DOWN_RX_SYNTH, mcs_rf_enable ? 0 : enable);
-
-		ret = ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
-					RX_SYNTH_READY_MASK, enable);
-
-		ret |= ad9361_spi_writef(phy->spi, REG_RFPLL_DIVIDERS,
+		EXT_LO_TRY(ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
+					     POWER_DOWN_RX_SYNTH,
+					     mcs_rf_enable ? 0 : enable));
+		EXT_LO_TRY(ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
+					     RX_SYNTH_READY_MASK, enable));
+		EXT_LO_TRY(ad9361_spi_writef(phy->spi, REG_RFPLL_DIVIDERS,
 					 RX_VCO_DIVIDER(~0), enable ? 7 :
-					 phy->cached_rx_rfpll_div);
+					 phy->cached_rx_rfpll_div));
 
+		synth_pd = phy->cached_synth_pd[1];
 		if (enable)
-			phy->cached_synth_pd[1] |= RX_SYNTH_VCO_ALC_POWER_DOWN |
-						   RX_SYNTH_PTAT_POWER_DOWN |
-						   RX_SYNTH_VCO_POWER_DOWN;
+			synth_pd |= RX_SYNTH_VCO_ALC_POWER_DOWN |
+				    RX_SYNTH_PTAT_POWER_DOWN |
+				    RX_SYNTH_VCO_POWER_DOWN;
 		else
-			phy->cached_synth_pd[1] &= ~(TX_SYNTH_VCO_ALC_POWER_DOWN |
-						     RX_SYNTH_PTAT_POWER_DOWN |
-						     RX_SYNTH_VCO_POWER_DOWN);
+			synth_pd &= ~(RX_SYNTH_VCO_ALC_POWER_DOWN |
+				      RX_SYNTH_PTAT_POWER_DOWN |
+				      RX_SYNTH_VCO_POWER_DOWN);
 
-		ret |= ad9361_spi_write(phy->spi, REG_RX_SYNTH_POWER_DOWN_OVERRIDE,
-					phy->cached_synth_pd[1]);
-
-		ret |= ad9361_spi_writef(phy->spi, REG_ANALOG_POWER_DOWN_OVERRIDE,
-					 RX_EXT_VCO_BUFFER_POWER_DOWN, !enable);
-
-		ret |= ad9361_spi_write(phy->spi, REG_RX_LO_GEN_POWER_MODE,
-					RX_LO_GEN_POWER_MODE(val));
+		EXT_LO_TRY(ad9361_spi_write(phy->spi, REG_RX_SYNTH_POWER_DOWN_OVERRIDE,
+					     synth_pd));
+		EXT_LO_TRY(ad9361_spi_writef(phy->spi, REG_ANALOG_POWER_DOWN_OVERRIDE,
+					     RX_EXT_VCO_BUFFER_POWER_DOWN,
+					     !enable));
+		EXT_LO_TRY(ad9361_spi_write(phy->spi, REG_RX_LO_GEN_POWER_MODE,
+					     RX_LO_GEN_POWER_MODE(val)));
+		phy->cached_synth_pd[1] = synth_pd;
 	}
 
-	return ret;
+	#undef EXT_LO_TRY
+	}
+	return 0;
 }
 
 /**
@@ -5932,60 +5968,83 @@ int32_t ad9361_fastlock_store(struct ad9361_rf_phy *phy, bool tx,
 	struct no_os_spi_desc *spi = phy->spi;
 	uint8_t val[16];
 	uint32_t offs = 0, x, y;
+	int32_t ret;
 
 	dev_dbg(&phy->spi->dev, "%s: %s Profile %"PRIu32":",
 		__func__, tx ? "TX" : "RX", profile);
 
 	if (tx)
 		offs = REG_TX_FAST_LOCK_SETUP - REG_RX_FAST_LOCK_SETUP;
+	if (profile >= 8)
+		return -EINVAL;
 
-	val[0] = ad9361_spi_read(spi, REG_RX_INTEGER_BYTE_0 + offs);
-	val[1] = ad9361_spi_read(spi, REG_RX_INTEGER_BYTE_1 + offs);
-	val[2] = ad9361_spi_read(spi, REG_RX_FRACT_BYTE_0 + offs);
-	val[3] = ad9361_spi_read(spi, REG_RX_FRACT_BYTE_1 + offs);
-	val[4] = ad9361_spi_read(spi, REG_RX_FRACT_BYTE_2 + offs);
+#define FASTLOCK_READ(dst, call) do { \
+	ret = (call); \
+	if (ret < 0) \
+		return ret; \
+	(dst) = ret; \
+} while (0)
+	FASTLOCK_READ(val[0], ad9361_spi_read(spi, REG_RX_INTEGER_BYTE_0 + offs));
+	FASTLOCK_READ(val[1], ad9361_spi_read(spi, REG_RX_INTEGER_BYTE_1 + offs));
+	FASTLOCK_READ(val[2], ad9361_spi_read(spi, REG_RX_FRACT_BYTE_0 + offs));
+	FASTLOCK_READ(val[3], ad9361_spi_read(spi, REG_RX_FRACT_BYTE_1 + offs));
+	FASTLOCK_READ(val[4], ad9361_spi_read(spi, REG_RX_FRACT_BYTE_2 + offs));
 
-	x = ad9361_spi_readf(spi, REG_RX_VCO_BIAS_1 + offs, VCO_BIAS_REF(~0));
-	y = ad9361_spi_readf(spi, REG_RX_ALC_VARACTOR + offs, VCO_VARACTOR(~0));
+	FASTLOCK_READ(x, ad9361_spi_readf(spi, REG_RX_VCO_BIAS_1 + offs,
+						 VCO_BIAS_REF(~0)));
+	FASTLOCK_READ(y, ad9361_spi_readf(spi, REG_RX_ALC_VARACTOR + offs,
+						 VCO_VARACTOR(~0)));
 	val[5] = (x << 4) | y;
 
-	x = ad9361_spi_readf(spi, REG_RX_VCO_BIAS_1 + offs, VCO_BIAS_TCF(~0));
-	y = ad9361_spi_readf(spi, REG_RX_CP_CURRENT + offs, CHARGE_PUMP_CURRENT(~0));
+	FASTLOCK_READ(x, ad9361_spi_readf(spi, REG_RX_VCO_BIAS_1 + offs,
+						 VCO_BIAS_TCF(~0)));
+	FASTLOCK_READ(y, ad9361_spi_readf(spi, REG_RX_CP_CURRENT + offs,
+						 CHARGE_PUMP_CURRENT(~0)));
 	/* Wide BW option: N = 1
 	* Set init and steady state values to the same - let user space handle it
 	*/
 	val[6] = (x << 6) | y;
 	val[7] = y;
 
-	x = ad9361_spi_readf(spi, REG_RX_LOOP_FILTER_3 + offs, LOOP_FILTER_R3(~0));
+	FASTLOCK_READ(x, ad9361_spi_readf(spi, REG_RX_LOOP_FILTER_3 + offs,
+						 LOOP_FILTER_R3(~0)));
 	val[8] = (x << 4) | x;
 
-	x = ad9361_spi_readf(spi, REG_RX_LOOP_FILTER_2 + offs, LOOP_FILTER_C3(~0));
+	FASTLOCK_READ(x, ad9361_spi_readf(spi, REG_RX_LOOP_FILTER_2 + offs,
+						 LOOP_FILTER_C3(~0)));
 	val[9] = (x << 4) | x;
 
-	x = ad9361_spi_readf(spi, REG_RX_LOOP_FILTER_1 + offs, LOOP_FILTER_C1(~0));
-	y = ad9361_spi_readf(spi, REG_RX_LOOP_FILTER_1 + offs, LOOP_FILTER_C2(~0));
+	FASTLOCK_READ(x, ad9361_spi_readf(spi, REG_RX_LOOP_FILTER_1 + offs,
+						 LOOP_FILTER_C1(~0)));
+	FASTLOCK_READ(y, ad9361_spi_readf(spi, REG_RX_LOOP_FILTER_1 + offs,
+						 LOOP_FILTER_C2(~0)));
 	val[10] = (x << 4) | y;
 
-	x = ad9361_spi_readf(spi, REG_RX_LOOP_FILTER_2 + offs, LOOP_FILTER_R1(~0));
+	FASTLOCK_READ(x, ad9361_spi_readf(spi, REG_RX_LOOP_FILTER_2 + offs,
+						 LOOP_FILTER_R1(~0)));
 	val[11] = (x << 4) | x;
 
-	x = ad9361_spi_readf(spi, REG_RX_VCO_VARACTOR_CTRL_0 + offs,
-			     VCO_VARACTOR_REFERENCE_TCF(~0));
-	y = ad9361_spi_readf(spi, REG_RFPLL_DIVIDERS,
-			     tx ? TX_VCO_DIVIDER(~0) : RX_VCO_DIVIDER(~0));
+	FASTLOCK_READ(x, ad9361_spi_readf(spi, REG_RX_VCO_VARACTOR_CTRL_0 + offs,
+						 VCO_VARACTOR_REFERENCE_TCF(~0)));
+	FASTLOCK_READ(y, ad9361_spi_readf(spi, REG_RFPLL_DIVIDERS,
+						 tx ? TX_VCO_DIVIDER(~0) : RX_VCO_DIVIDER(~0)));
 	val[12] = (x << 4) | y;
 
-	x = ad9361_spi_readf(spi, REG_RX_FORCE_VCO_TUNE_1 + offs, VCO_CAL_OFFSET(~0));
-	y = ad9361_spi_readf(spi, REG_RX_VCO_VARACTOR_CTRL_1 + offs,
-			     VCO_VARACTOR_REFERENCE(~0));
+	FASTLOCK_READ(x, ad9361_spi_readf(spi, REG_RX_FORCE_VCO_TUNE_1 + offs,
+						 VCO_CAL_OFFSET(~0)));
+	FASTLOCK_READ(y, ad9361_spi_readf(spi, REG_RX_VCO_VARACTOR_CTRL_1 + offs,
+						 VCO_VARACTOR_REFERENCE(~0)));
 	val[13] = (x << 4) | y;
 
-	val[14] = ad9361_spi_read(spi, REG_RX_FORCE_VCO_TUNE_0 + offs);
+	FASTLOCK_READ(val[14], ad9361_spi_read(spi,
+						      REG_RX_FORCE_VCO_TUNE_0 + offs));
 
-	x = ad9361_spi_readf(spi, REG_RX_FORCE_ALC + offs, FORCE_ALC_WORD(~0));
-	y = ad9361_spi_readf(spi, REG_RX_FORCE_VCO_TUNE_1 + offs, FORCE_VCO_TUNE);
+	FASTLOCK_READ(x, ad9361_spi_readf(spi, REG_RX_FORCE_ALC + offs,
+						 FORCE_ALC_WORD(~0)));
+	FASTLOCK_READ(y, ad9361_spi_readf(spi, REG_RX_FORCE_VCO_TUNE_1 + offs,
+						 FORCE_VCO_TUNE));
 	val[15] = (x << 1) | y;
+#undef FASTLOCK_READ
 
 	return ad9361_fastlock_load(phy, tx, profile, val);
 }
