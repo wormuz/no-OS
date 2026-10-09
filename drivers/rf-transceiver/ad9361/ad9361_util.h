@@ -92,6 +92,9 @@ typedef SSIZE_T ssize_t;
 #endif
 
 int32_t clk_prepare_enable(struct no_os_clk *clk);
+int32_t clk_get_rate_checked(struct ad9361_rf_phy *phy,
+			     struct refclk_scale *clk_priv,
+			     uint32_t *rate);
 uint32_t clk_get_rate(struct ad9361_rf_phy *phy,
 		      struct refclk_scale *clk_priv);
 int32_t clk_set_rate(struct ad9361_rf_phy *phy,

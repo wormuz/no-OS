@@ -1251,13 +1251,9 @@ int32_t ad9361_bist_tone(struct ad9361_rf_phy *phy,
 {
 	uint32_t clk = 0;
 	uint32_t reg = 0, reg1, reg_mask;
+	int32_t ret;
 
 	dev_dbg(&phy->spi->dev, "%s: mode %d", __func__, mode);
-
-	phy->bist_tone_mode = mode;
-	phy->bist_tone_freq_Hz = freq_Hz;
-	phy->bist_tone_level_dB = level_dB;
-	phy->bist_tone_mask = mask;
 
 	switch (mode) {
 	case BIST_DISABLE:
@@ -1268,10 +1264,21 @@ int32_t ad9361_bist_tone(struct ad9361_rf_phy *phy,
 		reg = BIST_CTRL_POINT(0) | BIST_ENABLE;
 		break;
 	case BIST_INJ_RX:
-		clk = clk_get_rate(phy, phy->ref_clk_scale[RX_SAMPL_CLK]);
+		ret = clk_get_rate_checked(phy, phy->ref_clk_scale[RX_SAMPL_CLK],
+					   &clk);
+		if (ret < 0)
+			return ret;
 		reg = BIST_CTRL_POINT(2) | BIST_ENABLE;
 		break;
-	};
+	default:
+		return -EINVAL;
+	}
+	if (mode == BIST_INJ_TX) {
+		ret = clk_get_rate_checked(phy, phy->ref_clk_scale[TX_SAMPL_CLK],
+					   &clk);
+		if (ret < 0)
+			return ret;
+	}
 
 	reg |= TONE_PRBS;
 	reg |= TONE_LEVEL(level_dB / 6);
@@ -1279,19 +1286,30 @@ int32_t ad9361_bist_tone(struct ad9361_rf_phy *phy,
 	if (freq_Hz < 4) {
 		reg |= TONE_FREQ(freq_Hz);
 	} else {
-		if (clk)
-			reg |= TONE_FREQ(NO_OS_DIV_ROUND_CLOSEST(freq_Hz * 32, clk) - 1);
+		if (clk == 0)
+			return -EIO;
+		reg |= TONE_FREQ(NO_OS_DIV_ROUND_CLOSEST(freq_Hz * 32, clk) - 1);
 	}
 
 	reg_mask = BIST_MASK_CHANNEL_1_I_DATA | BIST_MASK_CHANNEL_1_Q_DATA |
 		   BIST_MASK_CHANNEL_2_I_DATA | BIST_MASK_CHANNEL_2_Q_DATA;
 
 	reg1 = ((mask << 2) & reg_mask);
-	ad9361_spi_write(phy->spi, REG_BIST_AND_DATA_PORT_TEST_CONFIG, reg1);
+	ret = ad9361_spi_write(phy->spi, REG_BIST_AND_DATA_PORT_TEST_CONFIG, reg1);
+	if (ret < 0)
+		return ret;
 
+	ret = ad9361_spi_write(phy->spi, REG_BIST_CONFIG, reg);
+	if (ret < 0)
+		return ret;
+
+	phy->bist_tone_mode = mode;
+	phy->bist_tone_freq_Hz = freq_Hz;
+	phy->bist_tone_level_dB = level_dB;
+	phy->bist_tone_mask = mask;
 	phy->bist_config = reg;
 
-	return ad9361_spi_write(phy->spi, REG_BIST_CONFIG, reg);
+	return 0;
 }
 
 /**
@@ -5365,8 +5383,9 @@ int32_t ad9361_get_trx_clock_chain(struct ad9361_rf_phy *phy,
 				   uint32_t *rx_path_clks,
 				   uint32_t *tx_path_clks)
 {
-	int32_t i, j, n;
+	int32_t i, j, n, ret;
 	uint32_t bbpll_freq;
+	uint32_t rate;
 
 	if (!rx_path_clks && !tx_path_clks)
 		return -EINVAL;
@@ -5383,10 +5402,18 @@ int32_t ad9361_get_trx_clock_chain(struct ad9361_rf_phy *phy,
 
 	for (i = ADC_CLK, j = DAC_CLK, n = ADC_FREQ;
 	     i <= RX_SAMPL_CLK; i++, j++, n++) {
-		if (rx_path_clks)
-			rx_path_clks[n] = clk_get_rate(phy, phy->ref_clk_scale[i]);
-		if (tx_path_clks)
-			tx_path_clks[n] = clk_get_rate(phy, phy->ref_clk_scale[j]);
+		if (rx_path_clks) {
+			ret = clk_get_rate_checked(phy, phy->ref_clk_scale[i], &rate);
+			if (ret < 0)
+				return ret;
+			rx_path_clks[n] = rate;
+		}
+		if (tx_path_clks) {
+			ret = clk_get_rate_checked(phy, phy->ref_clk_scale[j], &rate);
+			if (ret < 0)
+				return ret;
+			tx_path_clks[n] = rate;
+		}
 	}
 
 	return 0;
@@ -8228,15 +8255,21 @@ int32_t ad9361_clk_mux_set_parent(struct refclk_scale *clk_priv, uint8_t index)
  * @param flags The flags.
  * @param source The source of the new clock.
  * @param parent_source The source of the parent clock.
- * @return A struct no_os_clk for the new clock or a negative error code.
+ * @return 0 on success or a negative error code.
  */
-static struct no_os_clk *ad9361_clk_register(struct ad9361_rf_phy *phy,
+static int32_t ad9361_clk_register(struct ad9361_rf_phy *phy,
 		const char *name,
 		const char *parent_name, uint32_t flags,
-		uint32_t source, uint32_t parent_source)
+		uint32_t source, uint32_t parent_source,
+		struct no_os_clk **registered_clk)
 {
 	struct refclk_scale *clk_priv;
 	struct no_os_clk *clk;
+	int32_t ret;
+
+	if (!registered_clk)
+		return -EINVAL;
+	*registered_clk = NULL;
 
 	if (name) {
 		// Unused variable - fix compiler warning
@@ -8252,7 +8285,7 @@ static struct no_os_clk *ad9361_clk_register(struct ad9361_rf_phy *phy,
 	if (!clk_priv) {
 		dev_err(&phy->spi->dev,
 			"ad9361_clk_register: could not allocate fixed factor clk");
-		return (struct no_os_clk *)ERR_PTR(-ENOMEM);
+		return -ENOMEM;
 	}
 
 	/* struct refclk_scale assignments */
@@ -8265,73 +8298,23 @@ static struct no_os_clk *ad9361_clk_register(struct ad9361_rf_phy *phy,
 
 	clk = (struct no_os_clk *)no_os_malloc(sizeof(*clk));
 	if (!clk) {
-		no_os_free(clk_priv);
-		return (struct no_os_clk *)ERR_PTR(-ENOMEM);
+		ret = -ENOMEM;
+		goto error;
 	}
 
-	switch (source) {
-	case TX_REFCLK:
-		clk->rate = ad9361_clk_factor_recalc_rate(clk_priv, phy->clk_refin->rate);
-		break;
-	case RX_REFCLK:
-		clk->rate = ad9361_clk_factor_recalc_rate(clk_priv, phy->clk_refin->rate);
-		break;
-	case BB_REFCLK:
-		clk->rate = ad9361_clk_factor_recalc_rate(clk_priv, phy->clk_refin->rate);
-		break;
-	case BBPLL_CLK:
-		clk->rate = ad9361_bbpll_recalc_rate(clk_priv, phy->clks[BB_REFCLK]->rate);
-		break;
-	case ADC_CLK:
-		clk->rate = ad9361_clk_factor_recalc_rate(clk_priv, phy->clks[BBPLL_CLK]->rate);
-		break;
-	case R2_CLK:
-		clk->rate = ad9361_clk_factor_recalc_rate(clk_priv, phy->clks[ADC_CLK]->rate);
-		break;
-	case R1_CLK:
-		clk->rate = ad9361_clk_factor_recalc_rate(clk_priv, phy->clks[R2_CLK]->rate);
-		break;
-	case CLKRF_CLK:
-		clk->rate = ad9361_clk_factor_recalc_rate(clk_priv, phy->clks[R1_CLK]->rate);
-		break;
-	case RX_SAMPL_CLK:
-		clk->rate = ad9361_clk_factor_recalc_rate(clk_priv, phy->clks[CLKRF_CLK]->rate);
-		break;
-	case DAC_CLK:
-		clk->rate = ad9361_clk_factor_recalc_rate(clk_priv, phy->clks[ADC_CLK]->rate);
-		break;
-	case T2_CLK:
-		clk->rate = ad9361_clk_factor_recalc_rate(clk_priv, phy->clks[DAC_CLK]->rate);
-		break;
-	case T1_CLK:
-		clk->rate = ad9361_clk_factor_recalc_rate(clk_priv, phy->clks[T2_CLK]->rate);
-		break;
-	case CLKTF_CLK:
-		clk->rate = ad9361_clk_factor_recalc_rate(clk_priv, phy->clks[T1_CLK]->rate);
-		break;
-	case TX_SAMPL_CLK:
-		clk->rate = ad9361_clk_factor_recalc_rate(clk_priv, phy->clks[CLKTF_CLK]->rate);
-		break;
-	case RX_RFPLL_INT:
-		clk->rate = ad9361_rfpll_int_recalc_rate(clk_priv, phy->clks[RX_REFCLK]->rate);
-		break;
-	case TX_RFPLL_INT:
-		clk->rate = ad9361_rfpll_int_recalc_rate(clk_priv, phy->clks[TX_REFCLK]->rate);
-		break;
-	case RX_RFPLL_DUMMY:
-		clk->rate = phy->pdata->rx_synth_freq;
-		break;
-	case TX_RFPLL_DUMMY:
-		clk->rate = phy->pdata->tx_synth_freq;
-		break;
-	case RX_RFPLL:
-		clk->rate = ad9361_rfpll_recalc_rate(clk_priv);
-		break;
-	case TX_RFPLL:
-		clk->rate = ad9361_rfpll_recalc_rate(clk_priv);
+	ret = clk_get_rate_checked(phy, clk_priv, &clk->rate);
+	if (ret < 0) {
+		no_os_free(clk);
+		goto error;
 	}
 
-	return clk;
+	*registered_clk = clk;
+	return 0;
+
+error:
+	phy->ref_clk_scale[source] = NULL;
+	no_os_free(clk_priv);
+	return ret;
 }
 
 /**
@@ -8342,111 +8325,47 @@ static struct no_os_clk *ad9361_clk_register(struct ad9361_rf_phy *phy,
 int32_t ad9361_register_clocks(struct ad9361_rf_phy *phy)
 {
 	uint32_t flags = CLK_GET_RATE_NOCACHE;
+	int32_t ret;
+
+#define REGISTER_CLK(_name, _parent, _source, _parent_source) do { \
+	ret = ad9361_clk_register(phy, _name, _parent, \
+		flags | CLK_IGNORE_UNUSED, _source, _parent_source, \
+		&phy->clks[_source]); \
+	if (ret < 0) \
+		goto error; \
+} while (0)
 
 	/* Scaled Reference Clocks */
-	phy->clks[TX_REFCLK] = ad9361_clk_register(phy,
-			       "tx_refclk", "ad9361_ext_refclk",
-			       flags | CLK_IGNORE_UNUSED,
-			       TX_REFCLK, EXT_REF_CLK);
-
-	phy->clks[RX_REFCLK] = ad9361_clk_register(phy,
-			       "rx_refclk", "ad9361_ext_refclk",
-			       flags | CLK_IGNORE_UNUSED,
-			       RX_REFCLK, EXT_REF_CLK);
-
-	phy->clks[BB_REFCLK] = ad9361_clk_register(phy,
-			       "bb_refclk", "ad9361_ext_refclk",
-			       flags | CLK_IGNORE_UNUSED,
-			       BB_REFCLK, EXT_REF_CLK);
+	REGISTER_CLK("tx_refclk", "ad9361_ext_refclk", TX_REFCLK, EXT_REF_CLK);
+	REGISTER_CLK("rx_refclk", "ad9361_ext_refclk", RX_REFCLK, EXT_REF_CLK);
+	REGISTER_CLK("bb_refclk", "ad9361_ext_refclk", BB_REFCLK, EXT_REF_CLK);
 
 	/* Base Band PLL Clock */
-	phy->clks[BBPLL_CLK] = ad9361_clk_register(phy,
-			       "bbpll_clk", "bb_refclk",
-			       flags | CLK_IGNORE_UNUSED,
-			       BBPLL_CLK, BB_REFCLK);
+	REGISTER_CLK("bbpll_clk", "bb_refclk", BBPLL_CLK, BB_REFCLK);
+	REGISTER_CLK("adc_clk", "bbpll_clk", ADC_CLK, BBPLL_CLK);
+	REGISTER_CLK("r2_clk", "adc_clk", R2_CLK, ADC_CLK);
+	REGISTER_CLK("r1_clk", "r2_clk", R1_CLK, R2_CLK);
+	REGISTER_CLK("clkrf_clk", "r1_clk", CLKRF_CLK, R1_CLK);
+	REGISTER_CLK("rx_sampl_clk", "clkrf_clk", RX_SAMPL_CLK, CLKRF_CLK);
+	REGISTER_CLK("dac_clk", "adc_clk", DAC_CLK, ADC_CLK);
+	REGISTER_CLK("t2_clk", "dac_clk", T2_CLK, DAC_CLK);
+	REGISTER_CLK("t1_clk", "t2_clk", T1_CLK, T2_CLK);
+	REGISTER_CLK("clktf_clk", "t1_clk", CLKTF_CLK, T1_CLK);
+	REGISTER_CLK("tx_sampl_clk", "clktf_clk", TX_SAMPL_CLK, CLKTF_CLK);
+	REGISTER_CLK("rx_rfpll", "rx_refclk", RX_RFPLL_INT, RX_REFCLK);
+	REGISTER_CLK("tx_rfpll", "tx_refclk", TX_RFPLL_INT, TX_REFCLK);
+	REGISTER_CLK("rx_rfpll_dummy", NULL, RX_RFPLL_DUMMY, 0);
+	REGISTER_CLK("tx_rfpll_dummy", NULL, TX_RFPLL_DUMMY, 0);
+	REGISTER_CLK("rx_rfpll", NULL, RX_RFPLL, 0);
+	REGISTER_CLK("tx_rfpll", NULL, TX_RFPLL, 0);
 
-	phy->clks[ADC_CLK] = ad9361_clk_register(phy,
-			     "adc_clk", "bbpll_clk",
-			     flags | CLK_IGNORE_UNUSED,
-			     ADC_CLK, BBPLL_CLK);
-
-	phy->clks[R2_CLK] = ad9361_clk_register(phy,
-						"r2_clk", "adc_clk",
-						flags | CLK_IGNORE_UNUSED,
-						R2_CLK, ADC_CLK);
-
-	phy->clks[R1_CLK] = ad9361_clk_register(phy,
-						"r1_clk", "r2_clk",
-						flags | CLK_IGNORE_UNUSED,
-						R1_CLK, R2_CLK);
-
-	phy->clks[CLKRF_CLK] = ad9361_clk_register(phy,
-			       "clkrf_clk", "r1_clk",
-			       flags | CLK_IGNORE_UNUSED,
-			       CLKRF_CLK, R1_CLK);
-
-	phy->clks[RX_SAMPL_CLK] = ad9361_clk_register(phy,
-				  "rx_sampl_clk", "clkrf_clk",
-				  flags | CLK_IGNORE_UNUSED,
-				  RX_SAMPL_CLK, CLKRF_CLK);
-
-
-	phy->clks[DAC_CLK] = ad9361_clk_register(phy,
-			     "dac_clk", "adc_clk",
-			     flags | CLK_IGNORE_UNUSED,
-			     DAC_CLK, ADC_CLK);
-
-	phy->clks[T2_CLK] = ad9361_clk_register(phy,
-						"t2_clk", "dac_clk",
-						flags | CLK_IGNORE_UNUSED,
-						T2_CLK, DAC_CLK);
-
-	phy->clks[T1_CLK] = ad9361_clk_register(phy,
-						"t1_clk", "t2_clk",
-						flags | CLK_IGNORE_UNUSED,
-						T1_CLK, T2_CLK);
-
-	phy->clks[CLKTF_CLK] = ad9361_clk_register(phy,
-			       "clktf_clk", "t1_clk",
-			       flags | CLK_IGNORE_UNUSED,
-			       CLKTF_CLK, T1_CLK);
-
-	phy->clks[TX_SAMPL_CLK] = ad9361_clk_register(phy,
-				  "tx_sampl_clk", "clktf_clk",
-				  flags | CLK_IGNORE_UNUSED,
-				  TX_SAMPL_CLK, CLKTF_CLK);
-
-	phy->clks[RX_RFPLL_INT] = ad9361_clk_register(phy,
-				  "rx_rfpll", "rx_refclk",
-				  flags | CLK_IGNORE_UNUSED,
-				  RX_RFPLL_INT, RX_REFCLK);
-
-	phy->clks[TX_RFPLL_INT] = ad9361_clk_register(phy,
-				  "tx_rfpll", "tx_refclk",
-				  flags | CLK_IGNORE_UNUSED,
-				  TX_RFPLL_INT, TX_REFCLK);
-
-	phy->clks[RX_RFPLL_DUMMY] = ad9361_clk_register(phy,
-				    "rx_rfpll_dummy", NULL,
-				    flags | CLK_IGNORE_UNUSED,
-				    RX_RFPLL_DUMMY, 0);
-
-	phy->clks[TX_RFPLL_DUMMY] = ad9361_clk_register(phy,
-				    "tx_rfpll_dummy", NULL,
-				    flags | CLK_IGNORE_UNUSED,
-				    TX_RFPLL_DUMMY, 0);
-
-	phy->clks[RX_RFPLL] = ad9361_clk_register(phy,
-			      "rx_rfpll", NULL,
-			      flags | CLK_IGNORE_UNUSED,
-			      RX_RFPLL, 0);
-
-	phy->clks[TX_RFPLL] = ad9361_clk_register(phy,
-			      "tx_rfpll", NULL,
-			      flags | CLK_IGNORE_UNUSED,
-			      TX_RFPLL, 0);
-
+	#undef REGISTER_CLK
 	return 0;
+
+error:
+	#undef REGISTER_CLK
+	ad9361_unregister_clocks(phy);
+	return ret;
 }
 
 /**
@@ -8461,6 +8380,8 @@ int32_t ad9361_unregister_clocks(struct ad9361_rf_phy *phy)
 	for (i = 0; i < NUM_AD9361_CLKS; i++) {
 		no_os_free(phy->clks[i]);
 		no_os_free(phy->ref_clk_scale[i]);
+		phy->clks[i] = NULL;
+		phy->ref_clk_scale[i] = NULL;
 	}
 
 	return 0;

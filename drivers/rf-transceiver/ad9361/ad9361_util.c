@@ -52,38 +52,33 @@ int32_t clk_prepare_enable(struct no_os_clk *clk)
 /***************************************************************************//**
  * @brief clk_get_rate
 *******************************************************************************/
-uint32_t clk_get_rate(struct ad9361_rf_phy *phy,
-		      struct refclk_scale *clk_priv)
+int32_t clk_get_rate_checked(struct ad9361_rf_phy *phy,
+			     struct refclk_scale *clk_priv,
+			     uint32_t *rate)
 {
-	uint32_t rate = 0;
-	uint32_t source;
+	if (!phy || !clk_priv || !rate)
+		return -EINVAL;
 
-	source = clk_priv->source;
-
-	switch (source) {
+	switch (clk_priv->source) {
 	case TX_REFCLK:
 	case RX_REFCLK:
 	case BB_REFCLK:
-		rate = ad9361_clk_factor_recalc_rate(clk_priv,
-						     phy->clk_refin->rate);
-		break;
+		return ad9361_clk_factor_recalc_rate_checked(
+			clk_priv, phy->clk_refin->rate, rate);
 	case TX_RFPLL_INT:
 	case RX_RFPLL_INT:
-		rate = ad9361_rfpll_int_recalc_rate(clk_priv,
-						    phy->clks[clk_priv->parent_source]->rate);
-		break;
+		return ad9361_rfpll_int_recalc_rate_checked(
+			clk_priv, phy->clks[clk_priv->parent_source]->rate, rate);
 	case RX_RFPLL_DUMMY:
 	case TX_RFPLL_DUMMY:
-		rate = ad9361_rfpll_dummy_recalc_rate(clk_priv);
-		break;
+		*rate = ad9361_rfpll_dummy_recalc_rate(clk_priv);
+		return 0;
 	case TX_RFPLL:
 	case RX_RFPLL:
-		rate = ad9361_rfpll_recalc_rate(clk_priv);
-		break;
+		return ad9361_rfpll_recalc_rate_checked(clk_priv, rate);
 	case BBPLL_CLK:
-		rate = ad9361_bbpll_recalc_rate(clk_priv,
-						phy->clks[clk_priv->parent_source]->rate);
-		break;
+		return ad9361_bbpll_recalc_rate_checked(
+			clk_priv, phy->clks[clk_priv->parent_source]->rate, rate);
 	case ADC_CLK:
 	case R2_CLK:
 	case R1_CLK:
@@ -94,13 +89,19 @@ uint32_t clk_get_rate(struct ad9361_rf_phy *phy,
 	case T1_CLK:
 	case CLKTF_CLK:
 	case TX_SAMPL_CLK:
-		rate = ad9361_clk_factor_recalc_rate(clk_priv,
-						     phy->clks[clk_priv->parent_source]->rate);
-		break;
+		return ad9361_clk_factor_recalc_rate_checked(
+			clk_priv, phy->clks[clk_priv->parent_source]->rate, rate);
 	default:
-		break;
+		return -EINVAL;
 	}
+}
 
+uint32_t clk_get_rate(struct ad9361_rf_phy *phy,
+		      struct refclk_scale *clk_priv)
+{
+	uint32_t rate = 0;
+
+	(void)clk_get_rate_checked(phy, clk_priv, &rate);
 	return rate;
 }
 

@@ -875,7 +875,9 @@ int32_t ad9361_set_rx_sampling_freq(struct ad9361_rf_phy *phy,
 	if (ret < 0)
 		return ret;
 
-	ad9361_set_trx_clock_chain(phy, rx, tx);
+	ret = ad9361_set_trx_clock_chain(phy, rx, tx);
+	if (ret < 0)
+		return ret;
 
 	ret = ad9361_update_rf_bandwidth(phy, phy->current_rx_bw_Hz,
 					 phy->current_tx_bw_Hz);
@@ -893,12 +895,15 @@ int32_t ad9361_get_rx_sampling_freq(struct ad9361_rf_phy *phy,
 				    uint32_t *sampling_freq_hz)
 {
 	uint32_t freq;
+	int32_t ret;
 
 	if (!phy || !sampling_freq_hz)
 		return -EINVAL;
 
-	freq = (uint32_t)clk_get_rate(phy, phy->ref_clk_scale[RX_SAMPL_CLK]);
-
+	ret = clk_get_rate_checked(
+		phy, phy->ref_clk_scale[RX_SAMPL_CLK], &freq);
+	if (ret < 0)
+		return ret;
 	if (freq == 0)
 		return -ENODEV;
 
@@ -1542,7 +1547,9 @@ int32_t ad9361_set_tx_sampling_freq(struct ad9361_rf_phy *phy,
 	if (ret < 0)
 		return ret;
 
-	ad9361_set_trx_clock_chain(phy, rx, tx);
+	ret = ad9361_set_trx_clock_chain(phy, rx, tx);
+	if (ret < 0)
+		return ret;
 
 	ret = ad9361_update_rf_bandwidth(phy, phy->current_rx_bw_Hz,
 					 phy->current_tx_bw_Hz);
@@ -1560,12 +1567,15 @@ int32_t ad9361_get_tx_sampling_freq(struct ad9361_rf_phy *phy,
 				    uint32_t *sampling_freq_hz)
 {
 	uint32_t freq;
+	int32_t ret;
 
 	if (!phy || !sampling_freq_hz)
 		return -EINVAL;
 
-	freq = clk_get_rate(phy, phy->ref_clk_scale[TX_SAMPL_CLK]);
-
+	ret = clk_get_rate_checked(
+		phy, phy->ref_clk_scale[TX_SAMPL_CLK], &freq);
+	if (ret < 0)
+		return ret;
 	if (freq == 0)
 		return -ENODEV;
 
