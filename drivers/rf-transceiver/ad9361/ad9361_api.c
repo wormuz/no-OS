@@ -669,8 +669,7 @@ int32_t ad9361_set_en_state_machine_mode(struct ad9361_rf_phy *phy,
 	int32_t ret;
 	uint8_t ensm_state;
 	bool pinctrl = false;
-
-	phy->pdata->fdd_independent_mode = false;
+	bool fdd_independent = false;
 
 	switch (mode) {
 	case ENSM_MODE_TX:
@@ -697,14 +696,19 @@ int32_t ad9361_set_en_state_machine_mode(struct ad9361_rf_phy *phy,
 		break;
 	case ENSM_MODE_PINCTRL_FDD_INDEP:
 		ensm_state = ENSM_STATE_FDD;
-		phy->pdata->fdd_independent_mode = true;
+		fdd_independent = true;
 		break;
 	default:
 		return -EINVAL;
 	}
 
-	ad9361_set_ensm_mode(phy, phy->pdata->fdd, pinctrl);
+	ret = ad9361_set_ensm_mode(phy, phy->pdata->fdd, pinctrl);
+	if (ret < 0)
+		return ret;
 	ret = ad9361_ensm_set_state(phy, ensm_state, pinctrl);
+	if (ret < 0)
+		return ret;
+	phy->pdata->fdd_independent_mode = fdd_independent;
 
 	return ret;
 }
@@ -722,9 +726,14 @@ int32_t ad9361_get_en_state_machine_mode(struct ad9361_rf_phy *phy,
 	bool pinctrl = false;
 	int32_t ret;
 
-	ensm_state = ad9361_spi_read(phy->spi, REG_STATE);
+	ret = ad9361_spi_read(phy->spi, REG_STATE);
+	if (ret < 0)
+		return ret;
+	ensm_state = ret;
 	ensm_state &= ENSM_STATE(~0);
 	ret = ad9361_spi_read(phy->spi, REG_ENSM_CONFIG_1);
+	if (ret < 0)
+		return ret;
 	if ((ret & ENABLE_ENSM_PIN_CTRL) == ENABLE_ENSM_PIN_CTRL)
 		pinctrl = true;
 
@@ -1035,10 +1044,15 @@ int32_t ad9361_set_rx_gain_control_mode(struct ad9361_rf_phy *phy,
 	struct rf_gain_ctrl gc = {0, 0};
 
 	gc.ant = ad9361_1rx1tx_channel_map(phy, false, ch + 1);
-	gc.mode = phy->agc_mode[ch] = gc_mode;
-
-	ad9361_set_gain_ctrl_mode(phy, &gc);
-
+	gc.mode = gc_mode;
+	if (gc_mode > RF_GAIN_HYBRID_AGC)
+		return -EINVAL;
+	{
+		int32_t ret = ad9361_set_gain_ctrl_mode(phy, &gc);
+		if (ret < 0)
+			return ret;
+	}
+	phy->agc_mode[ch] = gc_mode;
 	return 0;
 }
 
@@ -1114,22 +1128,34 @@ int32_t ad9361_get_rx_fir_config(struct ad9361_rf_phy *phy, uint8_t rx_ch,
 
 	fir_conf &= ~FIR_SELECT(3);
 	fir_conf |= FIR_SELECT(rx_ch) | FIR_START_CLK;
-	ad9361_spi_write(phy->spi, REG_RX_FILTER_CONFIG, fir_conf);
+	ret = ad9361_spi_write(phy->spi, REG_RX_FILTER_CONFIG, fir_conf);
+	if (ret < 0)
+		return ret;
 
 	for (index = 0; index < 128; index++) {
-		ad9361_spi_write(phy->spi, REG_RX_FILTER_COEF_ADDR, index);
+		ret = ad9361_spi_write(phy->spi, REG_RX_FILTER_COEF_ADDR, index);
+		if (ret < 0)
+			goto rx_fir_restore;
 		ret = ad9361_spi_read(phy->spi, REG_RX_FILTER_COEF_READ_DATA_1);
 		if (ret < 0)
-			return ret;
+			goto rx_fir_restore;
 		fir_cfg->rx_coef[index] = ret;
 		ret = ad9361_spi_read(phy->spi, REG_RX_FILTER_COEF_READ_DATA_2);
 		if (ret < 0)
-			return ret;
+			goto rx_fir_restore;
 		fir_cfg->rx_coef[index] |= (ret << 8);
 	}
 
+	rx_fir_restore:
 	fir_conf &= ~FIR_START_CLK;
-	ad9361_spi_write(phy->spi, REG_RX_FILTER_CONFIG, fir_conf);
+	{
+		int32_t restore_ret = ad9361_spi_write(phy->spi,
+						       REG_RX_FILTER_CONFIG, fir_conf);
+		if (ret >= 0 && restore_ret < 0)
+			ret = restore_ret;
+	}
+	if (ret < 0)
+		return ret;
 
 	fir_cfg->rx_dec = phy->rx_fir_dec;
 
@@ -1708,22 +1734,34 @@ int32_t ad9361_get_tx_fir_config(struct ad9361_rf_phy *phy, uint8_t tx_ch,
 
 	fir_conf &= ~FIR_SELECT(3);
 	fir_conf |= FIR_SELECT(tx_ch) | FIR_START_CLK;
-	ad9361_spi_write(phy->spi, REG_TX_FILTER_CONF, fir_conf);
+	ret = ad9361_spi_write(phy->spi, REG_TX_FILTER_CONF, fir_conf);
+	if (ret < 0)
+		return ret;
 
 	for (index = 0; index < 128; index++) {
-		ad9361_spi_write(phy->spi, REG_TX_FILTER_COEF_ADDR, index);
+		ret = ad9361_spi_write(phy->spi, REG_TX_FILTER_COEF_ADDR, index);
+		if (ret < 0)
+			goto tx_fir_restore;
 		ret = ad9361_spi_read(phy->spi, REG_TX_FILTER_COEF_READ_DATA_1);
 		if (ret < 0)
-			return ret;
+			goto tx_fir_restore;
 		fir_cfg->tx_coef[index] = ret;
 		ret = ad9361_spi_read(phy->spi, REG_TX_FILTER_COEF_READ_DATA_2);
 		if (ret < 0)
-			return ret;
+			goto tx_fir_restore;
 		fir_cfg->tx_coef[index] |= (ret << 8);
 	}
 
+	tx_fir_restore:
 	fir_conf &= ~FIR_START_CLK;
-	ad9361_spi_write(phy->spi, REG_TX_FILTER_CONF, fir_conf);
+	{
+		int32_t restore_ret = ad9361_spi_write(phy->spi,
+						       REG_TX_FILTER_CONF, fir_conf);
+		if (ret >= 0 && restore_ret < 0)
+			ret = restore_ret;
+	}
+	if (ret < 0)
+		return ret;
 
 	fir_cfg->tx_int = phy->tx_fir_int;
 
@@ -2051,6 +2089,7 @@ int32_t ad9361_get_trx_path_clks(struct ad9361_rf_phy *phy,
  */
 int32_t ad9361_set_no_ch_mode(struct ad9361_rf_phy *phy, uint8_t no_ch_mode)
 {
+	int32_t ret;
 	switch (no_ch_mode) {
 	case 1:
 		phy->pdata->rx2tx2 = 0;
@@ -2066,14 +2105,19 @@ int32_t ad9361_set_no_ch_mode(struct ad9361_rf_phy *phy, uint8_t no_ch_mode)
 	phy->adc_conv->chip_info = &axiadc_chip_info_tbl[phy->pdata->rx2tx2 ?
 						      ID_AD9361 : ID_AD9364];
 #endif
-	ad9361_reset(phy);
-	ad9361_spi_write(phy->spi, REG_SPI_CONF, SOFT_RESET | _SOFT_RESET);
-	ad9361_spi_write(phy->spi, REG_SPI_CONF, 0x0);
+	ret = ad9361_reset(phy);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_SPI_CONF,
+				       SOFT_RESET | _SOFT_RESET);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_spi_write(phy->spi, REG_SPI_CONF, 0x0);
+	if (ret < 0)
+		return ret;
 
 	ad9361_clear_state(phy);
 
-	phy->clks[TX_REFCLK]->rate = ad9361_clk_factor_recalc_rate(
-					     phy->ref_clk_scale[TX_REFCLK], phy->clk_refin->rate);
 	phy->clks[TX_REFCLK]->rate = ad9361_clk_factor_recalc_rate(
 					     phy->ref_clk_scale[TX_REFCLK], phy->clk_refin->rate);
 	phy->clks[RX_REFCLK]->rate = ad9361_clk_factor_recalc_rate(
@@ -2115,10 +2159,14 @@ int32_t ad9361_set_no_ch_mode(struct ad9361_rf_phy *phy, uint8_t no_ch_mode)
 	phy->clks[TX_RFPLL]->rate = ad9361_rfpll_recalc_rate(
 					    phy->ref_clk_scale[TX_RFPLL]);
 
-	ad9361_setup(phy);
+	ret = ad9361_setup(phy);
+	if (ret < 0)
+		return ret;
 #if !defined(AXI_ADC_NOT_PRESENT) && !defined(BLADERF_NIOS_BUILD)
 	/* platform specific wrapper to call ad9361_post_setup() */
-	ad9361_post_setup(phy);
+	ret = ad9361_post_setup(phy);
+	if (ret < 0)
+		return ret;
 #endif
 
 	return 0;
@@ -2138,6 +2186,7 @@ int32_t ad9361_do_mcs(struct ad9361_rf_phy *phy_master,
 	uint32_t ensm_mode;
 	int32_t step;
 	int32_t reg;
+	int32_t ret;
 
 	if ((phy_master->dev_sel == ID_AD9363A) ||
 	    (phy_slave->dev_sel == ID_AD9363A)) {
@@ -2146,25 +2195,55 @@ int32_t ad9361_do_mcs(struct ad9361_rf_phy *phy_master,
 	}
 
 	reg = ad9361_spi_read(phy_master->spi, REG_RX_CLOCK_DATA_DELAY);
-	ad9361_spi_write(phy_slave->spi, REG_RX_CLOCK_DATA_DELAY, reg);
+	if (reg < 0)
+		return reg;
+	ret = ad9361_spi_write(phy_slave->spi, REG_RX_CLOCK_DATA_DELAY, reg);
+	if (ret < 0)
+		return ret;
 	reg = ad9361_spi_read(phy_master->spi, REG_TX_CLOCK_DATA_DELAY);
-	ad9361_spi_write(phy_slave->spi, REG_TX_CLOCK_DATA_DELAY, reg);
+	if (reg < 0)
+		return reg;
+	ret = ad9361_spi_write(phy_slave->spi, REG_TX_CLOCK_DATA_DELAY, reg);
+	if (ret < 0)
+		return ret;
 
-	ad9361_get_en_state_machine_mode(phy_master, &ensm_mode);
+	ret = ad9361_get_en_state_machine_mode(phy_master, &ensm_mode);
+	if (ret < 0)
+		return ret;
 
-	ad9361_set_en_state_machine_mode(phy_master, ENSM_MODE_ALERT);
-	ad9361_set_en_state_machine_mode(phy_slave, ENSM_MODE_ALERT);
+	ret = ad9361_set_en_state_machine_mode(phy_master, ENSM_MODE_ALERT);
+	if (ret < 0)
+		return ret;
+	ret = ad9361_set_en_state_machine_mode(phy_slave, ENSM_MODE_ALERT);
+	if (ret < 0) {
+		ad9361_set_en_state_machine_mode(phy_master, ensm_mode);
+		return ret;
+	}
 
 	for (step = 0; step <= 5; step++) {
-		ad9361_mcs(phy_slave, step);
-		ad9361_mcs(phy_master, step);
+		ret = ad9361_mcs(phy_slave, step);
+		if (ret < 0)
+			goto mcs_restore_ensm;
+		ret = ad9361_mcs(phy_master, step);
+		if (ret < 0)
+			goto mcs_restore_ensm;
 		no_os_mdelay(100);
 	}
 
-	ad9361_set_en_state_machine_mode(phy_master, ensm_mode);
-	ad9361_set_en_state_machine_mode(phy_slave, ensm_mode);
+	ret = 0;
+mcs_restore_ensm:
+	{
+		int32_t restore_master = ad9361_set_en_state_machine_mode(
+				phy_master, ensm_mode);
+		int32_t restore_slave = ad9361_set_en_state_machine_mode(
+				phy_slave, ensm_mode);
+		if (ret >= 0 && restore_master < 0)
+			ret = restore_master;
+		if (ret >= 0 && restore_slave < 0)
+			ret = restore_slave;
+	}
 
-	return 0;
+	return ret;
 }
 
 /**
