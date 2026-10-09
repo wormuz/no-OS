@@ -5575,13 +5575,16 @@ static int32_t ad9361_fastlock_readval(struct no_os_spi_desc *spi, bool tx,
 				       uint32_t profile, uint32_t word)
 {
 	uint32_t offs = 0;
+	int32_t ret;
 
 	if (tx)
 		offs = REG_TX_FAST_LOCK_SETUP - REG_RX_FAST_LOCK_SETUP;
 
-	ad9361_spi_write(spi, REG_RX_FAST_LOCK_PROGRAM_ADDR + offs,
-			 RX_FAST_LOCK_PROFILE_ADDR(profile) |
-			 RX_FAST_LOCK_PROFILE_WORD(word));
+	ret = ad9361_spi_write(spi, REG_RX_FAST_LOCK_PROGRAM_ADDR + offs,
+				RX_FAST_LOCK_PROFILE_ADDR(profile) |
+				RX_FAST_LOCK_PROFILE_WORD(word));
+	if (ret < 0)
+		return ret;
 
 	return ad9361_spi_read(spi, REG_RX_FAST_LOCK_PROGRAM_READ + offs);
 }
@@ -7645,13 +7648,15 @@ static int32_t ad9361_calc_rfpll_int_divder(struct ad9361_rf_phy *phy,
  * @param parent_rate The parent clock rate.
  * @return The clock rate.
  */
-uint32_t ad9361_rfpll_int_recalc_rate(struct refclk_scale *clk_priv,
-				      uint32_t parent_rate)
+int32_t ad9361_rfpll_int_recalc_rate_checked(struct refclk_scale *clk_priv,
+					     uint32_t parent_rate,
+					     uint32_t *rate)
 {
 	struct ad9361_rf_phy *phy = clk_priv->phy;
 	uint32_t fract, integer;
 	uint8_t buf[5];
 	uint32_t reg, div_mask, vco_div, profile;
+	int32_t ret;
 
 	dev_dbg(&clk_priv->spi->dev, "%s: Parent Rate %"PRIu32" Hz",
 		__func__, parent_rate);
@@ -7675,23 +7680,57 @@ uint32_t ad9361_rfpll_int_recalc_rate(struct refclk_scale *clk_priv,
 		bool tx = clk_priv->source == TX_RFPLL_INT;
 		profile = profile - 1;
 
-		buf[0] = ad9361_fastlock_readval(phy->spi, tx, profile, 4);
-		buf[1] = ad9361_fastlock_readval(phy->spi, tx, profile, 3);
-		buf[2] = ad9361_fastlock_readval(phy->spi, tx, profile, 2);
-		buf[3] = ad9361_fastlock_readval(phy->spi, tx, profile, 1);
-		buf[4] = ad9361_fastlock_readval(phy->spi, tx, profile, 0);
-		vco_div = ad9361_fastlock_readval(phy->spi, tx, profile, 12) & 0xF;
+		ret = ad9361_fastlock_readval(phy->spi, tx, profile, 4);
+		if (ret < 0)
+			return ret;
+		buf[0] = ret;
+		ret = ad9361_fastlock_readval(phy->spi, tx, profile, 3);
+		if (ret < 0)
+			return ret;
+		buf[1] = ret;
+		ret = ad9361_fastlock_readval(phy->spi, tx, profile, 2);
+		if (ret < 0)
+			return ret;
+		buf[2] = ret;
+		ret = ad9361_fastlock_readval(phy->spi, tx, profile, 1);
+		if (ret < 0)
+			return ret;
+		buf[3] = ret;
+		ret = ad9361_fastlock_readval(phy->spi, tx, profile, 0);
+		if (ret < 0)
+			return ret;
+		buf[4] = ret;
+		ret = ad9361_fastlock_readval(phy->spi, tx, profile, 12);
+		if (ret < 0)
+			return ret;
+		vco_div = ret & 0xF;
 
 	} else {
-		ad9361_spi_readm(clk_priv->spi, reg, &buf[0], NO_OS_ARRAY_SIZE(buf));
-		vco_div = ad9361_spi_readf(clk_priv->spi, REG_RFPLL_DIVIDERS, div_mask);
+		ret = ad9361_spi_readm(clk_priv->spi, reg, &buf[0],
+				       NO_OS_ARRAY_SIZE(buf));
+		if (ret < 0)
+			return ret;
+		ret = ad9361_spi_readf(clk_priv->spi, REG_RFPLL_DIVIDERS, div_mask);
+		if (ret < 0)
+			return ret;
+		vco_div = ret;
 	}
 
 	fract = (SYNTH_FRACT_WORD(buf[0]) << 16) | (buf[1] << 8) | buf[2];
 	integer = (SYNTH_INTEGER_WORD(buf[3]) << 8) | buf[4];
 
-	return ad9361_to_clk(ad9361_calc_rfpll_int_freq(parent_rate, integer,
-			     fract, vco_div));
+	*rate = ad9361_to_clk(ad9361_calc_rfpll_int_freq(parent_rate, integer,
+							 fract, vco_div));
+	return 0;
+}
+
+uint32_t ad9361_rfpll_int_recalc_rate(struct refclk_scale *clk_priv,
+				      uint32_t parent_rate)
+{
+	uint32_t rate = 0;
+
+	ad9361_rfpll_int_recalc_rate_checked(clk_priv, parent_rate, &rate);
+	return rate;
 }
 
 /**

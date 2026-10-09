@@ -3522,6 +3522,9 @@ int32_t ad9361_bbpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 			      uint32_t parent_rate);
 uint32_t ad9361_rfpll_int_recalc_rate(struct refclk_scale *clk_priv,
 				      uint32_t parent_rate);
+int32_t ad9361_rfpll_int_recalc_rate_checked(struct refclk_scale *clk_priv,
+					     uint32_t parent_rate,
+					     uint32_t *rate);
 int32_t ad9361_rfpll_int_round_rate(struct refclk_scale *clk_priv,
 				    uint32_t rate,
 				    uint32_t *prate);

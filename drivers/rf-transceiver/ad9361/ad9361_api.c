@@ -937,8 +937,26 @@ int32_t ad9361_set_rx_lo_freq(struct ad9361_rf_phy *phy,
 int32_t ad9361_get_rx_lo_freq(struct ad9361_rf_phy *phy,
 			      uint64_t *lo_freq_hz)
 {
-	*lo_freq_hz = ad9361_from_clk(clk_get_rate(phy,
-				      phy->ref_clk_scale[RX_RFPLL]));
+	uint32_t rate;
+	int32_t ret;
+
+	if (phy->pdata->use_ext_rx_lo) {
+		if (phy->ad9361_rfpll_ext_recalc_rate)
+			rate = phy->ad9361_rfpll_ext_recalc_rate(
+				phy->ref_clk_scale[RX_RFPLL]);
+		else
+			rate = ad9361_rfpll_dummy_recalc_rate(
+				phy->ref_clk_scale[RX_RFPLL_DUMMY]);
+	} else {
+		ret = ad9361_rfpll_int_recalc_rate_checked(
+			phy->ref_clk_scale[RX_RFPLL_INT],
+			phy->clks[phy->ref_clk_scale[RX_RFPLL_INT]->parent_source]->rate,
+			&rate);
+		if (ret < 0)
+			return ret;
+	}
+
+	*lo_freq_hz = ad9361_from_clk(rate);
 
 	return 0;
 }
@@ -1586,8 +1604,26 @@ int32_t ad9361_set_tx_lo_freq(struct ad9361_rf_phy *phy,
 int32_t ad9361_get_tx_lo_freq(struct ad9361_rf_phy *phy,
 			      uint64_t *lo_freq_hz)
 {
-	*lo_freq_hz = ad9361_from_clk(clk_get_rate(phy,
-				      phy->ref_clk_scale[TX_RFPLL]));
+	uint32_t rate;
+	int32_t ret;
+
+	if (phy->pdata->use_ext_tx_lo) {
+		if (phy->ad9361_rfpll_ext_recalc_rate)
+			rate = phy->ad9361_rfpll_ext_recalc_rate(
+				phy->ref_clk_scale[TX_RFPLL]);
+		else
+			rate = ad9361_rfpll_dummy_recalc_rate(
+				phy->ref_clk_scale[TX_RFPLL_DUMMY]);
+	} else {
+		ret = ad9361_rfpll_int_recalc_rate_checked(
+			phy->ref_clk_scale[TX_RFPLL_INT],
+			phy->clks[phy->ref_clk_scale[TX_RFPLL_INT]->parent_source]->rate,
+			&rate);
+		if (ret < 0)
+			return ret;
+	}
+
+	*lo_freq_hz = ad9361_from_clk(rate);
 
 	return 0;
 }
