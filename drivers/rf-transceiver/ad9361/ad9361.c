@@ -4415,27 +4415,41 @@ static int32_t ad9361_auxadc_setup(struct ad9361_rf_phy *phy,
 				   uint32_t bbpll_freq)
 {
 	struct no_os_spi_desc *spi = phy->spi;
-	uint32_t val;
+	uint32_t val, reg[6], value[6];
+	int32_t ret;
+	uint32_t i;
 
 	dev_dbg(&phy->spi->dev, "%s", __func__);
+	if (!ctrl->auxadc_clock_rate || ctrl->temp_sensor_decimation < 256 ||
+	    (ctrl->temp_sensor_decimation & (ctrl->temp_sensor_decimation - 1)) ||
+	    ctrl->auxadc_decimation < 256 ||
+	    (ctrl->auxadc_decimation & (ctrl->auxadc_decimation - 1)))
+		return -EINVAL;
 
 	val = NO_OS_DIV_ROUND_CLOSEST(ctrl->temp_time_inteval_ms *
 				      (bbpll_freq / 1000UL), (1 << 29));
 
-	ad9361_spi_write(spi, REG_TEMP_OFFSET, ctrl->offset);
-	ad9361_spi_write(spi, REG_START_TEMP_READING, 0x00);
-	ad9361_spi_write(spi, REG_TEMP_SENSE2,
-			 MEASUREMENT_TIME_INTERVAL(val) |
-			 (ctrl->periodic_temp_measuremnt ?
-			  TEMP_SENSE_PERIODIC_ENABLE : 0));
-	ad9361_spi_write(spi, REG_TEMP_SENSOR_CONFIG,
-			 TEMP_SENSOR_DECIMATION(
-				 ilog2(ctrl->temp_sensor_decimation) - 8));
-	ad9361_spi_write(spi, REG_AUXADC_CLOCK_DIVIDER,
-			 bbpll_freq / ctrl->auxadc_clock_rate);
-	ad9361_spi_write(spi, REG_AUXADC_CONFIG,
-			 AUX_ADC_DECIMATION(
-				 ilog2(ctrl->auxadc_decimation) - 8));
+	reg[0] = REG_TEMP_OFFSET;
+	value[0] = ctrl->offset;
+	reg[1] = REG_START_TEMP_READING;
+	value[1] = 0x00;
+	reg[2] = REG_TEMP_SENSE2;
+	value[2] = MEASUREMENT_TIME_INTERVAL(val) |
+		   (ctrl->periodic_temp_measuremnt ?
+		    TEMP_SENSE_PERIODIC_ENABLE : 0);
+	reg[3] = REG_TEMP_SENSOR_CONFIG;
+	value[3] = TEMP_SENSOR_DECIMATION(
+		ilog2(ctrl->temp_sensor_decimation) - 8);
+	reg[4] = REG_AUXADC_CLOCK_DIVIDER;
+	value[4] = bbpll_freq / ctrl->auxadc_clock_rate;
+	reg[5] = REG_AUXADC_CONFIG;
+	value[5] = AUX_ADC_DECIMATION(ilog2(ctrl->auxadc_decimation) - 8);
+
+	for (i = 0; i < NO_OS_ARRAY_SIZE(reg); i++) {
+		ret = ad9361_spi_write(spi, reg[i], value[i]);
+		if (ret < 0)
+			return ret;
+	}
 
 	return 0;
 }
@@ -4550,8 +4564,10 @@ static int32_t ad9361_rssi_setup(struct ad9361_rf_phy *phy,
 {
 	struct no_os_spi_desc *spi = phy->spi;
 	uint32_t total_weight, weight[4], total_dur = 0, temp;
+	uint32_t reg[9], value[9];
 	uint8_t dur_buf[4] = { 0 };
 	int32_t val, ret, i, j = 0;
+	uint64_t duration_samples;
 	uint32_t rssi_delay;
 	uint32_t rssi_wait;
 	int32_t rssi_duration;
@@ -4563,6 +4579,8 @@ static int32_t ad9361_rssi_setup(struct ad9361_rf_phy *phy,
 		if (is_update)
 			return 0; /* no update required */
 
+		if (!ctrl->rssi_duration || ctrl->rssi_duration > 65536)
+			return -ERANGE;
 		rssi_delay = ctrl->rssi_delay;
 		rssi_wait = ctrl->rssi_wait;
 		rssi_duration = ctrl->rssi_duration;
@@ -4573,9 +4591,14 @@ static int32_t ad9361_rssi_setup(struct ad9361_rf_phy *phy,
 		/* units are in us */
 		rssi_delay = NO_OS_DIV_ROUND_CLOSEST(ctrl->rssi_delay * rate, 1000);
 		rssi_wait = NO_OS_DIV_ROUND_CLOSEST(ctrl->rssi_wait * rate, 1000);
-		rssi_duration = NO_OS_DIV_ROUND_CLOSEST(
-					ctrl->rssi_duration * rate, 1000);
+		duration_samples = NO_OS_DIV_ROUND_CLOSEST(
+			(uint64_t)ctrl->rssi_duration * rate, 1000);
+		if (!duration_samples || duration_samples > 65536)
+			return -ERANGE;
+		rssi_duration = (int32_t)duration_samples;
 	}
+	if (rssi_duration <= 0)
+		return -EINVAL;
 
 	if (ctrl->restart_mode == EN_AGC_PIN_IS_PULLED_HIGH)
 		rssi_delay = 0;
@@ -4595,6 +4618,8 @@ static int32_t ad9361_rssi_setup(struct ad9361_rf_phy *phy,
 		}
 
 	} while (j < 4 && rssi_duration > 0);
+	if (rssi_duration > 0 || j == 0 || total_dur == 0)
+		return -ERANGE;
 
 	for (i = 0, total_weight = 0; i < 4; i++) {
 		if (i < j)
@@ -4609,20 +4634,22 @@ static int32_t ad9361_rssi_setup(struct ad9361_rf_phy *phy,
 	val = total_weight - 0xFF;
 	weight[j - 1] -= val;
 
-	ad9361_spi_write(spi, REG_MEASURE_DURATION_01,
-			 (dur_buf[1] << 4) | dur_buf[0]); // RSSI Measurement Duration 0, 1
-	ad9361_spi_write(spi, REG_MEASURE_DURATION_23,
-			 (dur_buf[3] << 4) | dur_buf[2]); // RSSI Measurement Duration 2, 3
-	ad9361_spi_write(spi, REG_RSSI_WEIGHT_0,
-			 weight[0]); // RSSI Weighted Multiplier 0
-	ad9361_spi_write(spi, REG_RSSI_WEIGHT_1,
-			 weight[1]); // RSSI Weighted Multiplier 1
-	ad9361_spi_write(spi, REG_RSSI_WEIGHT_2,
-			 weight[2]); // RSSI Weighted Multiplier 2
-	ad9361_spi_write(spi, REG_RSSI_WEIGHT_3,
-			 weight[3]); // RSSI Weighted Multiplier 3
-	ad9361_spi_write(spi, REG_RSSI_DELAY, rssi_delay); // RSSI Delay
-	ad9361_spi_write(spi, REG_RSSI_WAIT_TIME, rssi_wait); // RSSI Wait
+	reg[0] = REG_MEASURE_DURATION_01;
+	value[0] = (dur_buf[1] << 4) | dur_buf[0];
+	reg[1] = REG_MEASURE_DURATION_23;
+	value[1] = (dur_buf[3] << 4) | dur_buf[2];
+	reg[2] = REG_RSSI_WEIGHT_0;
+	value[2] = weight[0];
+	reg[3] = REG_RSSI_WEIGHT_1;
+	value[3] = weight[1];
+	reg[4] = REG_RSSI_WEIGHT_2;
+	value[4] = weight[2];
+	reg[5] = REG_RSSI_WEIGHT_3;
+	value[5] = weight[3];
+	reg[6] = REG_RSSI_DELAY;
+	value[6] = rssi_delay;
+	reg[7] = REG_RSSI_WAIT_TIME;
+	value[7] = rssi_wait;
 
 	temp = RSSI_MODE_SELECT(ctrl->restart_mode);
 	if (ctrl->restart_mode == SPI_WRITE_TO_REGISTER)
@@ -4631,10 +4658,17 @@ static int32_t ad9361_rssi_setup(struct ad9361_rf_phy *phy,
 	if (rssi_duration == 0 && j == 1) /* Power of two */
 		temp |= DEFAULT_RSSI_MEAS_MODE;
 
-	ret = ad9361_spi_write(spi, REG_RSSI_CONFIG, temp); // RSSI Mode Select
-
-	if (ret < 0)
-		dev_err(&phy->spi->dev, "Unable to write rssi config");
+	reg[8] = REG_RSSI_CONFIG;
+	value[8] = temp;
+	for (i = 0; i < 9; i++) {
+		ret = ad9361_spi_write(spi, reg[i], value[i]);
+		if (ret < 0) {
+			dev_err(&phy->spi->dev,
+				"Unable to configure RSSI register 0x%02"PRIX32,
+				reg[i]);
+			return ret;
+		}
+	}
 
 	return 0;
 }
@@ -5965,10 +5999,26 @@ int32_t ad9361_setup(struct ad9361_rf_phy *phy)
 	} else if (pd->rssi_lna_err_tbl[0] || pd->rssi_mixer_err_tbl[0] ||
 		   pd->rssi_gain_step_calib_reg_val[0]) {
 		/* factory tables present — program them directly */
-		ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
-		ad9361_rssi_program_lna_gain(phy);
-		ad9361_rssi_write_err_tbl(phy);
-		ad9361_ensm_restore_prev_state(phy);
+		ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
+		if (ret < 0) {
+			int32_t restore_ret =
+				ad9361_ensm_restore_prev_state_checked(phy);
+			if (restore_ret < 0)
+				dev_err(&phy->spi->dev,
+					"Unable to restore ENSM after RSSI table setup");
+			return ret;
+		}
+		ret = ad9361_rssi_program_lna_gain(phy);
+		if (ret == 0)
+			ret = ad9361_rssi_write_err_tbl(phy);
+		{
+			int32_t restore_ret =
+				ad9361_ensm_restore_prev_state_checked(phy);
+			if (ret == 0 && restore_ret < 0)
+				ret = restore_ret;
+		}
+		if (ret < 0)
+			return ret;
 	}
 
 	ret = ad9361_clkout_control(phy, pd->ad9361_clkout_mode);
@@ -7899,6 +7949,9 @@ int32_t ad9361_rssi_gain_step_calib(struct ad9361_rf_phy *phy)
 	uint64_t lo_freq_hz;
 	uint8_t  lo_index;
 	uint8_t  i;
+	int32_t ret, cleanup_ret = 0, restore_ret;
+	bool config_touched = false;
+	struct no_os_spi_desc *spi = phy->spi;
 
 	lo_freq_hz = ad9361_from_clk(clk_get_rate(phy,
 				     phy->ref_clk_scale[RX_RFPLL]));
@@ -7912,75 +7965,119 @@ int32_t ad9361_rssi_gain_step_calib(struct ad9361_rf_phy *phy)
 		lo_index = 3;
 
 	/* Put the AD9361 into the Alert state. */
-	ad9361_ensm_force_state(phy, ENSM_STATE_ALERT);
+	ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
+	if (ret < 0)
+		goto restore_state;
 
 	/* Program the directly-addressable register values. */
-	ad9361_spi_write(phy->spi, REG_MAX_MIXER_CALIBRATION_GAIN_INDEX,
-			 MAX_MIXER_CALIBRATION_GAIN_INDEX(0x0F));
-	ad9361_spi_write(phy->spi, REG_MEASURE_DURATION,
-			 GAIN_CAL_MEAS_DURATION(0x0E));
-	ad9361_spi_write(phy->spi, REG_SETTLE_TIME,
-			 SETTLE_TIME(0x3F));
-	ad9361_spi_write(phy->spi, REG_RSSI_CONFIG,
-			 RSSI_MODE_SELECT(0x3) | DEFAULT_RSSI_MEAS_MODE);
-	ad9361_spi_write(phy->spi, REG_MEASURE_DURATION_01,
-			 MEASUREMENT_DURATION_0(0x0E));
-	ad9361_spi_write(phy->spi, REG_LNA_GAIN,
-			 gain_step_calib_reg_val[lo_index][0]);
+	#define RSSI_CAL_WRITE(reg_, value_) do { \
+		ret = ad9361_spi_write(spi, (reg_), (value_)); \
+		if (ret < 0) \
+			goto cleanup; \
+	} while (0)
+	RSSI_CAL_WRITE(REG_MAX_MIXER_CALIBRATION_GAIN_INDEX,
+		       MAX_MIXER_CALIBRATION_GAIN_INDEX(0x0F));
+	RSSI_CAL_WRITE(REG_MEASURE_DURATION, GAIN_CAL_MEAS_DURATION(0x0E));
+	RSSI_CAL_WRITE(REG_SETTLE_TIME, SETTLE_TIME(0x3F));
+	RSSI_CAL_WRITE(REG_RSSI_CONFIG,
+		       RSSI_MODE_SELECT(0x3) | DEFAULT_RSSI_MEAS_MODE);
+	RSSI_CAL_WRITE(REG_MEASURE_DURATION_01, MEASUREMENT_DURATION_0(0x0E));
+	RSSI_CAL_WRITE(REG_LNA_GAIN, gain_step_calib_reg_val[lo_index][0]);
 
 	/* Program the LNA gain step words into the internal table. */
-	ad9361_spi_write(phy->spi, REG_CONFIG,
-			 CALIB_TABLE_SELECT(0x3) | START_CALIB_TABLE_CLOCK);
+	config_touched = true;
+	RSSI_CAL_WRITE(REG_CONFIG,
+		       CALIB_TABLE_SELECT(0x3) | START_CALIB_TABLE_CLOCK);
 	for (i = 0; i < 4; i++) {
-		ad9361_spi_write(phy->spi, REG_WORD_ADDRESS, i);
-		ad9361_spi_write(phy->spi, REG_GAIN_DIFF_WORDERROR_WRITE,
-				 gain_step_calib_reg_val[lo_index][i + 1]);
-		ad9361_spi_write(phy->spi, REG_CONFIG,
-				 CALIB_TABLE_SELECT(0x3) | WRITE_LNA_GAIN_DIFF | START_CALIB_TABLE_CLOCK);
+		RSSI_CAL_WRITE(REG_WORD_ADDRESS, i);
+		RSSI_CAL_WRITE(REG_GAIN_DIFF_WORDERROR_WRITE,
+			       gain_step_calib_reg_val[lo_index][i + 1]);
+		RSSI_CAL_WRITE(REG_CONFIG,
+			       CALIB_TABLE_SELECT(0x3) | WRITE_LNA_GAIN_DIFF |
+			       START_CALIB_TABLE_CLOCK);
 		no_os_udelay(3);	//Wait for data to fully write to internal table
 	}
 
-	ad9361_spi_write(phy->spi, REG_CONFIG, START_CALIB_TABLE_CLOCK);
-	ad9361_spi_write(phy->spi, REG_CONFIG, 0x00);
+	RSSI_CAL_WRITE(REG_CONFIG, START_CALIB_TABLE_CLOCK);
+	RSSI_CAL_WRITE(REG_CONFIG, 0x00);
+	config_touched = false;
 
 	/* Run and wait until the calibration completes. */
-	ad9361_run_calibration(phy, RX_GAIN_STEP_CAL);
+	ret = ad9361_run_calibration(phy, RX_GAIN_STEP_CAL);
+	if (ret < 0)
+		goto cleanup;
 
 	/* Read the LNA and Mixer error terms into nonvolatile memory. */
-	ad9361_spi_write(phy->spi, REG_CONFIG, CALIB_TABLE_SELECT(0x1) | READ_SELECT);
+	config_touched = true;
+	RSSI_CAL_WRITE(REG_CONFIG, CALIB_TABLE_SELECT(0x1) | READ_SELECT);
 	for (i = 0; i < 4; i++) {
-		ad9361_spi_write(phy->spi, REG_WORD_ADDRESS, i);
-		lna_error[i] = ad9361_spi_read(phy->spi, REG_GAIN_ERROR_READ);
+		int32_t read_val;
+
+		RSSI_CAL_WRITE(REG_WORD_ADDRESS, i);
+		read_val = ad9361_spi_read(spi, REG_GAIN_ERROR_READ);
+		if (read_val < 0) {
+			ret = read_val;
+			goto cleanup;
+		}
+		lna_error[i] = (uint32_t)read_val;
 	}
-	ad9361_spi_write(phy->spi, REG_CONFIG, CALIB_TABLE_SELECT(0x1));
+	RSSI_CAL_WRITE(REG_CONFIG, CALIB_TABLE_SELECT(0x1));
 	for (i = 0; i < 15; i++) {
-		ad9361_spi_write(phy->spi, REG_WORD_ADDRESS, i);
-		mixer_error[i] = ad9361_spi_read(phy->spi, REG_GAIN_ERROR_READ);
+		int32_t read_val;
+
+		RSSI_CAL_WRITE(REG_WORD_ADDRESS, i);
+		read_val = ad9361_spi_read(spi, REG_GAIN_ERROR_READ);
+		if (read_val < 0) {
+			ret = read_val;
+			goto cleanup;
+		}
+		mixer_error[i] = (uint32_t)read_val;
 	}
-	ad9361_spi_write(phy->spi, REG_CONFIG, 0x00);
+	RSSI_CAL_WRITE(REG_CONFIG, 0x00);
+	config_touched = false;
 
 	/* Programming gain step errors into the AD9361 in the field */
-	ad9361_spi_write(phy->spi,
-			 REG_CONFIG, CALIB_TABLE_SELECT(0x3) | START_CALIB_TABLE_CLOCK);
+	config_touched = true;
+	RSSI_CAL_WRITE(REG_CONFIG,
+		       CALIB_TABLE_SELECT(0x3) | START_CALIB_TABLE_CLOCK);
 	for (i = 0; i < 4; i++) {
-		ad9361_spi_write(phy->spi, REG_WORD_ADDRESS, i);
-		ad9361_spi_write(phy->spi, REG_GAIN_DIFF_WORDERROR_WRITE, lna_error[i]);
-		ad9361_spi_write(phy->spi, REG_CONFIG,
-				 CALIB_TABLE_SELECT(0x3) | WRITE_LNA_ERROR_TABLE | START_CALIB_TABLE_CLOCK);
+		RSSI_CAL_WRITE(REG_WORD_ADDRESS, i);
+		RSSI_CAL_WRITE(REG_GAIN_DIFF_WORDERROR_WRITE, lna_error[i]);
+		RSSI_CAL_WRITE(REG_CONFIG,
+			       CALIB_TABLE_SELECT(0x3) | WRITE_LNA_ERROR_TABLE |
+			       START_CALIB_TABLE_CLOCK);
 	}
-	ad9361_spi_write(phy->spi, REG_CONFIG,
-			 CALIB_TABLE_SELECT(0x3) | START_CALIB_TABLE_CLOCK);
+	RSSI_CAL_WRITE(REG_CONFIG,
+		       CALIB_TABLE_SELECT(0x3) | START_CALIB_TABLE_CLOCK);
 	for (i = 0; i < 15; i++) {
-		ad9361_spi_write(phy->spi, REG_WORD_ADDRESS, i);
-		ad9361_spi_write(phy->spi, REG_GAIN_DIFF_WORDERROR_WRITE, mixer_error[i]);
-		ad9361_spi_write(phy->spi, REG_CONFIG,
-				 CALIB_TABLE_SELECT(0x3) | WRITE_MIXER_ERROR_TABLE | START_CALIB_TABLE_CLOCK);
+		RSSI_CAL_WRITE(REG_WORD_ADDRESS, i);
+		RSSI_CAL_WRITE(REG_GAIN_DIFF_WORDERROR_WRITE, mixer_error[i]);
+		RSSI_CAL_WRITE(REG_CONFIG,
+			       CALIB_TABLE_SELECT(0x3) | WRITE_MIXER_ERROR_TABLE |
+			       START_CALIB_TABLE_CLOCK);
 	}
-	ad9361_spi_write(phy->spi, REG_CONFIG, 0x00);
+	RSSI_CAL_WRITE(REG_CONFIG, 0x00);
+	config_touched = false;
+	ret = 0;
+	goto cleanup;
 
-	ad9361_ensm_restore_prev_state(phy);
-
-	return 0;
+cleanup:
+	if (config_touched) {
+		cleanup_ret = ad9361_spi_write(spi, REG_CONFIG, 0x00);
+		if (cleanup_ret < 0)
+			dev_err(&phy->spi->dev,
+				"Unable to stop RSSI calibration table clock");
+		if (ret == 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
+	}
+restore_state:
+	restore_ret = ad9361_ensm_restore_prev_state_checked(phy);
+	if (restore_ret < 0)
+		dev_err(&phy->spi->dev, "Unable to restore ENSM after RSSI calibration");
+	if (ret == 0 && restore_ret < 0)
+		ret = restore_ret;
+#undef RSSI_CAL_WRITE
+	return ret;
 }
 
 /**
@@ -7993,27 +8090,42 @@ int32_t ad9361_rssi_program_lna_gain(struct ad9361_rf_phy *phy)
 {
 	struct no_os_spi_desc *spi = phy->spi;
 	uint32_t i;
+	int32_t ret;
 
-	ad9361_spi_write(spi, REG_LNA_GAIN,
-			 phy->pdata->rssi_gain_step_calib_reg_val[0]);
+	ret = ad9361_spi_write(spi, REG_LNA_GAIN,
+				phy->pdata->rssi_gain_step_calib_reg_val[0]);
+	if (ret < 0)
+		return ret;
 
-	ad9361_spi_write(spi, REG_CONFIG,
-			 CALIB_TABLE_SELECT(0x3) | START_CALIB_TABLE_CLOCK);
+	ret = ad9361_spi_write(spi, REG_CONFIG,
+				CALIB_TABLE_SELECT(0x3) | START_CALIB_TABLE_CLOCK);
+	if (ret < 0)
+		goto cleanup;
 
 	for (i = 0; i < 4; i++) {
-		ad9361_spi_write(spi, REG_WORD_ADDRESS, i);
-		ad9361_spi_write(spi, REG_GAIN_DIFF_WORDERROR_WRITE,
-				 phy->pdata->rssi_gain_step_calib_reg_val[i + 1]);
-		ad9361_spi_write(spi, REG_CONFIG,
-				 CALIB_TABLE_SELECT(0x3) | WRITE_LNA_GAIN_DIFF |
-				 START_CALIB_TABLE_CLOCK);
+		ret = ad9361_spi_write(spi, REG_WORD_ADDRESS, i);
+		if (ret < 0)
+			goto cleanup;
+		ret = ad9361_spi_write(spi, REG_GAIN_DIFF_WORDERROR_WRITE,
+					phy->pdata->rssi_gain_step_calib_reg_val[i + 1]);
+		if (ret < 0)
+			goto cleanup;
+		ret = ad9361_spi_write(spi, REG_CONFIG,
+					CALIB_TABLE_SELECT(0x3) | WRITE_LNA_GAIN_DIFF |
+					START_CALIB_TABLE_CLOCK);
+		if (ret < 0)
+			goto cleanup;
 		no_os_udelay(3);
 	}
 
-	ad9361_spi_write(spi, REG_CONFIG, START_CALIB_TABLE_CLOCK);
-	ad9361_spi_write(spi, REG_CONFIG, 0x00);
+	ret = ad9361_spi_write(spi, REG_CONFIG, START_CALIB_TABLE_CLOCK);
+	if (ret < 0)
+		goto cleanup;
+	return ad9361_spi_write(spi, REG_CONFIG, 0x00);
 
-	return 0;
+cleanup:
+	ad9361_spi_write(spi, REG_CONFIG, 0x00);
+	return ret;
 }
 
 /**
@@ -8025,37 +8137,57 @@ int32_t ad9361_rssi_write_err_tbl(struct ad9361_rf_phy *phy)
 {
 	struct no_os_spi_desc *spi = phy->spi;
 	uint32_t i;
+	int32_t ret;
 
-	ad9361_spi_write(spi, REG_CONFIG,
-			 CALIB_TABLE_SELECT(0x3) | START_CALIB_TABLE_CLOCK);
+	ret = ad9361_spi_write(spi, REG_CONFIG,
+				CALIB_TABLE_SELECT(0x3) | START_CALIB_TABLE_CLOCK);
+	if (ret < 0)
+		goto cleanup;
 
 	for (i = 0; i < 4; i++) {
-		ad9361_spi_write(spi, REG_WORD_ADDRESS, i);
-		ad9361_spi_write(spi, REG_GAIN_DIFF_WORDERROR_WRITE,
-				 phy->pdata->rssi_lna_err_tbl[i]);
-		ad9361_spi_write(spi, REG_CONFIG,
-				 CALIB_TABLE_SELECT(0x3) | WRITE_LNA_ERROR_TABLE |
-				 START_CALIB_TABLE_CLOCK);
+		ret = ad9361_spi_write(spi, REG_WORD_ADDRESS, i);
+		if (ret < 0)
+			goto cleanup;
+		ret = ad9361_spi_write(spi, REG_GAIN_DIFF_WORDERROR_WRITE,
+					phy->pdata->rssi_lna_err_tbl[i]);
+		if (ret < 0)
+			goto cleanup;
+		ret = ad9361_spi_write(spi, REG_CONFIG,
+					CALIB_TABLE_SELECT(0x3) | WRITE_LNA_ERROR_TABLE |
+					START_CALIB_TABLE_CLOCK);
+		if (ret < 0)
+			goto cleanup;
 	}
 
-	ad9361_spi_write(spi, REG_CONFIG,
-			 CALIB_TABLE_SELECT(0x3) | START_CALIB_TABLE_CLOCK);
+	ret = ad9361_spi_write(spi, REG_CONFIG,
+				CALIB_TABLE_SELECT(0x3) | START_CALIB_TABLE_CLOCK);
+	if (ret < 0)
+		goto cleanup;
 
 	for (i = 0; i < 16; i++) {
-		ad9361_spi_write(spi, REG_WORD_ADDRESS, i);
-		ad9361_spi_write(spi, REG_GAIN_DIFF_WORDERROR_WRITE,
-				 phy->pdata->rssi_mixer_err_tbl[i]);
-		ad9361_spi_write(spi, REG_CONFIG,
-				 CALIB_TABLE_SELECT(0x3) | WRITE_MIXER_ERROR_TABLE |
-				 START_CALIB_TABLE_CLOCK);
+		ret = ad9361_spi_write(spi, REG_WORD_ADDRESS, i);
+		if (ret < 0)
+			goto cleanup;
+		ret = ad9361_spi_write(spi, REG_GAIN_DIFF_WORDERROR_WRITE,
+					phy->pdata->rssi_mixer_err_tbl[i]);
+		if (ret < 0)
+			goto cleanup;
+		ret = ad9361_spi_write(spi, REG_CONFIG,
+					CALIB_TABLE_SELECT(0x3) | WRITE_MIXER_ERROR_TABLE |
+					START_CALIB_TABLE_CLOCK);
+		if (ret < 0)
+			goto cleanup;
 	}
 
+	ret = ad9361_spi_write(spi, REG_CONFIG, 0x00);
+	if (ret < 0)
+		return ret;
+	return ad9361_spi_write(spi, REG_SETTLE_TIME,
+				ENABLE_DIG_GAIN_CORR | SETTLE_TIME(0x10));
+
+cleanup:
 	ad9361_spi_write(spi, REG_CONFIG, 0x00);
-
-	ad9361_spi_write(spi, REG_SETTLE_TIME,
-			 ENABLE_DIG_GAIN_CORR | SETTLE_TIME(0x10));
-
-	return 0;
+	return ret;
 }
 
 /**
