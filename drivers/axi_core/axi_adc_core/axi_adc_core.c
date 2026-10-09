@@ -53,9 +53,7 @@ int32_t axi_adc_read(struct axi_adc *adc,
 		     uint32_t reg_addr,
 		     uint32_t *reg_data)
 {
-	no_os_axi_io_read(adc->base, reg_addr, reg_data);
-
-	return 0;
+	return no_os_axi_io_read(adc->base, reg_addr, reg_data);
 }
 
 /**
@@ -69,9 +67,7 @@ int32_t axi_adc_write(struct axi_adc *adc,
 		      uint32_t reg_addr,
 		      uint32_t reg_data)
 {
-	no_os_axi_io_write(adc->base, reg_addr, reg_data);
-
-	return 0;
+	return no_os_axi_io_write(adc->base, reg_addr, reg_data);
 }
 
 /**
@@ -611,15 +607,22 @@ int32_t axi_adc_init_finish(struct axi_adc *adc)
 	uint32_t reg_data;
 	uint32_t freq;
 	uint32_t ratio;
+	int32_t ret;
 
-	axi_adc_read(adc, AXI_ADC_REG_STATUS, &reg_data);
+	ret = axi_adc_read(adc, AXI_ADC_REG_STATUS, &reg_data);
+	if (ret)
+		return ret;
 	if (reg_data == 0x0) {
 		printf("%s: Status errors\n", adc->name);
 		return -1;
 	}
 
-	axi_adc_read(adc, AXI_ADC_REG_CLK_FREQ, &freq);
-	axi_adc_read(adc, AXI_ADC_REG_CLK_RATIO, &ratio);
+	ret = axi_adc_read(adc, AXI_ADC_REG_CLK_FREQ, &freq);
+	if (ret)
+		return ret;
+	ret = axi_adc_read(adc, AXI_ADC_REG_CLK_RATIO, &ratio);
+	if (ret)
+		return ret;
 	adc->clock_hz = freq * ratio;
 	adc->clock_hz = (adc->clock_hz * 390625) >> 8;
 
@@ -647,38 +650,36 @@ int32_t axi_adc_init(struct axi_adc **adc_core,
 		return ret;
 
 #ifndef BLADERF_NIOS_BUILD
-	axi_adc_write(adc, AXI_ADC_REG_RSTN, 0);
-	axi_adc_write(adc, AXI_ADC_REG_RSTN,
-		      AXI_ADC_MMCM_RSTN | AXI_ADC_RSTN);
+	ret = axi_adc_write(adc, AXI_ADC_REG_RSTN, 0);
+	if (ret)
+		goto error;
+	ret = axi_adc_write(adc, AXI_ADC_REG_RSTN,
+			    AXI_ADC_MMCM_RSTN | AXI_ADC_RSTN);
+	if (ret)
+		goto error;
 #else
 	/* The host already took this core out of reset over
 	 * NIOS_PKT_32x32_TARGET_ADI_AXI during bladerf_open. Pulsing RSTN here
 	 * would drop MMCM_RSTN - the clock manager that regenerates l_clk from
 	 * the AD9361's data clock - while the chip is not yet driving its
-	 * interface, and the STATUS read below would then stall the Nios on a
-	 * clock-domain handshake that never completes. */
+	 * interface. Keep the host-owned reset state. The AXI adapter has a
+	 * bounded response timeout; the status read below detects an unavailable
+	 * register path instead of silently accepting its timeout sentinel. */
 #endif
 
-	for (ch = 0; ch < adc->num_channels; ch++)
-		axi_adc_write(adc, AXI_ADC_REG_CHAN_CNTRL(ch),
-			      AXI_ADC_FORMAT_SIGNEXT | AXI_ADC_FORMAT_ENABLE |
-			      AXI_ADC_ENABLE);
+	for (ch = 0; ch < adc->num_channels; ch++) {
+		ret = axi_adc_write(adc, AXI_ADC_REG_CHAN_CNTRL(ch),
+				    AXI_ADC_FORMAT_SIGNEXT |
+				    AXI_ADC_FORMAT_ENABLE | AXI_ADC_ENABLE);
+		if (ret)
+			goto error;
+	}
 
 	no_os_mdelay(100);
 
-#ifndef BLADERF_NIOS_BUILD
 	ret = axi_adc_init_finish(adc);
 	if (ret)
 		goto error;
-#else
-	/* axi_adc_init_finish() reads AXI_ADC_REG_STATUS, which crosses into
-	 * the l_clk domain with a handshake (up_xfer_cntrl.v). With the AD9361
-	 * not yet clocking that read never returns and the Nios stops
-	 * mid-instruction - the board then answers nothing, bladerf_open()
-	 * included, until the bitstream is reloaded. The rate is only used for
-	 * reporting. */
-	adc->clock_hz = 0;
-#endif
 
 	*adc_core = adc;
 
