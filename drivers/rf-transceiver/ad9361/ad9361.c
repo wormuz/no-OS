@@ -2584,7 +2584,8 @@ void ad9361_ensm_restore_prev_state(struct ad9361_rf_phy *phy)
  * @return 0 in case of success, negative error code otherwise.
  */
 static int32_t set_split_table_gain(struct ad9361_rf_phy *phy, uint32_t idx_reg,
-				    struct rf_rx_gain *rx_gain)
+				    struct rf_rx_gain *rx_gain,
+				    bool *write_attempted)
 {
 	struct no_os_spi_desc *spi = phy->spi;
 	int32_t rc = 0;
@@ -2614,14 +2615,17 @@ static int32_t set_split_table_gain(struct ad9361_rf_phy *phy, uint32_t idx_reg,
 
 	rx_gain->fgt_lmt_index = rc;
 
+	*write_attempted = true;
 	rc = ad9361_spi_writef(spi, idx_reg, RX_FULL_TBL_IDX_MASK,
 			       rx_gain->fgt_lmt_index);
 	if (rc < 0)
 		goto out;
+	*write_attempted = true;
 	rc = ad9361_spi_writef(spi, idx_reg + 1, RX_LPF_IDX_MASK, rx_gain->lpf_gain);
 	if (rc < 0)
 		goto out;
 	if (phy->pdata->gain_ctrl.dig_gain_en) {
+		*write_attempted = true;
 		rc = ad9361_spi_writef(spi, idx_reg + 2, RX_DIGITAL_IDX_MASK,
 				       rx_gain->digital_gain);
 	} else if (rx_gain->digital_gain > 0) {
@@ -2639,7 +2643,8 @@ out:
  * @return 0 in case of success, negative error code otherwise.
  */
 static int32_t set_full_table_gain(struct ad9361_rf_phy *phy, uint32_t idx_reg,
-				   struct rf_rx_gain *rx_gain)
+				   struct rf_rx_gain *rx_gain,
+				   bool *write_attempted)
 {
 	struct no_os_spi_desc *spi = phy->spi;
 	int rc = 0;
@@ -2660,6 +2665,7 @@ static int32_t set_full_table_gain(struct ad9361_rf_phy *phy, uint32_t idx_reg,
 		goto out;
 	}
 
+	*write_attempted = true;
 	rc = ad9361_spi_writef(spi, idx_reg, RX_FULL_TBL_IDX_MASK, rc);
 out:
 	return rc;
@@ -2677,8 +2683,11 @@ int32_t ad9361_set_rx_gain(struct ad9361_rf_phy *phy,
 {
 	struct no_os_spi_desc *spi;
 	uint32_t val, idx_reg;
+	uint8_t old_gain_regs[3];
+	uint32_t gain_reg_count;
 	uint8_t gain_ctl_shift;
 	int32_t rc = 0, spi_ret;
+	bool write_attempted = false;
 
 	if (!phy || !phy->spi || !phy->pdata || !rx_gain)
 		return -EINVAL;
@@ -2712,13 +2721,40 @@ int32_t ad9361_set_rx_gain(struct ad9361_rf_phy *phy,
 		goto out;
 	}
 
+	if (has_split_gt && phy->pdata->split_gt) {
+		gain_reg_count = phy->pdata->gain_ctrl.dig_gain_en ? 3 : 2;
+	} else {
+		gain_reg_count = 1;
+	}
+	for (uint32_t i = 0; i < gain_reg_count; i++) {
+		spi_ret = ad9361_spi_read(spi, idx_reg + i);
+		if (spi_ret < 0) {
+			rc = spi_ret;
+			goto out;
+		}
+		old_gain_regs[i] = (uint8_t)spi_ret;
+	}
+
 	if (has_split_gt && phy->pdata->split_gt)
-		rc = set_split_table_gain(phy, idx_reg, rx_gain);
+		rc = set_split_table_gain(phy, idx_reg, rx_gain,
+					  &write_attempted);
 	else
-		rc = set_full_table_gain(phy, idx_reg, rx_gain);
+		rc = set_full_table_gain(phy, idx_reg, rx_gain,
+					 &write_attempted);
 
 	if (rc) {
 		dev_err(dev, "Unable to write gain tbl idx reg: %"PRIu32, idx_reg);
+		if (write_attempted) {
+			for (uint32_t i = 0; i < gain_reg_count; i++) {
+				spi_ret = ad9361_spi_write(spi, idx_reg + i,
+							   old_gain_regs[i]);
+				if (spi_ret < 0)
+					dev_err(dev,
+						"Unable to restore RX gain register 0x%03"PRIx32
+						" after partial update: %"PRId32,
+						idx_reg + i, spi_ret);
+			}
+		}
 		goto out;
 	}
 
