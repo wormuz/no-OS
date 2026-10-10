@@ -2678,6 +2678,26 @@ out:
 
 }
 
+static int32_t ad9361_gc_gain_update_counter(uint32_t interval_us,
+					    uint32_t clkrf,
+					    uint32_t settling_delay,
+					    uint32_t *counter)
+{
+	uint64_t interval_cycles, overhead_cycles, rounded;
+
+	if (!counter || clkrf < 1000U || !interval_us)
+		return -EINVAL;
+
+	interval_cycles = (uint64_t)interval_us * (clkrf / 1000U);
+	overhead_cycles = (uint64_t)settling_delay * 2000U + 2000U;
+	if (interval_cycles < overhead_cycles)
+		return -EINVAL;
+
+	rounded = (interval_cycles - overhead_cycles + 1000U) / 2000U;
+	*counter = rounded > 131071U ? 131071U : (uint32_t)rounded;
+	return 0;
+}
+
 /**
  * Update the Gain Control.
  * @param phy The AD9361 state structure.
@@ -2691,6 +2711,7 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 	int32_t ret;
 	uint32_t fir_div;
 	uint32_t rx_sample_rate;
+	uint32_t gain_update_counter;
 
 	clkrf = phy->clks[CLKRF_CLK]->rate;
 	rx_sample_rate = phy->clks[RX_SAMPL_CLK]->rate;
@@ -2702,6 +2723,14 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 	    : phy->pdata->gain_ctrl.dec_pow_measuremnt_duration < 16)
 		return -EINVAL;
 	delay_lna = phy->pdata->elna_ctrl.settling_delay_ns;
+	reg = (delay_lna + 200UL) * (clkrf / 2000UL);
+	reg = NO_OS_DIV_ROUND_UP(reg, 1000000UL) + 7;
+	settling_delay = no_os_clamp_t(uint8_t, reg, 0U, 31U);
+	ret = ad9361_gc_gain_update_counter(
+		phy->pdata->gain_ctrl.gain_update_interval_us, clkrf,
+		settling_delay, &gain_update_counter);
+	if (ret < 0)
+		return ret;
 
 	/*
 	 * AGC Attack Delay (us)=ceiling((((0.2+Delay_LNA)*ClkRF+14))/(2*ClkRF))+1
@@ -2735,20 +2764,14 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 	 * 0x111[D4:D0]= ceiling(((0.2+Delay_LNA)*clkRF
 	 */
 
-	reg = (delay_lna + 200UL) * (clkrf / 2000UL);
-	reg = NO_OS_DIV_ROUND_UP(reg, 1000000UL) + 7;
-	reg = settling_delay = no_os_clamp_t(uint8_t, reg, 0U, 31U);
+	reg = settling_delay;
 	GC_WRITE(ad9361_spi_writef(spi, REG_FAST_CONFIG_2_SETTLING_DELAY,
 				   SETTLING_DELAY(~0), reg));
 
 	/*
 	 * Gain Update Counter [15:0]= round((((time*ClkRF-0x111[D4:D0]*2)-2))/2)
 	 */
-	reg = phy->pdata->gain_ctrl.gain_update_interval_us * (clkrf / 1000UL) -
-	      settling_delay * 2000UL - 2000UL;
-
-	reg = NO_OS_DIV_ROUND_CLOSEST(reg, 2000UL);
-	reg = no_os_clamp_t(uint32_t, reg, 0U, 131071UL);
+	reg = gain_update_counter;
 
 	if (phy->agc_mode[0] == RF_GAIN_FASTATTACK_AGC ||
 	    phy->agc_mode[1] == RF_GAIN_FASTATTACK_AGC) {
