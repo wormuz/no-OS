@@ -1050,11 +1050,13 @@ int32_t ad9361_get_rx_lo_freq(struct ad9361_rf_phy *phy,
  */
 int32_t ad9361_set_rx_lo_int_ext(struct ad9361_rf_phy *phy, uint8_t int_ext)
 {
-	uint8_t old_use_ext = phy->pdata->use_ext_rx_lo;
+	uint8_t old_use_ext;
 	int32_t ret;
 
-	if (int_ext != INT_LO && int_ext != EXT_LO)
+	if (!phy || !phy->pdata || !phy->ref_clk_scale[RX_RFPLL] ||
+	    (int_ext != INT_LO && int_ext != EXT_LO))
 		return -EINVAL;
+	old_use_ext = phy->pdata->use_ext_rx_lo;
 	if ((phy->dev_sel == ID_AD9363A) && (int_ext == EXT_LO)) {
 		printf("%s : EXT_LO is not supported by AD9363!\n", __func__);
 		return -1;
@@ -1172,7 +1174,11 @@ int32_t ad9361_set_rx_fir_config(struct ad9361_rf_phy *phy,
 				 AD9361_RXFIRConfig fir_cfg)
 {
 	int32_t ret;
-	uint8_t old_rx_fir_dec = phy->rx_fir_dec;
+	uint8_t old_rx_fir_dec;
+
+	if (!phy || !phy->spi)
+		return -EINVAL;
+	old_rx_fir_dec = phy->rx_fir_dec;
 
 	phy->rx_fir_dec = fir_cfg.rx_dec;
 	ret = ad9361_load_fir_filter_coef(phy, (enum fir_dest)(fir_cfg.rx | FIR_IS_RX),
@@ -1271,7 +1277,10 @@ int32_t ad9361_set_rx_fir_en_dis(struct ad9361_rf_phy *phy,
 				 uint8_t en_dis)
 {
 	int32_t ret = 0;
-	bool old_bypass = phy->bypass_rx_fir;
+	bool old_bypass;
+	if (!phy)
+		return -EINVAL;
+	old_bypass = phy->bypass_rx_fir;
 	if (en_dis > 1)
 		return -EINVAL;
 
@@ -1295,6 +1304,9 @@ int32_t ad9361_set_rx_fir_en_dis(struct ad9361_rf_phy *phy,
 int32_t ad9361_get_rx_fir_en_dis(struct ad9361_rf_phy *phy,
 				 uint8_t *en_dis)
 {
+	if (!phy || !en_dis)
+		return -EINVAL;
+
 	*en_dis = !phy->bypass_rx_fir;
 
 	return 0;
@@ -1575,6 +1587,9 @@ int32_t ad9361_rx_lo_powerdown(struct ad9361_rf_phy *phy, uint8_t option)
  */
 int32_t ad9361_get_rx_lo_power(struct ad9361_rf_phy *phy, uint8_t *option)
 {
+	if (!phy || !option)
+		return -EINVAL;
+
 	*option = !(phy->cached_synth_pd[1] & RX_LO_POWER_DOWN) ? OFF : ON;
 
 	return 0;
@@ -1822,11 +1837,13 @@ int32_t ad9361_get_tx_lo_freq(struct ad9361_rf_phy *phy,
  */
 int32_t ad9361_set_tx_lo_int_ext(struct ad9361_rf_phy *phy, uint8_t int_ext)
 {
-	uint8_t old_use_ext = phy->pdata->use_ext_tx_lo;
+	uint8_t old_use_ext;
 	int32_t ret;
 
-	if (int_ext != INT_LO && int_ext != EXT_LO)
+	if (!phy || !phy->pdata || !phy->ref_clk_scale[TX_RFPLL] ||
+	    (int_ext != INT_LO && int_ext != EXT_LO))
 		return -EINVAL;
+	old_use_ext = phy->pdata->use_ext_tx_lo;
 	if ((phy->dev_sel == ID_AD9363A) && (int_ext == EXT_LO)) {
 		printf("%s : EXT_LO is not supported by AD9363!\n", __func__);
 		return -1;
@@ -1851,7 +1868,11 @@ int32_t ad9361_set_tx_fir_config(struct ad9361_rf_phy *phy,
 				 AD9361_TXFIRConfig fir_cfg)
 {
 	int32_t ret;
-	uint8_t old_tx_fir_int = phy->tx_fir_int;
+	uint8_t old_tx_fir_int;
+
+	if (!phy || !phy->spi)
+		return -EINVAL;
+	old_tx_fir_int = phy->tx_fir_int;
 
 	phy->tx_fir_int = fir_cfg.tx_int;
 	ret = ad9361_load_fir_filter_coef(phy, (enum fir_dest)fir_cfg.tx,
@@ -1945,7 +1966,10 @@ int32_t ad9361_set_tx_fir_en_dis(struct ad9361_rf_phy *phy,
 				 uint8_t en_dis)
 {
 	int32_t ret = 0;
-	bool old_bypass = phy->bypass_tx_fir;
+	bool old_bypass;
+	if (!phy)
+		return -EINVAL;
+	old_bypass = phy->bypass_tx_fir;
 	if (en_dis > 1)
 		return -EINVAL;
 
@@ -1969,6 +1993,9 @@ int32_t ad9361_set_tx_fir_en_dis(struct ad9361_rf_phy *phy,
 int32_t ad9361_get_tx_fir_en_dis(struct ad9361_rf_phy *phy,
 				 uint8_t *en_dis)
 {
+	if (!phy || !en_dis)
+		return -EINVAL;
+
 	*en_dis = !phy->bypass_tx_fir;
 
 	return 0;
@@ -2104,7 +2131,7 @@ int32_t ad9361_get_tx_rf_port_output(struct ad9361_rf_phy *phy,
 int32_t ad9361_set_tx_auto_cal_en_dis(struct ad9361_rf_phy *phy,
 				      uint8_t en_dis)
 {
-	if (en_dis > 1)
+	if (!phy || en_dis > 1)
 		return -EINVAL;
 	if (en_dis == 0)
 		phy->auto_cal_en = 0;
@@ -2123,6 +2150,9 @@ int32_t ad9361_set_tx_auto_cal_en_dis(struct ad9361_rf_phy *phy,
 int32_t ad9361_get_tx_auto_cal_en_dis(struct ad9361_rf_phy *phy,
 				      uint8_t *en_dis)
 {
+	if (!phy || !en_dis)
+		return -EINVAL;
+
 	*en_dis = phy->auto_cal_en;
 
 	return 0;
@@ -2214,6 +2244,9 @@ int32_t ad9361_tx_lo_powerdown(struct ad9361_rf_phy *phy, uint8_t option)
  */
 int32_t ad9361_get_tx_lo_power(struct ad9361_rf_phy *phy, uint8_t *option)
 {
+	if (!phy || !option)
+		return -EINVAL;
+
 	*option = !(phy->cached_synth_pd[0] & TX_LO_POWER_DOWN) ? OFF : ON;
 
 	return 0;
