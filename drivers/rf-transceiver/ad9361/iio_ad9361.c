@@ -652,12 +652,16 @@ static int get_frequency(void *device, char *buf, uint32_t len,
 			 intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	uint64_t val = 0;
+	uint32_t rate;
+	int32_t ret;
 
-	val = ad9361_from_clk(clk_get_rate(ad9361_phy,
-					   ad9361_phy->ref_clk_scale[channel->ch_num ?
-									   TX_RFPLL : RX_RFPLL]));
-	return snprintf(buf, len, "%"PRIu64, val);
+	ret = clk_get_rate_checked(
+		ad9361_phy,
+		ad9361_phy->ref_clk_scale[channel->ch_num ? TX_RFPLL : RX_RFPLL],
+		&rate);
+	if (ret < 0)
+		return ret;
+	return snprintf(buf, len, "%"PRIu64, ad9361_from_clk(rate));
 }
 
 /**

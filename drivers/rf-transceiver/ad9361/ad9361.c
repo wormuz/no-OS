@@ -3531,7 +3531,10 @@ static int32_t __ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
 	dev_dbg(&phy->spi->dev, "%s: %"PRIu32" %"PRIu32,
 		__func__, rf_rx_bw, rf_tx_bw);
 
-	bbpll_freq = clk_get_rate(phy, phy->ref_clk_scale[BBPLL_CLK]);
+	ret = clk_get_rate_checked(phy, phy->ref_clk_scale[BBPLL_CLK],
+				   &bbpll_freq);
+	if (ret < 0)
+		return ret;
 
 	ret = ad9361_rx_bb_analog_filter_calib(phy,
 					       real_rx_bandwidth,
@@ -3553,9 +3556,15 @@ static int32_t __ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
 	if (ret < 0)
 		return ret;
 
-	ret = ad9361_rx_adc_setup(phy,
-				  bbpll_freq,
-				  clk_get_rate(phy, phy->ref_clk_scale[ADC_CLK]));
+	{
+		uint32_t adc_freq;
+
+		ret = clk_get_rate_checked(phy, phy->ref_clk_scale[ADC_CLK],
+					   &adc_freq);
+		if (ret < 0)
+			return ret;
+		ret = ad9361_rx_adc_setup(phy, bbpll_freq, adc_freq);
+	}
 	if (ret < 0)
 		return ret;
 
@@ -3722,8 +3731,16 @@ static int ad9361_tx_quad_calib(struct ad9361_rf_phy *phy,
 	* Tx NCO = ClkTF * (txNCO <1:0> + 1) / 32
 	*/
 
-	clkrf = clk_get_rate(phy, phy->ref_clk_scale[CLKRF_CLK]);
-	clktf = clk_get_rate(phy, phy->ref_clk_scale[CLKTF_CLK]);
+	ret = clk_get_rate_checked(phy, phy->ref_clk_scale[CLKRF_CLK],
+				   &clkrf);
+	if (ret < 0)
+		return ret;
+	ret = clk_get_rate_checked(phy, phy->ref_clk_scale[CLKTF_CLK],
+				   &clktf);
+	if (ret < 0)
+		return ret;
+	if (clkrf == 0 || clktf == 0)
+		return -EINVAL;
 
 	dev_dbg(&phy->spi->dev, "%s : bw_tx %"PRIu32" clkrf %"PRIu32" clktf %"PRIu32,
 		__func__, bw_tx, clkrf, clktf);
@@ -5214,8 +5231,16 @@ static int32_t ad9361_bb_clk_change_handler(struct ad9361_rf_phy *phy)
 	ret = ad9361_rssi_setup(phy, &phy->pdata->rssi_ctrl, true);
 	if (ret < 0)
 		return ret;
-	ret = ad9361_auxadc_setup(phy, &phy->pdata->auxadc_ctrl,
-				  clk_get_rate(phy, phy->ref_clk_scale[BBPLL_CLK]));
+	{
+		uint32_t bbpll_freq;
+
+		ret = clk_get_rate_checked(phy, phy->ref_clk_scale[BBPLL_CLK],
+					   &bbpll_freq);
+		if (ret < 0)
+			return ret;
+		ret = ad9361_auxadc_setup(phy, &phy->pdata->auxadc_ctrl,
+					  bbpll_freq);
+	}
 	if (ret < 0)
 		return ret;
 
@@ -6513,7 +6538,10 @@ int32_t ad9361_setup(struct ad9361_rf_phy *phy)
 	if (ret < 0)
 		return ret;
 
-	bbpll_freq = clk_get_rate(phy, phy->ref_clk_scale[BBPLL_CLK]);
+	ret = clk_get_rate_checked(phy, phy->ref_clk_scale[BBPLL_CLK],
+				   &bbpll_freq);
+	if (ret < 0)
+		return ret;
 	ret = ad9361_auxadc_setup(phy, &pd->auxadc_ctrl, bbpll_freq);
 	if (ret < 0)
 		return ret;
@@ -7347,8 +7375,15 @@ int32_t ad9361_validate_enable_fir(struct ad9361_rf_phy *phy)
 	}
 
 	if (!phy->filt_valid || phy->bypass_rx_fir || phy->bypass_tx_fir) {
+		uint32_t current_tx_sample_rate;
+
+		ret = clk_get_rate_checked(phy,
+					   phy->ref_clk_scale[TX_SAMPL_CLK],
+					   &current_tx_sample_rate);
+		if (ret < 0)
+			return ret;
 		ret = ad9361_calculate_rf_clock_chain(phy,
-						      clk_get_rate(phy, phy->ref_clk_scale[TX_SAMPL_CLK]),
+						      current_tx_sample_rate,
 						      phy->rate_governor, rx, tx);
 		if (ret < 0) {
 			min = phy->rate_governor ? 1500000U : 1000000U;
@@ -8048,7 +8083,10 @@ calculate:
 	fract = (SYNTH_FRACT_WORD(b0) << 16) | ((uint32_t)b1 << 8) | b2;
 	integer = (SYNTH_INTEGER_WORD(b3) << 8) | b4;
 	vco_div = div_word & 0x0f;
-	parent_rate = clk_get_rate(phy, phy->ref_clk_scale[RX_REFCLK]);
+	ret = clk_get_rate_checked(phy, phy->ref_clk_scale[RX_REFCLK],
+				   &parent_rate);
+	if (ret < 0)
+		return ret;
 	if (parent_rate == 0)
 		return -EINVAL;
 
@@ -8788,8 +8826,15 @@ int32_t ad9361_rssi_gain_step_calib(struct ad9361_rf_phy *phy)
 	bool config_touched = false;
 	struct no_os_spi_desc *spi = phy->spi;
 
-	lo_freq_hz = ad9361_from_clk(clk_get_rate(phy,
-				     phy->ref_clk_scale[RX_RFPLL]));
+	{
+		uint32_t rx_lo_rate;
+
+		ret = clk_get_rate_checked(phy, phy->ref_clk_scale[RX_RFPLL],
+					   &rx_lo_rate);
+		if (ret < 0)
+			return ret;
+		lo_freq_hz = ad9361_from_clk(rx_lo_rate);
+	}
 	if (lo_freq_hz < 1300000000ULL)
 		lo_index = 0;
 	else if (lo_freq_hz < 3300000000ULL)

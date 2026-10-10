@@ -254,7 +254,7 @@ static void ad9361_dig_tune_verbose_print(struct ad9361_rf_phy *phy,
 	char c;
 
 	printk("SAMPL CLK: %"PRIu32" tuning: %s\n",
-	       clk_get_rate(phy, phy->ref_clk_scale[RX_SAMPL_CLK]), tx ? "TX" : "RX");
+	       phy->clks[RX_SAMPL_CLK]->rate, tx ? "TX" : "RX");
 	printk("  ");
 	for (i = 0; i < 16; i++)
 		printk("%"PRIx32":", i);
@@ -318,6 +318,7 @@ int32_t ad9361_dig_interface_timing_analysis(struct ad9361_rf_phy *phy,
 		char *buf, int32_t buflen)
 {
 	uint32_t loopback, bist;
+	uint32_t sample_rate;
 	uint8_t ensm_state;
 	int32_t i, j, len = 0;
 	uint8_t field[16][16];
@@ -400,9 +401,13 @@ cleanup:
 		ret = cleanup_ret;
 	if (ret < 0)
 		return ret;
+	ret = clk_get_rate_checked(phy, phy->ref_clk_scale[RX_SAMPL_CLK],
+				   &sample_rate);
+	if (ret < 0)
+		return ret;
 
 	len += snprintf(buf + len, buflen, "CLK: %"PRIu32" Hz 'o' = PASS\n",
-			clk_get_rate(phy, phy->ref_clk_scale[RX_SAMPL_CLK]));
+			sample_rate);
 	len += snprintf(buf + len, buflen, "DC");
 	for (i = 0; i < 16; i++)
 		len += snprintf(buf + len, buflen, "%"PRIx32":", i);
