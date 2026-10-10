@@ -5794,10 +5794,11 @@ int32_t ad9361_set_trx_clock_chain(struct ad9361_rf_phy *phy,
 {
 	int32_t ret, i, j, n;
 
-	dev_dbg(&phy->spi->dev, "%s", __func__);
-
-	if (!rx_path_clks || !tx_path_clks)
+	if (!phy || !phy->spi || !phy->pdata ||
+	    !rx_path_clks || !tx_path_clks)
 		return -EINVAL;
+
+	dev_dbg(&phy->spi->dev, "%s", __func__);
 
 	dev_dbg(&phy->spi->dev,
 		"%s: %"PRIu32" %"PRIu32" %"PRIu32" %"PRIu32" %"PRIu32" %"PRIu32,
