@@ -139,7 +139,11 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 			return -EINVAL;
 	}
 	source = clk_priv->source;
-	if (phy->clks[source]->rate != rate) {
+	/* RFPLL rates have a separate requested-rate cache below. Always let
+	 * those requests reach it: the reported rate is a divider readback, and
+	 * after an LO mux change it may still describe the previous source. */
+	if (phy->clks[source]->rate != rate || source == RX_RFPLL ||
+	    source == TX_RFPLL) {
 		switch (source) {
 		case TX_REFCLK:
 		case RX_REFCLK:

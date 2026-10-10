@@ -9235,6 +9235,11 @@ int32_t ad9361_clk_mux_set_parent(struct refclk_scale *clk_priv, uint8_t index)
 		return ret;
 	}
 
+	/* The active source and programmed synthesizer state may diverge even
+	 * when the mux write below fails partway through. Force the next rate
+	 * request through the RFPLL path instead of trusting the old cache. */
+	phy->rfpll_requested_valid[clk_priv->source == TX_RFPLL] = false;
+
 	ret = ad9361_trx_ext_lo_control(phy, clk_priv->source == TX_RFPLL, index == 1);
 	if (ret >= 0)
 		clk_priv->mult = index;
