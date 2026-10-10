@@ -3794,9 +3794,11 @@ static int ad9361_tx_quad_calib(struct ad9361_rf_phy *phy,
 				__rx_phase = 0x1A;
 			break;
 		}
-	} else
+	} else if (rx_phase < 0) {
 		dev_err(dev, "Unhandled case in %s line %d clkrf %"PRIu32" clktf %"PRIu32,
 			__func__, __LINE__, clkrf, clktf);
+		return -EINVAL;
+	}
 
 	if (rx_phase >= 0)
 		__rx_phase = rx_phase;
