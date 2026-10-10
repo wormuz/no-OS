@@ -5709,10 +5709,14 @@ static int32_t ad9361_bb_clk_change_handler(struct ad9361_rf_phy *phy)
 int32_t ad9361_ensm_set_state(struct ad9361_rf_phy *phy, uint8_t ensm_state,
 			      bool pinctrl)
 {
-	struct no_os_spi_desc *spi = phy->spi;
+	struct no_os_spi_desc *spi;
 	int32_t rc = 0;
 	uint32_t val;
 	uint32_t tmp;
+
+	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
+	spi = phy->spi;
 
 	dev_dbg(dev, "Device is in %x state, moving to %x", phy->curr_ensm_state,
 		ensm_state);
@@ -6059,7 +6063,8 @@ int32_t ad9361_get_trx_clock_chain(struct ad9361_rf_phy *phy,
 	uint32_t bbpll_freq;
 	uint32_t rate;
 
-	if (!rx_path_clks && !tx_path_clks)
+	if (!phy || !phy->pdata || !phy->clks[BBPLL_CLK] ||
+	    (!rx_path_clks && !tx_path_clks))
 		return -EINVAL;
 
 	bbpll_freq = phy->clks[BBPLL_CLK]->rate;
@@ -6119,6 +6124,10 @@ int32_t ad9361_calculate_rf_clock_chain(struct ad9361_rf_phy *phy,
 		{ 2, 2, 1, 1 },
 		{ 1, 1, 1, 1 },
 	};
+
+	if (!phy || !phy->spi || !phy->pdata || !rx_path_clks ||
+	    !tx_path_clks)
+		return -EINVAL;
 
 	if (phy->bypass_rx_fir)
 		rx_intdec = 1;
@@ -6228,6 +6237,9 @@ int32_t ad9361_set_trx_clock_chain_freq(struct ad9361_rf_phy *phy,
 	uint32_t rx[6], tx[6];
 	int32_t ret;
 
+	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
+
 	ret = ad9361_calculate_rf_clock_chain(phy, freq,
 					      phy->rate_governor, rx, tx);
 	if (ret < 0)
@@ -6244,9 +6256,13 @@ int32_t ad9361_set_trx_clock_chain_freq(struct ad9361_rf_phy *phy,
  */
 int32_t ad9361_set_ensm_mode(struct ad9361_rf_phy *phy, bool fdd, bool pinctrl)
 {
-	struct ad9361_phy_platform_data *pd = phy->pdata;
+	struct ad9361_phy_platform_data *pd;
 	int32_t ret;
 	uint32_t val = 0;
+
+	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
+	pd = phy->pdata;
 
 	ret = ad9361_spi_write(phy->spi, REG_ENSM_MODE, fdd ? FDD_MODE : 0);
 	if (ret < 0)
