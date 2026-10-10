@@ -51,6 +51,24 @@ static int32_t axi_adc_validate_channel(struct axi_adc *adc, uint32_t chan)
 	return 0;
 }
 
+static bool axi_adc_pnsel_valid(enum axi_adc_pn_sel sel)
+{
+	switch (sel) {
+	case AXI_ADC_PN9:
+	case AXI_ADC_PN23A:
+	case AXI_ADC_PN7:
+	case AXI_ADC_PN15:
+	case AXI_ADC_PN23:
+	case AXI_ADC_PN31:
+	case AXI_ADC_PN_CUSTOM:
+	case AXI_ADC_PN_RAMP_NIBBLE:
+	case AXI_ADC_PN_RAMP_16:
+		return true;
+	default:
+		return false;
+	}
+}
+
 
 /**
  * @brief AXI ADC Data read.
@@ -63,6 +81,9 @@ int32_t axi_adc_read(struct axi_adc *adc,
 		     uint32_t reg_addr,
 		     uint32_t *reg_data)
 {
+	if (!adc || !reg_data)
+		return -EINVAL;
+
 	return no_os_axi_io_read(adc->base, reg_addr, reg_data);
 }
 
@@ -77,6 +98,9 @@ int32_t axi_adc_write(struct axi_adc *adc,
 		      uint32_t reg_addr,
 		      uint32_t reg_data)
 {
+	if (!adc)
+		return -EINVAL;
+
 	return no_os_axi_io_write(adc->base, reg_addr, reg_data);
 }
 
@@ -91,6 +115,9 @@ int32_t axi_slave_adc_read(struct axi_adc *adc,
 			   uint32_t reg_addr,
 			   uint32_t *reg_data)
 {
+	if (!adc || !reg_data)
+		return -EINVAL;
+
 	return no_os_axi_io_read(adc->slave_base, reg_addr, reg_data);
 }
 
@@ -105,6 +132,9 @@ int32_t axi_slave_adc_write(struct axi_adc *adc,
 			    uint32_t reg_addr,
 			    uint32_t reg_data)
 {
+	if (!adc)
+		return -EINVAL;
+
 	return no_os_axi_io_write(adc->slave_base, reg_addr, reg_data);
 }
 
@@ -125,6 +155,8 @@ int32_t axi_adc_set_pnsel(struct axi_adc *adc,
 	ret = axi_adc_validate_channel(adc, chan);
 	if (ret < 0)
 		return ret;
+	if (!axi_adc_pnsel_valid(sel))
+		return -EINVAL;
 
 	ret = axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL_3(chan), &reg_data);
 	if (ret < 0)
@@ -147,6 +179,10 @@ int32_t axi_adc_pn_mon(struct axi_adc *adc,
 	uint8_t	ch;
 	uint32_t reg_data;
 	int32_t ret;
+
+	if (!adc || adc->num_channels == 0 || adc->num_channels > 32 ||
+	    !axi_adc_pnsel_valid(sel))
+		return -EINVAL;
 
 	for (ch = 0; ch < adc->num_channels; ch++) {
 		ret = axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL(ch), &reg_data);
@@ -193,7 +229,14 @@ int32_t axi_adc_get_sampling_freq(struct axi_adc *adc,
 {
 	uint32_t freq;
 	uint32_t ratio;
+	uint64_t rate;
 	int32_t ret;
+
+	ret = axi_adc_validate_channel(adc, chan);
+	if (ret < 0)
+		return ret;
+	if (!sampling_freq)
+		return -EINVAL;
 
 	ret = axi_adc_read(adc, AXI_ADC_REG_CLK_FREQ, &freq);
 	if (ret < 0)
@@ -201,8 +244,11 @@ int32_t axi_adc_get_sampling_freq(struct axi_adc *adc,
 	ret = axi_adc_read(adc, AXI_ADC_REG_CLK_RATIO, &ratio);
 	if (ret < 0)
 		return ret;
-	*sampling_freq = (uint64_t)freq * ratio;
-	*sampling_freq = ((*sampling_freq) * 390625) >> 8;
+	rate = (uint64_t)freq * ratio;
+	if (rate > UINT64_MAX / 390625)
+		return -ERANGE;
+	rate = (rate * 390625) >> 8;
+	*sampling_freq = rate;
 
 	return 0;
 }
@@ -217,6 +263,9 @@ int32_t axi_adc_idelay_set(struct axi_adc *adc,
 			   uint32_t lane,
 			   uint32_t val)
 {
+	if (!adc || lane >= 32 || val >= 32)
+		return -EINVAL;
+
 	return axi_adc_write(adc, AXI_ADC_REG_DELAY(lane), val);
 }
 
@@ -234,6 +283,9 @@ int32_t axi_adc_delay_set(struct axi_adc *adc,
 	uint32_t i;
 	uint32_t rdata;
 	uint32_t pcore_version;
+
+	if (!adc || no_of_lanes == 0 || no_of_lanes > 32 || delay >= 32)
+		return -EINVAL;
 
 	int32_t ret = axi_adc_read(adc, 0x0, &pcore_version);
 	if (ret < 0)
@@ -287,6 +339,10 @@ int32_t axi_adc_delay_calibrate(struct axi_adc *adc,
 	uint8_t val = 0;
 	uint8_t max_val = 32;
 	int32_t ret;
+
+	if (!adc || no_of_lanes == 0 || no_of_lanes > 32 ||
+	    !axi_adc_pnsel_valid(sel))
+		return -EINVAL;
 
 	for (delay = 0; delay < 32; delay++) {
 		ret = axi_adc_delay_set(adc, no_of_lanes, delay);
@@ -618,9 +674,21 @@ int32_t axi_adc_update_active_channels(struct axi_adc *adc, uint32_t mask)
 	uint32_t val;
 	uint32_t new_val;
 	uint32_t requested_mask = mask;
+	uint32_t valid_mask;
 
-	if (mask == adc->mask)
+	if (!adc || adc->num_channels == 0 || adc->num_channels > 32 ||
+	    adc->num_slave_channels > adc->num_channels)
+		return -EINVAL;
+	valid_mask = adc->num_channels == 32 ? UINT32_MAX :
+		     ((UINT32_C(1) << adc->num_channels) - 1);
+	if (mask & ~valid_mask)
+		return -EINVAL;
+
+	if (adc->mask_valid && mask == adc->mask)
 		return 0;
+	/* A read/write failure can leave only some lanes updated. Do not let a
+	 * later request short-circuit against a stale cached mask. */
+	adc->mask_valid = false;
 
 	for (ch = 0; ch < adc->num_channels; ch++) {
 		if (ch >= adc->num_slave_channels)
@@ -650,6 +718,7 @@ int32_t axi_adc_update_active_channels(struct axi_adc *adc, uint32_t mask)
 		mask >>= 1;
 	}
 	adc->mask = requested_mask;
+	adc->mask_valid = true;
 
 	return 0;
 }
@@ -665,6 +734,14 @@ int32_t axi_adc_init_begin(struct axi_adc **adc_core,
 {
 	struct axi_adc *adc;
 
+	if (!adc_core)
+		return -EINVAL;
+	*adc_core = NULL;
+	if (!init || !init->name || init->num_channels == 0 ||
+	    init->num_channels > 32 ||
+	    init->num_slave_channels > init->num_channels)
+		return -EINVAL;
+
 	adc = (struct axi_adc *)no_os_malloc(sizeof(*adc));
 	if (!adc)
 		return -1;
@@ -674,6 +751,9 @@ int32_t axi_adc_init_begin(struct axi_adc **adc_core,
 	adc->slave_base = init->slave_base;
 	adc->num_channels = init->num_channels;
 	adc->num_slave_channels = init->num_slave_channels;
+	adc->clock_hz = 0;
+	adc->mask = 0;
+	adc->mask_valid = false;
 
 	*adc_core = adc;
 
@@ -691,6 +771,9 @@ int32_t axi_adc_init_finish(struct axi_adc *adc)
 	uint32_t freq;
 	uint32_t ratio;
 	int32_t ret;
+
+	if (!adc || !adc->name)
+		return -EINVAL;
 
 	ret = axi_adc_read(adc, AXI_ADC_REG_STATUS, &reg_data);
 	if (ret)
@@ -727,6 +810,12 @@ int32_t axi_adc_init(struct axi_adc **adc_core,
 	struct axi_adc *adc;
 	int32_t ret;
 	uint8_t ch;
+
+	if (!adc_core)
+		return -EINVAL;
+	*adc_core = NULL;
+	if (!init)
+		return -EINVAL;
 
 	ret = axi_adc_init_begin(&adc, init);
 	if (ret)

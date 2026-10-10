@@ -34,6 +34,7 @@
 #define AXI_ADC_CORE_H_
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "no_os_util.h"
 
 #define AXI_ADC_REG_CONFIG		0x000C
@@ -135,6 +136,8 @@ struct axi_adc {
 	uint64_t clock_hz;
 	/** AXI ADC Channel Mask*/
 	uint32_t mask;
+	/** Whether mask reflects the complete hardware channel state */
+	bool mask_valid;
 };
 
 /**
