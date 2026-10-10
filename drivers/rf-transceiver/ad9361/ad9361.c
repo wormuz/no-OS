@@ -7836,7 +7836,8 @@ int32_t ad9361_clk_factor_recalc_rate_checked(struct refclk_scale *clk_priv,
 {
 	uint64_t result;
 	int32_t ret;
-	if (!clk_priv || !rate || !parent_rate)
+	if (!clk_priv || !clk_priv->phy || !clk_priv->spi || !rate ||
+	    !parent_rate)
 		return -EINVAL;
 
 	ret = ad9361_get_clk_scaler(clk_priv);
