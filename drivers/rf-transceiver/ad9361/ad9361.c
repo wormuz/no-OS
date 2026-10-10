@@ -2622,6 +2622,11 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 	rx_sample_rate = phy->clks[RX_SAMPL_CLK]->rate;
 	if (!clkrf || !rx_sample_rate)
 		return -EIO;
+	if ((phy->agc_mode[0] == RF_GAIN_FASTATTACK_AGC ||
+	     phy->agc_mode[1] == RF_GAIN_FASTATTACK_AGC)
+	    ? phy->pdata->gain_ctrl.f_agc_dec_pow_measuremnt_duration < 16
+	    : phy->pdata->gain_ctrl.dec_pow_measuremnt_duration < 16)
+		return -EINVAL;
 	delay_lna = phy->pdata->elna_ctrl.settling_delay_ns;
 
 	/*
@@ -2680,8 +2685,6 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 		if (!fir_div)
 			return -EIO;
 		dec_pow_meas_dur = phy->pdata->gain_ctrl.dec_pow_measuremnt_duration;
-		if (dec_pow_meas_dur < 16)
-			return -EINVAL;
 
 		if (((reg * 2 / fir_div) / dec_pow_meas_dur) < 2) {
 			dec_pow_meas_dur = reg / fir_div;
@@ -4436,6 +4439,11 @@ static int32_t ad9361_gc_setup(struct ad9361_rf_phy *phy,
 	} while (0)
 
 	dev_dbg(&phy->spi->dev, "%s", __func__);
+	if ((ctrl->rx1_mode == RF_GAIN_FASTATTACK_AGC ||
+	     ctrl->rx2_mode == RF_GAIN_FASTATTACK_AGC)
+	    ? ctrl->f_agc_dec_pow_measuremnt_duration < 16
+	    : ctrl->dec_pow_measuremnt_duration < 16)
+		return -EINVAL;
 
 	reg = DEC_PWR_FOR_GAIN_LOCK_EXIT | DEC_PWR_FOR_LOCK_LEVEL |
 	      DEC_PWR_FOR_LOW_PWR;
@@ -4541,15 +4549,6 @@ static int32_t ad9361_gc_setup(struct ad9361_rf_phy *phy,
 
 	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_DEC_POWER_MEASURE_DURATION_0,
 			  ENABLE_DEC_PWR_MEAS, 1)); // Power Measurement Duration
-
-	if ((ctrl->rx1_mode == RF_GAIN_FASTATTACK_AGC ||
-	     ctrl->rx2_mode == RF_GAIN_FASTATTACK_AGC) &&
-	    ctrl->f_agc_dec_pow_measuremnt_duration < 16)
-		return -EINVAL;
-	if (ctrl->rx1_mode != RF_GAIN_FASTATTACK_AGC &&
-	    ctrl->rx2_mode != RF_GAIN_FASTATTACK_AGC &&
-	    ctrl->dec_pow_measuremnt_duration < 16)
-		return -EINVAL;
 
 	if (ctrl->rx1_mode == RF_GAIN_FASTATTACK_AGC ||
 	    ctrl->rx2_mode == RF_GAIN_FASTATTACK_AGC)
