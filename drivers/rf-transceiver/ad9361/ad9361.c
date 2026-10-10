@@ -7611,13 +7611,6 @@ int32_t ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
 		return ret;
 	ensm_forced = true;
 	phy->fir_config_valid = false;
-	if (is_rx) {
-		/* Gain/decimation controls are shared by RX1/RX2. Invalidate both
-		 * lanes until the requested coefficient image is complete. */
-		phy->rx_fir_coefficients_valid_mask = 0;
-	} else {
-		phy->tx_fir_coefficients_valid_mask = 0;
-	}
 
 	if (is_rx) {
 		val = 3 - (gain_dB + 12) / 6;
@@ -7721,11 +7714,18 @@ int32_t ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
 	if (ret >= 0) {
 		if (is_rx) {
 			phy->rx_fir_ntaps = ntaps;
-			phy->rx_fir_coefficients_valid_mask = selected_mask;
+			phy->rx_fir_coefficients_valid_mask |= selected_mask;
 		} else {
 			phy->tx_fir_ntaps = ntaps;
-			phy->tx_fir_coefficients_valid_mask = selected_mask;
+			phy->tx_fir_coefficients_valid_mask |= selected_mask;
 		}
+	} else if (is_rx) {
+		/* Shared gain/decimation controls and coefficient writes may have
+		 * partially reached the device. Require both RX lanes to be loaded
+		 * again before certifying this direction. */
+		phy->rx_fir_coefficients_valid_mask = 0;
+	} else {
+		phy->tx_fir_coefficients_valid_mask = 0;
 	}
 
 	return ret;
