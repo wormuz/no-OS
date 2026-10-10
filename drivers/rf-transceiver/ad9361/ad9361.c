@@ -693,7 +693,8 @@ int32_t ad9361_spi_readm(struct no_os_spi_desc *spi, uint32_t reg,
 	uint16_t cmd;
 	uint8_t *rbuffer;
 
-	if (!spi || !rbuf || !num || num > MAX_MBYTE_SPI)
+	if (!spi || !rbuf || !num || num > MAX_MBYTE_SPI ||
+	    reg > 0x3ff || num > 0x400 - reg)
 		return -EINVAL;
 
 	cmd = AD_READ | AD_CNT(num) | AD_ADDR(reg);
@@ -814,7 +815,7 @@ int32_t ad9361_spi_write(struct no_os_spi_desc *spi,
 	int32_t ret;
 	uint16_t cmd;
 
-	if (!spi)
+	if (!spi || reg > 0x3ff || val > 0xff)
 		return -EINVAL;
 
 	cmd = AD_WRITE | AD_CNT(1) | AD_ADDR(reg);
