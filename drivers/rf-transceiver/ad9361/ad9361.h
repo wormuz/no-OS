@@ -3425,6 +3425,10 @@ struct ad9361_rf_phy {
 	uint16_t 			auxdac2_value;
 	uint32_t 			tx1_atten_cached;
 	uint32_t 			tx2_atten_cached;
+	/* bladeRF TX mute state is per RFIC instance, alongside its attenuation
+	 * restore cache. Keeping this process-global aliases two open devices. */
+	bool			tx1_muted;
+	bool			tx2_muted;
 	struct ad9361_fastlock	fastlock;
 	struct axiadc_converter	*adc_conv;
 	struct axiadc_state		*adc_state;
