@@ -1366,8 +1366,18 @@ int32_t ad9361_set_rx_rfdc_track_en_dis(struct ad9361_rf_phy *phy,
 	phy->rfdc_track_en = en_dis;
 	ret = ad9361_tracking_control(phy, phy->bbdc_track_en,
 				      phy->rfdc_track_en, phy->quad_track_en);
-	if (ret < 0)
+	if (ret < 0) {
+		int32_t restore_ret;
+
 		phy->rfdc_track_en = old_en;
+		restore_ret = ad9361_tracking_control(
+			phy, phy->bbdc_track_en, phy->rfdc_track_en,
+			phy->quad_track_en);
+		if (restore_ret < 0)
+			dev_err(&phy->spi->dev,
+				"Unable to restore RX tracking after RFDC update failure: %"PRId32,
+				restore_ret);
+	}
 
 	return ret;
 }
@@ -1416,8 +1426,18 @@ int32_t ad9361_set_rx_bbdc_track_en_dis(struct ad9361_rf_phy *phy,
 	phy->bbdc_track_en = en_dis;
 	ret = ad9361_tracking_control(phy, phy->bbdc_track_en,
 				      phy->rfdc_track_en, phy->quad_track_en);
-	if (ret < 0)
+	if (ret < 0) {
+		int32_t restore_ret;
+
 		phy->bbdc_track_en = old_en;
+		restore_ret = ad9361_tracking_control(
+			phy, phy->bbdc_track_en, phy->rfdc_track_en,
+			phy->quad_track_en);
+		if (restore_ret < 0)
+			dev_err(&phy->spi->dev,
+				"Unable to restore RX tracking after BB DC update failure: %"PRId32,
+				restore_ret);
+	}
 
 	return ret;
 }
@@ -1466,8 +1486,18 @@ int32_t ad9361_set_rx_quad_track_en_dis(struct ad9361_rf_phy *phy,
 	phy->quad_track_en = en_dis;
 	ret = ad9361_tracking_control(phy, phy->bbdc_track_en,
 				      phy->rfdc_track_en, phy->quad_track_en);
-	if (ret < 0)
+	if (ret < 0) {
+		int32_t restore_ret;
+
 		phy->quad_track_en = old_en;
+		restore_ret = ad9361_tracking_control(
+			phy, phy->bbdc_track_en, phy->rfdc_track_en,
+			phy->quad_track_en);
+		if (restore_ret < 0)
+			dev_err(&phy->spi->dev,
+				"Unable to restore RX tracking after quadrature update failure: %"PRId32,
+				restore_ret);
+	}
 
 	return ret;
 }
