@@ -32,6 +32,8 @@
 *******************************************************************************/
 
 #include <inttypes.h>
+#include <stdarg.h>
+#include <stdio.h>
 #include <string.h>
 #include "ad9361.h"
 #include "no_os_delay.h"
@@ -57,6 +59,90 @@ static uint32_t ad9361_num_phy_chan(struct axiadc_converter *conv)
 	if (conv->chip_info->num_channels > 4)
 		return 4;
 	return conv->chip_info->num_channels;
+}
+
+static int32_t ad9361_conv_phy_validate(struct ad9361_rf_phy *phy,
+					bool require_rfic)
+{
+	if (!phy || !phy->adc_conv || !phy->adc_conv->chip_info || !phy->rx_adc ||
+	    phy->adc_conv->chip_info->num_channels <= 0 ||
+	    phy->adc_conv->chip_info->num_channels > 16 ||
+	    !phy->pdata || (require_rfic && !phy->spi))
+		return -EINVAL;
+
+	return 0;
+}
+
+static int32_t ad9361_timing_analysis_validate(struct ad9361_rf_phy *phy,
+						char *buf, int32_t buflen)
+{
+	if (ad9361_conv_phy_validate(phy, true) < 0 || !buf ||
+	    !phy->ref_clk_scale[RX_SAMPL_CLK])
+		return -EINVAL;
+	if (buflen < AD9361_TIMING_ANALYSIS_BUFFER_SIZE)
+		return -ENOSPC;
+
+	return 0;
+}
+
+static int32_t ad9361_timing_append(char *buf, size_t buflen, size_t *len,
+				    const char *format, ...)
+{
+	va_list args;
+	int32_t written;
+	size_t remaining;
+
+	if (!buf || !len || !format || *len >= buflen)
+		return -ENOSPC;
+
+	remaining = buflen - *len;
+	va_start(args, format);
+	written = vsnprintf(buf + *len, remaining, format, args);
+	va_end(args);
+	if (written < 0)
+		return written;
+	if ((size_t)written >= remaining) {
+		buf[buflen - 1] = '\0';
+		return -ENOSPC;
+	}
+
+	*len += (size_t)written;
+	return 0;
+}
+
+static int32_t ad9361_format_timing_report(
+	char *buf, size_t buflen, uint32_t sample_rate,
+	const uint8_t field[16][16])
+{
+	int32_t i, j, ret;
+	size_t len = 0;
+
+	if (!buf || !field || buflen < AD9361_TIMING_ANALYSIS_BUFFER_SIZE)
+		return -ENOSPC;
+
+#define APPEND_TIMING(...) do { \
+	ret = ad9361_timing_append(buf, buflen, &len, __VA_ARGS__); \
+	if (ret < 0) { \
+		buf[0] = '\0'; \
+		return ret; \
+	} \
+} while (0)
+
+	APPEND_TIMING("CLK: %"PRIu32" Hz 'o' = PASS\n", sample_rate);
+	APPEND_TIMING("DC");
+	for (i = 0; i < 16; i++)
+		APPEND_TIMING("%"PRIx32":", i);
+	APPEND_TIMING("\n");
+	for (i = 0; i < 16; i++) {
+		APPEND_TIMING("%"PRIx32":", i);
+		for (j = 0; j < 16; j++)
+			APPEND_TIMING("%c ", field[i][j] ? '.' : 'o');
+		APPEND_TIMING("\n");
+	}
+	APPEND_TIMING("\n");
+#undef APPEND_TIMING
+
+	return (int32_t)len;
 }
 
 /**
@@ -108,12 +194,18 @@ static int32_t ad9361_check_pn(struct ad9361_rf_phy *phy, bool tx,
  */
 int32_t ad9361_hdl_loopback(struct ad9361_rf_phy *phy, bool enable)
 {
-	struct axiadc_converter *conv = phy->adc_conv;
-	struct axi_adc *rx_adc = phy->rx_adc;
+	struct axiadc_converter *conv;
+	struct axi_adc *rx_adc;
 	uint32_t reg, addr;
 	uint32_t version;
 	int32_t chan;
 	int32_t ret;
+
+	ret = ad9361_conv_phy_validate(phy, false);
+	if (ret < 0)
+		return ret;
+	conv = phy->adc_conv;
+	rx_adc = phy->rx_adc;
 
 	ret = axi_adc_read(rx_adc, 0x4000, &version);
 	if (ret < 0)
@@ -320,11 +412,15 @@ int32_t ad9361_dig_interface_timing_analysis(struct ad9361_rf_phy *phy,
 	uint32_t loopback, bist;
 	uint32_t sample_rate;
 	uint8_t ensm_state;
-	int32_t i, j, len = 0;
+	int32_t i, j;
 	uint8_t field[16][16];
 	uint8_t rx;
 	int32_t ret, cleanup_ret;
 	enum ad9361_bist_mode old_prbs_mode;
+
+	ret = ad9361_timing_analysis_validate(phy, buf, buflen);
+	if (ret < 0)
+		return ret;
 
 	dev_dbg(&phy->spi->dev, "%s:\n", __func__);
 
@@ -406,24 +502,8 @@ cleanup:
 	if (ret < 0)
 		return ret;
 
-	len += snprintf(buf + len, buflen, "CLK: %"PRIu32" Hz 'o' = PASS\n",
-			sample_rate);
-	len += snprintf(buf + len, buflen, "DC");
-	for (i = 0; i < 16; i++)
-		len += snprintf(buf + len, buflen, "%"PRIx32":", i);
-	len += snprintf(buf + len, buflen, "\n");
-
-	for (i = 0; i < 16; i++) {
-		len += snprintf(buf + len, buflen, "%"PRIx32":", i);
-		for (j = 0; j < 16; j++) {
-			len += snprintf(buf + len, buflen, "%c ",
-					(field[i][j] ? '.' : 'o'));
-		}
-		len += snprintf(buf + len, buflen, "\n");
-	}
-	len += snprintf(buf + len, buflen, "\n");
-
-	return len;
+	return ad9361_format_timing_report(buf, (size_t)buflen, sample_rate,
+					   field);
 }
 
 /**
@@ -677,16 +757,17 @@ tx_cleanup:
 int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 			enum dig_tune_flags flags)
 {
-	struct axiadc_converter *conv = phy->adc_conv;
-	struct axi_adc *rx_adc = phy->rx_adc;
+	struct axi_adc *rx_adc;
 	uint32_t loopback, bist;
 	uint8_t ensm_state;
 	enum ad9361_bist_mode old_prbs_mode;
 	bool restore = false;
 	int32_t ret = 0, cleanup_ret;
 
-	if (!conv)
-		return -ENODEV;
+	ret = ad9361_conv_phy_validate(phy, true);
+	if (ret < 0)
+		return ret;
+	rx_adc = phy->rx_adc;
 
 	dev_dbg(&phy->spi->dev, "%s: freq %"PRIu32" flags 0x%X\n", __func__,
 		max_freq, flags);
@@ -803,11 +884,7 @@ int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 
 static int32_t ad9361_post_setup_validate(struct ad9361_rf_phy *phy)
 {
-	if (!phy || !phy->adc_conv || !phy->adc_conv->chip_info || !phy->rx_adc ||
-	    !phy->pdata)
-		return -EINVAL;
-
-	return 0;
+	return ad9361_conv_phy_validate(phy, true);
 }
 
 /**

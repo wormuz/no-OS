@@ -2299,12 +2299,15 @@ static int set_bist_timing_analysis(void *device, char *buf, uint32_t len,
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
 	int32_t val;
 	int32_t ret;
+	char timing_report[AD9361_TIMING_ANALYSIS_BUFFER_SIZE];
 	ret = parse_i32_attr(buf, &val);
 	if (ret < 0 || (val != 0 && val != 1))
 		return ret < 0 ? ret : -EINVAL;
 	if (val) {
-		ret = ad9361_dig_interface_timing_analysis(ad9361_phy, buf,
-							   (int32_t)len);
+		/* buf contains the short incoming "1" command, not writable report
+		 * capacity. Keep the diagnostic output in its own bounded buffer. */
+		ret = ad9361_dig_interface_timing_analysis(ad9361_phy, timing_report,
+							   sizeof(timing_report));
 		if (ret < 0)
 			return ret;
 	}
