@@ -3635,7 +3635,11 @@ static int32_t ad9361_tx_quad_phase_search(struct ad9361_rf_phy *phy,
 			return ret;
 
 		/* Handle 360/0 wrap around */
-		field[i] = field[i + 32] = !((val & TX1_LO_CONV) && (val & TX1_SSB_CONV));
+		/* __ad9361_tx_quad_calib() returns convergence only when every
+		 * enabled TX path passes. In 2T2R mode, searching on TX1 alone can
+		 * select a phase that leaves TX2 uncorrected. */
+		field[i] = field[i + 32] =
+			(val != (TX1_LO_CONV | TX1_SSB_CONV));
 	}
 
 	ret = ad9361_find_opt(field, NO_OS_ARRAY_SIZE(field), &start);
@@ -3665,9 +3669,15 @@ static int32_t ad9361_tx_quad_phase_search(struct ad9361_rf_phy *phy,
 #endif
 
 	ret = __ad9361_tx_quad_calib(phy, phy->last_tx_quad_cal_phase, rxnco_word,
-				     decim, NULL);
+				     decim, &val);
 	if (ret < 0)
 		return ret;
+	if (val != (TX1_LO_CONV | TX1_SSB_CONV)) {
+		dev_err(&phy->spi->dev,
+			"%s: selected phase failed TX quadrature convergence (status 0x%02"PRIX8")",
+			__func__, val);
+		return -EIO;
+	}
 
 	return 0;
 }
