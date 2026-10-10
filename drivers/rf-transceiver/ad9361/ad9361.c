@@ -1046,6 +1046,9 @@ int32_t ad9361_1rx1tx_channel_map(struct ad9361_rf_phy *phy, bool tx,
 {
 	uint32_t map;
 
+	if (!phy || !phy->pdata)
+		return -EINVAL;
+
 	if (phy->pdata->rx2tx2)
 		return channel;
 
@@ -6855,6 +6858,9 @@ int32_t ad9361_mcs(struct ad9361_rf_phy *phy, int32_t step)
 			   MCS_DIGITAL_CLK_ENABLE | MCS_BB_ENABLE;
 	int32_t ret;
 
+	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
+
 	if (step < 0 || step > 5)
 		return -EINVAL;
 
@@ -6974,12 +6980,18 @@ static uint32_t ad9361_ref_div_sel(uint32_t refin_Hz, uint32_t max)
 int32_t ad9361_setup(struct ad9361_rf_phy *phy)
 {
 	uint32_t refin_Hz, ref_freq, bbpll_freq;
-	struct no_os_spi_desc *spi = phy->spi;
-	struct ad9361_phy_platform_data *pd = phy->pdata;
+	struct no_os_spi_desc *spi;
+	struct ad9361_phy_platform_data *pd;
 	int32_t ret;
 	uint32_t real_rx_bandwidth, real_tx_bandwidth;
-	bool tmp_use_ext_rx_lo = pd->use_ext_rx_lo;
-	bool tmp_use_ext_tx_lo = pd->use_ext_tx_lo;
+	bool tmp_use_ext_rx_lo, tmp_use_ext_tx_lo;
+
+	if (!phy || !phy->spi || !phy->pdata || !phy->clk_refin)
+		return -EINVAL;
+	spi = phy->spi;
+	pd = phy->pdata;
+	tmp_use_ext_rx_lo = pd->use_ext_rx_lo;
+	tmp_use_ext_tx_lo = pd->use_ext_tx_lo;
 
 	dev_dbg(dev, "%s", __func__);
 	if (!phy->clk_refin || !phy->clk_refin->rate)
@@ -7971,6 +7983,9 @@ int32_t ad9361_validate_enable_fir(struct ad9361_rf_phy *phy)
 	int32_t ret;
 	uint32_t rx[6], tx[6];
 	uint32_t max, min, valid;
+
+	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
 
 	phy->fir_config_valid = false;
 
