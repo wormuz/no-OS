@@ -1070,6 +1070,10 @@ int32_t ad9361_get_rx_rssi(struct ad9361_rf_phy *phy,
 	int32_t ret;
 	struct rf_rssi result = {0};
 
+	if (!phy || !phy->pdata || !rssi || ch > 1 ||
+	    (!phy->pdata->rx2tx2 && ch != 0))
+		return -EINVAL;
+
 	result.ant = ad9361_1rx1tx_channel_map(phy, false, ch + 1);
 	result.duration = 1;
 	ret = ad9361_read_rssi(phy, &result);
@@ -1564,7 +1568,13 @@ int32_t ad9361_set_tx_attenuation(struct ad9361_rf_phy *phy,
 	int32_t ret;
 	int32_t channel;
 
+	if (!phy || !phy->pdata || ch > 1 ||
+	    (!phy->pdata->rx2tx2 && ch != 0))
+		return -EINVAL;
+
 	channel = ad9361_1rx1tx_channel_map(phy, true, ch);
+	if (channel != 0 && channel != 1)
+		return -EINVAL;
 	ret = ad9361_set_tx_atten(phy, attenuation_mdb,
 				  channel == 0, channel == 1,
 				  !phy->pdata->update_tx_gain_via_alert);
@@ -1588,6 +1598,10 @@ int32_t ad9361_get_tx_attenuation(struct ad9361_rf_phy *phy,
 				  uint8_t ch, uint32_t *attenuation_mdb)
 {
 	int32_t ret;
+
+	if (!phy || !phy->pdata || !attenuation_mdb || ch > 1 ||
+	    (!phy->pdata->rx2tx2 && ch != 0))
+		return -EINVAL;
 
 	ret = ad9361_get_tx_atten(phy,
 				  ad9361_1rx1tx_channel_map(phy, true,
@@ -1958,6 +1972,10 @@ int32_t ad9361_get_tx_rssi(struct ad9361_rf_phy *phy,
 	uint8_t reg_val_buf[3];
 	uint32_t val;
 	int32_t ret;
+
+	if (!phy || !phy->pdata || !rssi_db_x_1000 || ch > 1 ||
+	    (!phy->pdata->rx2tx2 && ch != 0))
+		return -EINVAL;
 
 	ret = ad9361_spi_readm(phy->spi, REG_TX_RSSI_LSB,
 			       reg_val_buf, NO_OS_ARRAY_SIZE(reg_val_buf));
