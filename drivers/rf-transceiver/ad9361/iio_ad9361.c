@@ -988,11 +988,11 @@ static int set_rf_dc_offset_tracking_en(void *device, char *buf, uint32_t len,
 	ret = parse_i32_attr(buf, &en_dis);
 	if (ret < 0 || en_dis < 0 || en_dis > 1)
 		return -EINVAL;
-	if (!channel->ch_out) {
-		ret = ad9361_set_rx_rfdc_track_en_dis(ad9361_phy, en_dis);
-		if (ret < 0)
-			return ret;
-	}
+	if (channel->ch_out)
+		return -ENOENT;
+	ret = ad9361_set_rx_rfdc_track_en_dis(ad9361_phy, en_dis);
+	if (ret < 0)
+		return ret;
 
 	return len;
 }
@@ -1035,11 +1035,11 @@ static int set_quadrature_tracking_en(void *device, char *buf, uint32_t len,
 	ret = parse_i32_attr(buf, &en_dis);
 	if (ret < 0 || en_dis < 0 || en_dis > 1)
 		return -EINVAL;
-	if (!channel->ch_out) {
-		ret = ad9361_set_rx_quad_track_en_dis(ad9361_phy, en_dis);
-		if (ret < 0)
-			return ret;
-	}
+	if (channel->ch_out)
+		return -ENOENT;
+	ret = ad9361_set_rx_quad_track_en_dis(ad9361_phy, en_dis);
+	if (ret < 0)
+		return ret;
 
 	return len;
 }
@@ -1171,11 +1171,11 @@ static int set_bb_dc_offset_tracking_en(void *device, char *buf, uint32_t len,
 	ret = parse_i32_attr(buf, &en_dis);
 	if (ret < 0 || en_dis < 0 || en_dis > 1)
 		return -EINVAL;
-	if (!channel->ch_out) {
-		ret = ad9361_set_rx_bbdc_track_en_dis(ad9361_phy, en_dis);
-		if (ret < 0)
-			return ret;
-	}
+	if (channel->ch_out)
+		return -ENOENT;
+	ret = ad9361_set_rx_bbdc_track_en_dis(ad9361_phy, en_dis);
+	if (ret < 0)
+		return ret;
 
 	return len;
 }
