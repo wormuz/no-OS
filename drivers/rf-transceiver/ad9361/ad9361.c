@@ -8120,7 +8120,7 @@ int32_t ad9361_bbpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 	int32_t icp_val;
 	uint8_t lf_defaults[3] = { 0x35, 0x5B, 0xE8 };
 	uint64_t temp;
-	int32_t ret;
+	int32_t ret, cleanup_ret;
 	if (!clk_priv || !clk_priv->phy || !clk_priv->spi || !rate ||
 	    parent_rate < 128)
 		return -EINVAL;
@@ -8172,10 +8172,13 @@ int32_t ad9361_bbpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_FRACT_BB_FREQ_WORD_2, fract >> 8));
 	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_FRACT_BB_FREQ_WORD_1, fract >> 16));
 
-	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_SDM_CTRL_1,
-			 INIT_BB_FO_CAL | BBPLL_RESET_BAR)); /* Start BBPLL Calibration */
-	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_SDM_CTRL_1,
-			 BBPLL_RESET_BAR)); /* Clear BBPLL start calibration bit */
+	ret = ad9361_spi_write(spi, REG_SDM_CTRL_1,
+			       INIT_BB_FO_CAL | BBPLL_RESET_BAR);
+	if (ret < 0)
+		goto bbpll_calibration_cleanup;
+	ret = ad9361_spi_write(spi, REG_SDM_CTRL_1, BBPLL_RESET_BAR);
+	if (ret < 0)
+		goto bbpll_calibration_cleanup;
 
 	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_VCO_PROGRAM_1,
 			 0x86)); /* Increase BBPLL KV and phase margin */
@@ -8184,10 +8187,20 @@ int32_t ad9361_bbpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_VCO_PROGRAM_2,
 			 0x05)); /* Increase BBPLL KV and phase margin */
 
-	#undef AD9361_BBPLL_TRY
-
 	return ad9361_check_cal_done(clk_priv->phy, REG_CH_1_OVERFLOW,
 				     BBPLL_LOCK, 1);
+
+bbpll_calibration_cleanup:
+	/* Either control write can take effect despite an SPI error. Always
+	 * clear the one-shot calibration request before returning the primary
+	 * transaction error. */
+	cleanup_ret = ad9361_spi_write(spi, REG_SDM_CTRL_1, BBPLL_RESET_BAR);
+	if (cleanup_ret < 0)
+		dev_err(&spi->dev,
+			"Unable to clear BBPLL calibration request: %"PRId32,
+			cleanup_ret);
+	#undef AD9361_BBPLL_TRY
+	return ret;
 }
 
 /*
