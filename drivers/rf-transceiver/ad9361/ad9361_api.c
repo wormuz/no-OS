@@ -831,6 +831,10 @@ int32_t ad9361_set_rx_rf_gain(struct ad9361_rf_phy *phy,
 	struct rf_rx_gain rx_gain = {0, 0, 0, 0, 0, 0, 0, 0, 0};
 	int32_t ret = 0;
 
+	if (!phy || !phy->pdata || ch > 1 ||
+	    (!phy->pdata->rx2tx2 && ch != 0))
+		return -EINVAL;
+
 	rx_gain.gain_db = gain_db;
 	ret = ad9361_set_rx_gain(phy,
 				 ad9361_1rx1tx_channel_map(phy, false,
@@ -856,6 +860,10 @@ int32_t ad9361_get_rx_rf_gain(struct ad9361_rf_phy *phy,
 {
 	struct rf_rx_gain rx_gain = {0, 0, 0, 0, 0, 0, 0, 0, 0};
 	int32_t ret = 0;
+
+	if (!phy || !phy->pdata || !gain_db || ch > 1 ||
+	    (!phy->pdata->rx2tx2 && ch != 0))
+		return -EINVAL;
 
 	ret = ad9361_get_rx_gain(phy, ad9361_1rx1tx_channel_map(phy,
 				 false, ch + 1), &rx_gain);
@@ -1106,6 +1114,10 @@ int32_t ad9361_set_rx_gain_control_mode(struct ad9361_rf_phy *phy,
 {
 	struct rf_gain_ctrl gc = {0, 0};
 
+	if (!phy || !phy->pdata || ch > 1 ||
+	    (!phy->pdata->rx2tx2 && ch != 0))
+		return -EINVAL;
+
 	gc.ant = ad9361_1rx1tx_channel_map(phy, false, ch + 1);
 	gc.mode = gc_mode;
 	if (gc_mode > RF_GAIN_HYBRID_AGC)
@@ -1132,6 +1144,10 @@ int32_t ad9361_set_rx_gain_control_mode(struct ad9361_rf_phy *phy,
 int32_t ad9361_get_rx_gain_control_mode(struct ad9361_rf_phy *phy,
 					uint8_t ch, uint8_t *gc_mode)
 {
+	if (!phy || !phy->pdata || !gc_mode || ch > 1 ||
+	    (!phy->pdata->rx2tx2 && ch != 0))
+		return -EINVAL;
+
 	*gc_mode = phy->agc_mode[ch];
 
 	return 0;
