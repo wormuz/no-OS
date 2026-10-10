@@ -1014,21 +1014,32 @@ int32_t ad9361_get_rx_lo_freq(struct ad9361_rf_phy *phy,
 {
 	uint32_t rate;
 	int32_t ret;
+	struct refclk_scale *pll_scale;
+	uint32_t parent_source;
 
-	if (!phy || !lo_freq_hz)
+	if (!phy || !phy->pdata || !lo_freq_hz)
 		return -EINVAL;
 
 	if (phy->pdata->use_ext_rx_lo) {
-		if (phy->ad9361_rfpll_ext_recalc_rate)
+		if (phy->ad9361_rfpll_ext_recalc_rate) {
+			if (!phy->ref_clk_scale[RX_RFPLL])
+				return -EINVAL;
 			rate = phy->ad9361_rfpll_ext_recalc_rate(
 				phy->ref_clk_scale[RX_RFPLL]);
-		else
+		} else {
+			if (!phy->ref_clk_scale[RX_RFPLL_DUMMY])
+				return -EINVAL;
 			rate = ad9361_rfpll_dummy_recalc_rate(
 				phy->ref_clk_scale[RX_RFPLL_DUMMY]);
+		}
 	} else {
+		pll_scale = phy->ref_clk_scale[RX_RFPLL_INT];
+		if (!pll_scale || pll_scale->parent_source >= NUM_AD9361_CLKS ||
+		    !phy->clks[pll_scale->parent_source])
+			return -EINVAL;
+		parent_source = pll_scale->parent_source;
 		ret = ad9361_rfpll_int_recalc_rate_checked(
-			phy->ref_clk_scale[RX_RFPLL_INT],
-			phy->clks[phy->ref_clk_scale[RX_RFPLL_INT]->parent_source]->rate,
+			pll_scale, phy->clks[parent_source]->rate,
 			&rate);
 		if (ret < 0)
 			return ret;
@@ -1804,21 +1815,32 @@ int32_t ad9361_get_tx_lo_freq(struct ad9361_rf_phy *phy,
 {
 	uint32_t rate;
 	int32_t ret;
+	struct refclk_scale *pll_scale;
+	uint32_t parent_source;
 
-	if (!phy || !lo_freq_hz)
+	if (!phy || !phy->pdata || !lo_freq_hz)
 		return -EINVAL;
 
 	if (phy->pdata->use_ext_tx_lo) {
-		if (phy->ad9361_rfpll_ext_recalc_rate)
+		if (phy->ad9361_rfpll_ext_recalc_rate) {
+			if (!phy->ref_clk_scale[TX_RFPLL])
+				return -EINVAL;
 			rate = phy->ad9361_rfpll_ext_recalc_rate(
 				phy->ref_clk_scale[TX_RFPLL]);
-		else
+		} else {
+			if (!phy->ref_clk_scale[TX_RFPLL_DUMMY])
+				return -EINVAL;
 			rate = ad9361_rfpll_dummy_recalc_rate(
 				phy->ref_clk_scale[TX_RFPLL_DUMMY]);
+		}
 	} else {
+		pll_scale = phy->ref_clk_scale[TX_RFPLL_INT];
+		if (!pll_scale || pll_scale->parent_source >= NUM_AD9361_CLKS ||
+		    !phy->clks[pll_scale->parent_source])
+			return -EINVAL;
+		parent_source = pll_scale->parent_source;
 		ret = ad9361_rfpll_int_recalc_rate_checked(
-			phy->ref_clk_scale[TX_RFPLL_INT],
-			phy->clks[phy->ref_clk_scale[TX_RFPLL_INT]->parent_source]->rate,
+			pll_scale, phy->clks[parent_source]->rate,
 			&rate);
 		if (ret < 0)
 			return ret;
