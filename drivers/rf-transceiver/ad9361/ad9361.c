@@ -7871,8 +7871,12 @@ int32_t ad9361_clk_factor_round_rate(struct refclk_scale *clk_priv,
 				     uint32_t *prate)
 {
 	int32_t ret;
-	if (!clk_priv || !prate || !*prate || !rate)
+	uint32_t old_mult, old_div;
+	if (!clk_priv || !clk_priv->phy || !clk_priv->spi || !prate ||
+	    !*prate || !rate)
 		return -EINVAL;
+	old_mult = clk_priv->mult;
+	old_div = clk_priv->div;
 
 	if (rate >= *prate) {
 		clk_priv->mult = NO_OS_DIV_ROUND_CLOSEST(rate, *prate);
@@ -7889,8 +7893,11 @@ int32_t ad9361_clk_factor_round_rate(struct refclk_scale *clk_priv,
 	}
 
 	ret = ad9361_set_clk_scaler(clk_priv, false);
-	if (ret < 0)
+	if (ret < 0) {
+		clk_priv->mult = old_mult;
+		clk_priv->div = old_div;
 		return ret;
+	}
 
 	return (*prate / clk_priv->div) * clk_priv->mult;
 }
@@ -7905,8 +7912,13 @@ int32_t ad9361_clk_factor_round_rate(struct refclk_scale *clk_priv,
 int32_t ad9361_clk_factor_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 				   uint32_t parent_rate)
 {
-	if (!clk_priv || !rate || !parent_rate)
+	uint32_t old_mult, old_div;
+	int32_t ret;
+
+	if (!clk_priv || !clk_priv->phy || !clk_priv->spi || !rate || !parent_rate)
 		return -EINVAL;
+	old_mult = clk_priv->mult;
+	old_div = clk_priv->div;
 
 	dev_dbg(&clk_priv->spi->dev, "%s: Rate %"PRIu32" Hz Parent Rate %"PRIu32" Hz",
 		__func__, rate, parent_rate);
@@ -7924,7 +7936,12 @@ int32_t ad9361_clk_factor_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 		}
 	}
 
-	return ad9361_set_clk_scaler(clk_priv, true);
+	ret = ad9361_set_clk_scaler(clk_priv, true);
+	if (ret < 0) {
+		clk_priv->mult = old_mult;
+		clk_priv->div = old_div;
+	}
+	return ret;
 }
 
 /*
@@ -8251,12 +8268,16 @@ int32_t ad9361_rfpll_int_recalc_rate_checked(struct refclk_scale *clk_priv,
 					     uint32_t parent_rate,
 					     uint32_t *rate)
 {
-	struct ad9361_rf_phy *phy = clk_priv->phy;
+	struct ad9361_rf_phy *phy;
 	uint32_t fract, integer;
 	uint8_t buf[5];
 	uint32_t reg, div_mask, vco_div, profile;
 	int32_t ret;
-	if (!clk_priv || !rate || !parent_rate)
+	if (!clk_priv || !clk_priv->phy || !clk_priv->spi || !rate ||
+	    !parent_rate)
+		return -EINVAL;
+	phy = clk_priv->phy;
+	if (!phy->pdata)
 		return -EINVAL;
 
 	dev_dbg(&clk_priv->spi->dev, "%s: Parent Rate %"PRIu32" Hz",
@@ -8279,6 +8300,8 @@ int32_t ad9361_rfpll_int_recalc_rate_checked(struct refclk_scale *clk_priv,
 
 	if (profile) {
 		bool tx = clk_priv->source == TX_RFPLL_INT;
+		if (profile > NO_OS_ARRAY_SIZE(phy->fastlock.entry[0]))
+			return -EINVAL;
 		profile = profile - 1;
 
 		ret = ad9361_fastlock_readval(phy->spi, tx, profile, 4);
@@ -8345,15 +8368,13 @@ int32_t ad9361_rfpll_int_round_rate(struct refclk_scale *clk_priv,
 				    uint32_t rate,
 				    uint32_t *prate)
 {
+	if (!clk_priv || !clk_priv->phy || !clk_priv->spi || !rate ||
+	    (clk_priv->source != RX_RFPLL_INT &&
+	     clk_priv->source != TX_RFPLL_INT))
+		return -EINVAL;
+
 	dev_dbg(&clk_priv->spi->dev, "%s: Rate %"PRIu32" Hz", __func__, rate);
-
-	if (prate) {
-		// Unused variable - fix compiler warning
-	}
-
-	if (clk_priv) {
-		// Unused variable - fix compiler warning
-	}
+	(void)prate;
 
 	if (ad9361_from_clk(rate) > MAX_CARRIER_FREQ_HZ ||
 	    ad9361_from_clk(rate) < ((clk_priv->source == TX_RFPLL_INT) ?
@@ -8570,7 +8591,15 @@ restore_vco_cal:
  */
 uint32_t ad9361_rfpll_dummy_recalc_rate(struct refclk_scale *clk_priv)
 {
-	struct ad9361_rf_phy *phy = clk_priv->phy;
+	struct ad9361_rf_phy *phy;
+
+	if (!clk_priv || !clk_priv->phy ||
+	    (clk_priv->source != RX_RFPLL_DUMMY &&
+	     clk_priv->source != TX_RFPLL_DUMMY))
+		return 0;
+	phy = clk_priv->phy;
+	if (!phy->clks[clk_priv->source])
+		return 0;
 
 	return 	phy->clks[clk_priv->source]->rate;
 }
@@ -8584,7 +8613,15 @@ uint32_t ad9361_rfpll_dummy_recalc_rate(struct refclk_scale *clk_priv)
 int32_t ad9361_rfpll_dummy_set_rate(struct refclk_scale *clk_priv,
 				    uint32_t rate)
 {
-	struct ad9361_rf_phy *phy = clk_priv->phy;
+	struct ad9361_rf_phy *phy;
+
+	if (!clk_priv || !clk_priv->phy ||
+	    (clk_priv->source != RX_RFPLL_DUMMY &&
+	     clk_priv->source != TX_RFPLL_DUMMY))
+		return -EINVAL;
+	phy = clk_priv->phy;
+	if (!phy->clks[clk_priv->source])
+		return -EINVAL;
 
 	phy->clks[clk_priv->source]->rate = rate;
 
@@ -8599,18 +8636,30 @@ int32_t ad9361_rfpll_dummy_set_rate(struct refclk_scale *clk_priv,
 int32_t ad9361_rfpll_recalc_rate_checked(struct refclk_scale *clk_priv,
 					 uint32_t *rate)
 {
-	struct ad9361_rf_phy *phy = clk_priv->phy;
+	struct ad9361_rf_phy *phy;
 	int32_t ret;
+
+	if (!clk_priv || !clk_priv->phy || !clk_priv->phy->pdata || !rate ||
+	    (clk_priv->source != RX_RFPLL &&
+	     clk_priv->source != TX_RFPLL))
+		return -EINVAL;
+	phy = clk_priv->phy;
 
 	switch (clk_priv->source) {
 	case RX_RFPLL:
 		if (phy->pdata->use_ext_rx_lo) {
 			if (phy->ad9361_rfpll_ext_recalc_rate)
 				*rate = phy->ad9361_rfpll_ext_recalc_rate(clk_priv);
-			else
+			else {
+				if (!phy->ref_clk_scale[RX_RFPLL_DUMMY] ||
+				    !phy->clks[RX_RFPLL_DUMMY])
+					return -EINVAL;
 				*rate = ad9361_rfpll_dummy_recalc_rate(
 					phy->ref_clk_scale[RX_RFPLL_DUMMY]);
+			}
 		} else {
+			if (!phy->ref_clk_scale[RX_RFPLL_INT] || !phy->clks[RX_REFCLK])
+				return -EINVAL;
 			ret = ad9361_rfpll_int_recalc_rate_checked(
 				phy->ref_clk_scale[RX_RFPLL_INT],
 				phy->clks[RX_REFCLK]->rate, rate);
@@ -8622,10 +8671,16 @@ int32_t ad9361_rfpll_recalc_rate_checked(struct refclk_scale *clk_priv,
 		if (phy->pdata->use_ext_tx_lo) {
 			if (phy->ad9361_rfpll_ext_recalc_rate)
 				*rate = phy->ad9361_rfpll_ext_recalc_rate(clk_priv);
-			else
+			else {
+				if (!phy->ref_clk_scale[TX_RFPLL_DUMMY] ||
+				    !phy->clks[TX_RFPLL_DUMMY])
+					return -EINVAL;
 				*rate = ad9361_rfpll_dummy_recalc_rate(
 					phy->ref_clk_scale[TX_RFPLL_DUMMY]);
+			}
 		} else {
+			if (!phy->ref_clk_scale[TX_RFPLL_INT] || !phy->clks[TX_REFCLK])
+				return -EINVAL;
 			ret = ad9361_rfpll_int_recalc_rate_checked(
 				phy->ref_clk_scale[TX_RFPLL_INT],
 				phy->clks[TX_REFCLK]->rate, rate);
@@ -8656,8 +8711,14 @@ uint32_t ad9361_rfpll_recalc_rate(struct refclk_scale *clk_priv)
  */
 int32_t ad9361_rfpll_round_rate(struct refclk_scale *clk_priv, uint32_t rate)
 {
-	struct ad9361_rf_phy *phy = clk_priv->phy;
+	struct ad9361_rf_phy *phy;
 	int32_t round_rate;
+
+	if (!clk_priv || !clk_priv->phy || !clk_priv->phy->pdata || !rate ||
+	    (clk_priv->source != RX_RFPLL &&
+	     clk_priv->source != TX_RFPLL))
+		return -EINVAL;
+	phy = clk_priv->phy;
 
 	switch (clk_priv->source) {
 	case RX_RFPLL:
@@ -8667,8 +8728,14 @@ int32_t ad9361_rfpll_round_rate(struct refclk_scale *clk_priv, uint32_t rate)
 			else
 				round_rate = rate;
 		} else {
+			struct refclk_scale *int_clk =
+				phy->ref_clk_scale[RX_RFPLL_INT];
+			if (!int_clk ||
+			    (uint32_t)int_clk->parent_source >= NUM_AD9361_CLKS ||
+			    !phy->clks[int_clk->parent_source])
+				return -EINVAL;
 			round_rate = ad9361_rfpll_int_round_rate(phy->ref_clk_scale[RX_RFPLL_INT], rate,
-					&phy->clks[phy->ref_clk_scale[RX_RFPLL_INT]->parent_source]->rate);
+					&phy->clks[int_clk->parent_source]->rate);
 		}
 		break;
 	case TX_RFPLL:
@@ -8678,8 +8745,14 @@ int32_t ad9361_rfpll_round_rate(struct refclk_scale *clk_priv, uint32_t rate)
 			else
 				round_rate = rate;
 		} else {
+			struct refclk_scale *int_clk =
+				phy->ref_clk_scale[TX_RFPLL_INT];
+			if (!int_clk ||
+			    (uint32_t)int_clk->parent_source >= NUM_AD9361_CLKS ||
+			    !phy->clks[int_clk->parent_source])
+				return -EINVAL;
 			round_rate = ad9361_rfpll_int_round_rate(phy->ref_clk_scale[TX_RFPLL_INT], rate,
-					&phy->clks[phy->ref_clk_scale[TX_RFPLL_INT]->parent_source]->rate);
+					&phy->clks[int_clk->parent_source]->rate);
 		}
 		break;
 	default:
@@ -8698,21 +8771,35 @@ int32_t ad9361_rfpll_round_rate(struct refclk_scale *clk_priv, uint32_t rate)
  */
 int32_t ad9361_rfpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate)
 {
-	struct ad9361_rf_phy *phy = clk_priv->phy;
+	struct ad9361_rf_phy *phy;
 	int32_t ret;
+
+	if (!clk_priv || !clk_priv->phy || !clk_priv->phy->pdata || !rate ||
+	    (clk_priv->source != RX_RFPLL &&
+	     clk_priv->source != TX_RFPLL))
+		return -EINVAL;
+	phy = clk_priv->phy;
 
 	switch (clk_priv->source) {
 	case RX_RFPLL:
 		if (phy->pdata->use_ext_rx_lo) {
 			if (phy->ad9361_rfpll_ext_set_rate)
 				ret = phy->ad9361_rfpll_ext_set_rate(clk_priv, rate);
-			else
+			else {
+				if (!phy->ref_clk_scale[RX_RFPLL_DUMMY])
+					return -EINVAL;
 				ret = ad9361_rfpll_dummy_set_rate(
 					phy->ref_clk_scale[RX_RFPLL_DUMMY], rate);
+			}
 		} else {
+			struct refclk_scale *int_clk =
+				phy->ref_clk_scale[RX_RFPLL_INT];
+			if (!int_clk ||
+			    (uint32_t)int_clk->parent_source >= NUM_AD9361_CLKS ||
+			    !phy->clks[int_clk->parent_source])
+				return -EINVAL;
 			ret = ad9361_rfpll_int_set_rate(
-				phy->ref_clk_scale[RX_RFPLL_INT], rate,
-				phy->clks[phy->ref_clk_scale[RX_RFPLL_INT]->parent_source]->rate);
+				int_clk, rate, phy->clks[int_clk->parent_source]->rate);
 		}
 		if (ret < 0)
 			return ret;
@@ -8730,13 +8817,21 @@ int32_t ad9361_rfpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate)
 		if (phy->pdata->use_ext_tx_lo) {
 			if (phy->ad9361_rfpll_ext_set_rate)
 				ret = phy->ad9361_rfpll_ext_set_rate(clk_priv, rate);
-			else
+			else {
+				if (!phy->ref_clk_scale[TX_RFPLL_DUMMY])
+					return -EINVAL;
 				ret = ad9361_rfpll_dummy_set_rate(
 					phy->ref_clk_scale[TX_RFPLL_DUMMY], rate);
+			}
 		} else {
+			struct refclk_scale *int_clk =
+				phy->ref_clk_scale[TX_RFPLL_INT];
+			if (!int_clk ||
+			    (uint32_t)int_clk->parent_source >= NUM_AD9361_CLKS ||
+			    !phy->clks[int_clk->parent_source])
+				return -EINVAL;
 			ret = ad9361_rfpll_int_set_rate(
-				phy->ref_clk_scale[TX_RFPLL_INT], rate,
-				phy->clks[phy->ref_clk_scale[TX_RFPLL_INT]->parent_source]->rate);
+				int_clk, rate, phy->clks[int_clk->parent_source]->rate);
 		}
 		if (ret < 0)
 			return ret;
@@ -8761,7 +8856,7 @@ int32_t ad9361_rfpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate)
 			return ret;
 		break;
 	default:
-		break;
+		return -EINVAL;
 	}
 
 	return 0;
@@ -8775,8 +8870,15 @@ int32_t ad9361_rfpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate)
  */
 int32_t ad9361_clk_mux_set_parent(struct refclk_scale *clk_priv, uint8_t index)
 {
-	struct ad9361_rf_phy *phy = clk_priv->phy;
+	struct ad9361_rf_phy *phy;
 	int32_t ret, restore_ret;
+
+	if (!clk_priv || !clk_priv->phy || !clk_priv->phy->pdata ||
+	    !clk_priv->spi || index > 1 ||
+	    (clk_priv->source != RX_RFPLL &&
+	     clk_priv->source != TX_RFPLL))
+		return -EINVAL;
+	phy = clk_priv->phy;
 
 	dev_dbg(&clk_priv->spi->dev, "%s: index %d", __func__, index);
 
@@ -8803,12 +8905,18 @@ int32_t ad9361_clk_mux_set_parent(struct refclk_scale *clk_priv, uint8_t index)
 
 		if (restore_hz) {
 			enum ad9361_clocks int_src = tx ? TX_RFPLL_INT : RX_RFPLL_INT;
+			struct refclk_scale *int_clk = phy->ref_clk_scale[int_src];
 			uint32_t restore_rate = ad9361_to_clk(restore_hz);
 
-			ret = ad9361_rfpll_int_set_rate(
-				      phy->ref_clk_scale[int_src],
-				      restore_rate,
-				      phy->clks[phy->ref_clk_scale[int_src]->parent_source]->rate);
+			if (!int_clk ||
+			    (uint32_t)int_clk->parent_source >= NUM_AD9361_CLKS ||
+			    !phy->clks[int_clk->parent_source]) {
+				ret = -EINVAL;
+			} else {
+				ret = ad9361_rfpll_int_set_rate(
+					int_clk, restore_rate,
+					phy->clks[int_clk->parent_source]->rate);
+			}
 			if (ret < 0)
 				dev_err(&phy->spi->dev,
 					"%s: %s internal PLL re-lock to %"PRIu64
