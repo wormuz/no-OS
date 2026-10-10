@@ -516,6 +516,7 @@ int32_t ad9361_adjust_rx_ext_band_settings(struct ad9361_rf_phy *phy,
 {
 	struct ad9361_ext_band_ctl *ctl;
 	struct ad9361_band_setting *sett;
+	int ret;
 
 	if (!phy)
 		return -EINVAL;
@@ -532,9 +533,16 @@ int32_t ad9361_adjust_rx_ext_band_settings(struct ad9361_rf_phy *phy,
 	if (ctl->current_rx_setting == sett)
 		return 0;
 
-	return apply_setting(phy, sett,
-			     (const struct ad9361_band_setting **)
-			     &ctl->current_rx_setting);
+	ret = apply_setting(phy, sett,
+			    (const struct ad9361_band_setting **)
+			    &ctl->current_rx_setting);
+	if (ret < 0) {
+		/* GPIOs and RF ports may already be partially changed. Forget the
+		 * cached band so a later request, including a return to the previous
+		 * band, reapplies every configured pin and port. */
+		ctl->current_rx_setting = NULL;
+	}
+	return ret;
 }
 
 /**
@@ -548,6 +556,7 @@ int32_t ad9361_adjust_tx_ext_band_settings(struct ad9361_rf_phy *phy,
 {
 	struct ad9361_ext_band_ctl *ctl;
 	struct ad9361_band_setting *sett;
+	int ret;
 
 	if (!phy)
 		return -EINVAL;
@@ -564,7 +573,13 @@ int32_t ad9361_adjust_tx_ext_band_settings(struct ad9361_rf_phy *phy,
 	if (ctl->current_tx_setting == sett)
 		return 0;
 
-	return apply_setting(phy, sett,
-			     (const struct ad9361_band_setting **)
-			     &ctl->current_tx_setting);
+	ret = apply_setting(phy, sett,
+			    (const struct ad9361_band_setting **)
+			    &ctl->current_tx_setting);
+	if (ret < 0) {
+		/* A failed band change can leave external switch GPIOs partially
+		 * updated. Force a complete reapply on the next TX band request. */
+		ctl->current_tx_setting = NULL;
+	}
+	return ret;
 }
