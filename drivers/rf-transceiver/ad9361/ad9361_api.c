@@ -620,19 +620,14 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 	if (ret < 0)
 		goto out_clk;
 #endif
-	/* Everything above reaches the FPGA's AXI ad9361 core over the Avalon
-	 * bus, and parts of that core live in the l_clk domain - the clock the
-	 * AD9361 itself supplies. On the Nios this runs during
-	 * set_tuning_mode(FPGA), before the chip drives its interface, so the
-	 * domain-crossing handshakes never complete: the processor stalls
-	 * mid-instruction and the board stops answering anything, bladerf_open()
-	 * included, until the bitstream is reloaded. No C-level timeout can see
-	 * a stall that happens below the code.
-	 *
-	 * The host has already initialised this core during bladerf_open (over
-	 * NIOS_PKT_32x32_TARGET_ADI_AXI), so there is nothing here for the Nios
-	 * to redo. Measured: compiling these accesses out turns the wedge into
-	 * an ordinary error return with the board still responding. */
+	/* BLADERF_NIOS_BUILD excludes the AXI ADC/DAC initialization block above.
+	 * Consequently this NIOS-owned PHY has no rx_adc handle. The firmware's
+	 * later sample-rate command currently calls ad9361_dig_tune(); its
+	 * converter validation rejects that missing handle before touching AXI.
+	 * The host's separate PHY object and its AXI handles are not shared with
+	 * this firmware instance. Keep the on-board NIOS no-response incident
+	 * unresolved until the exact active image and command trace identify a
+	 * path that actually reaches the FPGA AXI core. */
 
 	printf("%s : AD936x Rev %d successfully initialized\n", __func__, (int)rev);
 
