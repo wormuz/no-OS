@@ -57,8 +57,6 @@ static struct axiadc_chip_info axiadc_chip_info_tbl[] = {
 #define ADI_REG_VERSION			0x0000
 #endif
 
-extern struct gain_table_info ad9361_adi_gt_info[];
-
 /**
  * Initialize the AD9361 part.
  * @param ad9361_phy The AD9361 device structure.
@@ -534,15 +532,15 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 
 	phy->rx_eq_2tx = false;
 
-	phy->current_table = -1;
+	ret = ad9361_init_gain_tables(phy);
+	if (ret < 0)
+		goto out;
 	phy->bypass_tx_fir = true;
 	phy->bypass_rx_fir = true;
 	phy->rate_governor = 1;
 	phy->rfdc_track_en = true;
 	phy->bbdc_track_en = true;
 	phy->quad_track_en = true;
-
-	phy->gt_info = ad9361_adi_gt_info;
 
 	phy->bist_loopback_mode = 0;
 	phy->bist_config = 0;

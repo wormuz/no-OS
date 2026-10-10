@@ -1518,6 +1518,16 @@ uint32_t ad9361_gt(struct ad9361_rf_phy *phy)
 	return phy->current_table;
 }
 
+int32_t ad9361_init_gain_tables(struct ad9361_rf_phy *phy)
+{
+	if (!phy)
+		return -EINVAL;
+
+	phy->current_table = NO_GAIN_TABLE;
+	phy->gt_info = ad9361_adi_gt_info;
+	return 0;
+}
+
 /**
  * Shift the real frequency value, so it fits type unsigned long
  * Note: PLL operates between 47 .. 6000 MHz which is > 2^32.
