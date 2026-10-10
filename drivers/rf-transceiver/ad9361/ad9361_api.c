@@ -888,6 +888,8 @@ int32_t ad9361_set_rx_rf_bandwidth(struct ad9361_rf_phy *phy,
 				   uint32_t bandwidth_hz)
 {
 	int32_t ret = 0;
+	if (!phy)
+		return -EINVAL;
 
 	bandwidth_hz = ad9361_validate_rf_bw(phy, bandwidth_hz);
 
@@ -909,6 +911,9 @@ int32_t ad9361_set_rx_rf_bandwidth(struct ad9361_rf_phy *phy,
 int32_t ad9361_get_rx_rf_bandwidth(struct ad9361_rf_phy *phy,
 				   uint32_t *bandwidth_hz)
 {
+	if (!phy || !bandwidth_hz)
+		return -EINVAL;
+
 	*bandwidth_hz = phy->current_rx_bw_Hz;
 
 	return 0;
@@ -929,6 +934,8 @@ int32_t ad9361_set_rx_sampling_freq(struct ad9361_rf_phy *phy,
 {
 	int32_t ret;
 	uint32_t rx[6], tx[6];
+	if (!phy)
+		return -EINVAL;
 
 	ret = ad9361_calculate_rf_clock_chain(phy, sampling_freq_hz,
 					      phy->rate_governor, rx, tx);
@@ -1653,6 +1660,8 @@ int32_t ad9361_set_tx_rf_bandwidth(struct ad9361_rf_phy *phy,
 				   uint32_t  bandwidth_hz)
 {
 	int32_t ret = 0;
+	if (!phy)
+		return -EINVAL;
 
 	bandwidth_hz = ad9361_validate_rf_bw(phy, bandwidth_hz);
 
@@ -1674,6 +1683,9 @@ int32_t ad9361_set_tx_rf_bandwidth(struct ad9361_rf_phy *phy,
 int32_t ad9361_get_tx_rf_bandwidth(struct ad9361_rf_phy *phy,
 				   uint32_t *bandwidth_hz)
 {
+	if (!phy || !bandwidth_hz)
+		return -EINVAL;
+
 	*bandwidth_hz = phy->current_tx_bw_Hz;
 
 	return 0;
@@ -1694,6 +1706,8 @@ int32_t ad9361_set_tx_sampling_freq(struct ad9361_rf_phy *phy,
 {
 	int32_t ret;
 	uint32_t rx[6], tx[6];
+	if (!phy)
+		return -EINVAL;
 
 	ret = ad9361_calculate_rf_clock_chain(phy, sampling_freq_hz,
 					      phy->rate_governor, rx, tx);
