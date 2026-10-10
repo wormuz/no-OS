@@ -1957,12 +1957,15 @@ static int32_t ad9361_spi_write_register_run(struct no_os_spi_desc *spi,
 
 static int32_t ad9361_rfpll_vco_init(struct ad9361_rf_phy *phy,
 				     bool tx, uint64_t vco_freq,
-				     uint32_t ref_clk)
+				     uint32_t ref_clk,
+				     bool fdd_lo_different,
+				     bool *uses_tdd_table)
 {
 	struct no_os_spi_desc *spi = phy->spi;
 	const struct SynthLUT(*tab);
 	int32_t i = 0, ret;
 	uint32_t range, offs = 0;
+	bool use_tdd_table;
 
 	range = ad9361_rfvco_tableindex(ref_clk);
 
@@ -1973,18 +1976,12 @@ static int32_t ad9361_rfpll_vco_init(struct ad9361_rf_phy *phy,
 	no_os_do_div(&vco_freq, 1000000UL); /* vco_freq in MHz */
 
 	if ((phy->pdata->fdd && !phy->pdata->fdd_independent_mode)
-	    && (phy->current_tx_lo_freq != phy->current_rx_lo_freq)) {
+	    && fdd_lo_different) {
 		tab = &SynthLUT_FDD[range][0];
-		if (tx)
-			phy->current_tx_use_tdd_table = false;
-		else
-			phy->current_rx_use_tdd_table = false;
+		use_tdd_table = false;
 	} else {
 		tab = &SynthLUT_TDD[range][0];
-		if (tx)
-			phy->current_tx_use_tdd_table = true;
-		else
-			phy->current_rx_use_tdd_table = true;
+		use_tdd_table = true;
 	}
 
 	if (tx)
@@ -2045,6 +2042,7 @@ static int32_t ad9361_rfpll_vco_init(struct ad9361_rf_phy *phy,
 								   NO_OS_ARRAY_SIZE(regs)));
 	}
 #undef RFPLL_SPI_TRY
+	*uses_tdd_table = use_tdd_table;
 
 	return 0;
 }
@@ -8383,6 +8381,9 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 	int32_t vco_div = 0, target_vco_div = 0, ret, fixup_other;
 	int32_t lock_error = 0;
 	bool tx;
+	bool tx_use_tdd_table, rx_use_tdd_table;
+	bool vco_cal_control_touched = false;
+	int32_t restore_ret;
 
 	if (!clk_priv || !clk_priv->phy || !clk_priv->spi || !rate ||
 	    !parent_rate)
@@ -8393,6 +8394,8 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 	tx = clk_priv->source == TX_RFPLL_INT;
 	rx_lo_freq = tx ? phy->current_rx_lo_freq : rate;
 	tx_lo_freq = tx ? rate : phy->current_tx_lo_freq;
+	tx_use_tdd_table = phy->current_tx_use_tdd_table;
+	rx_use_tdd_table = phy->current_rx_use_tdd_table;
 
 	dev_dbg(&clk_priv->spi->dev,
 		"%s: %s Rate %"PRIu32" Hz Parent Rate %"PRIu32" Hz",
@@ -8428,38 +8431,45 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 
 	/* Option to skip VCO cal in TDD mode when moving from TX/RX to Alert */
 	if (phy->pdata->tdd_skip_vco_cal) {
+		/* The control write can fail after partially changing RFIC state, so
+		 * route every exit below through the restore attempt. */
+		vco_cal_control_touched = true;
 		ret = ad9361_trx_vco_cal_control(phy,
 						 clk_priv->source == TX_RFPLL_INT,
 						 true);
 		if (ret < 0)
-			return ret;
+			goto restore_vco_cal;
 	}
 
 	do {
 		fixup_other = 0;
 		ret = ad9361_rfpll_vco_init(phy,
 					    div_mask == TX_VCO_DIVIDER(~0),
-					    vco, parent_rate);
+						    vco, parent_rate,
+						    tx_lo_freq != rx_lo_freq,
+						    div_mask == TX_VCO_DIVIDER(~0)
+							? &tx_use_tdd_table
+							: &rx_use_tdd_table);
 		if (ret < 0)
-			return ret;
+			goto restore_vco_cal;
 
 		buf[0] = SYNTH_FRACT_WORD(fract >> 16);
 		buf[1] = fract >> 8;
 		buf[2] = fract & 0xFF;
 		ret = ad9361_spi_read(clk_priv->spi, reg - 3);
 		if (ret < 0)
-			return ret;
+			goto restore_vco_cal;
 		buf[3] = SYNTH_INTEGER_WORD(integer >> 8) |
 			 (~SYNTH_INTEGER_WORD(~0) & ret);
 		buf[4] = integer & 0xFF;
 
 		ret = ad9361_spi_writem(clk_priv->spi, reg, buf, 5);
 		if (ret < 0)
-			return ret;
+			goto restore_vco_cal;
 		ret = ad9361_spi_writef(clk_priv->spi, REG_RFPLL_DIVIDERS,
 					 div_mask, vco_div);
 		if (ret < 0)
-			return ret;
+			goto restore_vco_cal;
 
 		ret = ad9361_check_cal_done(phy, lock_reg, VCO_LOCK, 1);
 		if (ret < 0 && lock_error == 0)
@@ -8471,10 +8481,10 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 
 		if (((phy->pdata->fdd && !phy->pdata->fdd_independent_mode)  &&
 		     (tx_lo_freq == rx_lo_freq) &&
-		     (phy->current_tx_use_tdd_table != phy->current_rx_use_tdd_table)) ||
+		     (tx_use_tdd_table != rx_use_tdd_table)) ||
 		    ((phy->pdata->fdd && !phy->pdata->fdd_independent_mode)  &&
 		     (tx_lo_freq != rx_lo_freq) &&
-		     (phy->current_tx_use_tdd_table || phy->current_rx_use_tdd_table))) {
+		     (tx_use_tdd_table || rx_use_tdd_table))) {
 			unsigned long _rate;
 
 			switch (clk_priv->source) {
@@ -8491,7 +8501,8 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 				_rate = rx_lo_freq;
 				break;
 			default:
-				return -EINVAL;
+				ret = -EINVAL;
+				goto restore_vco_cal;
 
 			}
 
@@ -8501,13 +8512,13 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 								   parent_rate, &integer,
 								   &fract, &vco_div, &vco);
 				if (ret < 0)
-					return ret;
+					goto restore_vco_cal;
 
 				ret = ad9361_fastlock_prepare(phy,
 							      clk_priv->source == RX_RFPLL_INT,
 							      0, false);
 				if (ret < 0)
-					return ret;
+					goto restore_vco_cal;
 			}
 
 			fixup_other = 1;
@@ -8515,16 +8526,25 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 
 	} while (fixup_other);
 
-	if (phy->pdata->tdd_skip_vco_cal) {
-		ret = ad9361_trx_vco_cal_control(phy,
-						 clk_priv->source == TX_RFPLL_INT,
-						 false);
-		if (ret < 0)
-			return ret;
-	}
-
 	if (lock_error < 0)
-		return lock_error;
+		ret = lock_error;
+	else
+		ret = 0;
+
+restore_vco_cal:
+	if (vco_cal_control_touched) {
+		restore_ret = ad9361_trx_vco_cal_control(
+			phy, clk_priv->source == TX_RFPLL_INT, false);
+		if (restore_ret < 0) {
+			dev_err(&clk_priv->spi->dev,
+				"Unable to restore VCO calibration control: %"PRId32,
+				restore_ret);
+			if (ret == 0)
+				ret = restore_ret;
+		}
+	}
+	if (ret < 0)
+		return ret;
 
 	/* Publish the new synthesizer cache only after register programming,
 	 * required VCO lock, counterpart fixup, and calibration-mode restore all
@@ -8537,8 +8557,10 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 		phy->cached_rx_rfpll_div = target_vco_div;
 		phy->current_rx_lo_freq = rate;
 	}
+	phy->current_tx_use_tdd_table = tx_use_tdd_table;
+	phy->current_rx_use_tdd_table = rx_use_tdd_table;
 
-	return ret;
+	return 0;
 }
 
 /**
