@@ -1158,6 +1158,9 @@ int32_t ad9361_bist_loopback(struct ad9361_rf_phy *phy, int32_t mode)
 	uint32_t sp_hd, reg;
 	int32_t ret;
 
+	if (!phy || !phy->spi)
+		return -EINVAL;
+
 	dev_dbg(&phy->spi->dev, "%s: mode %"PRId32, __func__, mode);
 	if (mode < 0 || mode > 2)
 		return -EINVAL;
@@ -1227,6 +1230,9 @@ int32_t ad9361_bist_loopback(struct ad9361_rf_phy *phy, int32_t mode)
  */
 void ad9361_get_bist_loopback(struct ad9361_rf_phy *phy, int32_t *mode)
 {
+	if (!phy || !mode)
+		return;
+
 	*mode = phy->bist_loopback_mode;
 }
 
@@ -1240,6 +1246,8 @@ int32_t ad9361_bist_prbs(struct ad9361_rf_phy *phy, enum ad9361_bist_mode mode)
 {
 	uint32_t reg = 0;
 	int32_t ret;
+	if (!phy || !phy->spi)
+		return -EINVAL;
 
 	dev_dbg(&phy->spi->dev, "%s: mode %d", __func__, mode);
 
@@ -1274,6 +1282,9 @@ int32_t ad9361_bist_prbs(struct ad9361_rf_phy *phy, enum ad9361_bist_mode mode)
 void ad9361_get_bist_prbs(struct ad9361_rf_phy *phy,
 			  enum ad9361_bist_mode *mode)
 {
+	if (!phy || !mode)
+		return;
+
 	*mode = phy->bist_prbs_mode;
 }
 
@@ -1294,6 +1305,8 @@ int32_t ad9361_bist_tone(struct ad9361_rf_phy *phy,
 	uint32_t reg = 0, reg1, reg_mask;
 	uint64_t tone_freq;
 	int32_t ret;
+	if (!phy || !phy->spi)
+		return -EINVAL;
 
 	dev_dbg(&phy->spi->dev, "%s: mode %d", __func__, mode);
 
@@ -1371,6 +1384,9 @@ void ad9361_get_bist_tone(struct ad9361_rf_phy *phy,
 			  enum ad9361_bist_mode *mode, uint32_t *freq_Hz,
 			  uint32_t *level_dB, uint32_t *mask)
 {
+	if (!phy || !mode || !freq_Hz || !level_dB || !mask)
+		return;
+
 	*mode = phy->bist_tone_mode;
 	*freq_Hz = phy->bist_tone_freq_Hz;
 	*level_dB = phy->bist_tone_level_dB;
