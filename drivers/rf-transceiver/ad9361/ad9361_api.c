@@ -57,6 +57,46 @@ static struct axiadc_chip_info axiadc_chip_info_tbl[] = {
 #define ADI_REG_VERSION			0x0000
 #endif
 
+/*
+ * The RFPLL lock-status bit is consumed by the bladeRF NIOS fastlock path as
+ * the hardware completion event. Configure it explicitly instead of relying
+ * on the AD9361 reset value or a bootloader's prior register state. UG-570
+ * recommends continuous lock detection and at least 1024 reference-clock
+ * cycles; count=2 selects 1024 cycles and mode=2 selects continuous.
+ */
+static int32_t ad9361_configure_rfpll_lock_detection(
+	struct ad9361_rf_phy *phy)
+{
+	static const uint8_t config_mask = 0x0f;
+	static const uint8_t required_config = 0x0a;
+	static const uint16_t lock_config_regs[] = {
+		REG_RX_LOCK_DETECT_CONFIG,
+		REG_TX_LOCK_DETECT_CONFIG,
+	};
+	size_t i;
+
+	for (i = 0; i < NO_OS_ARRAY_SIZE(lock_config_regs); i++) {
+		int32_t value = ad9361_spi_read(phy->spi, lock_config_regs[i]);
+		int32_t ret;
+
+		if (value < 0)
+			return value;
+
+		value = (value & ~config_mask) | required_config;
+		ret = ad9361_spi_write(phy->spi, lock_config_regs[i], value);
+		if (ret < 0)
+			return ret;
+
+		value = ad9361_spi_read(phy->spi, lock_config_regs[i]);
+		if (value < 0)
+			return value;
+		if ((value & config_mask) != required_config)
+			return -EIO;
+	}
+
+	return 0;
+}
+
 /**
  * Initialize the AD9361 part.
  * @param ad9361_phy The AD9361 device structure.
@@ -572,6 +612,13 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 		goto out;
 	}
 	rev = ret & REV_MASK;
+
+	/* The lock-status registers are consumed by the host and NIOS transition
+	 * paths. Program and verify the detector before ad9361_setup() tunes either
+	 * RFPLL, so the first lock indication is covered by the same contract. */
+	ret = ad9361_configure_rfpll_lock_detection(phy);
+	if (ret < 0)
+		goto out;
 
 	phy->ad9361_rfpll_ext_recalc_rate = init_param->ad9361_rfpll_ext_recalc_rate;
 	phy->ad9361_rfpll_ext_round_rate = init_param->ad9361_rfpll_ext_round_rate;
