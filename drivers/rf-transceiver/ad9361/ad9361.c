@@ -1829,19 +1829,12 @@ out:
 	return ret;
 }
 
-/**
- * Set the attenuation for the selected TX channels.
- * @param phy The AD9361 state structure.
- * @param atten_mdb Attenuation value [mdB].
- * @param tx1 Set true, the attenuation of the TX1 will be affected.
- * @param tx2 Set true, the attenuation of the TX2 will be affected.
- * @param immed Set true, an immediate update will take place.
- * @return 0 in case of success, negative error code otherwise.
- */
-int32_t ad9361_set_tx_atten(struct ad9361_rf_phy *phy, uint32_t atten_mdb,
-			    bool tx1, bool tx2, bool immed)
+/* Apply per-channel attenuation values as one RFIC update transaction. */
+static int32_t ad9361_set_tx_atten_channels(
+	struct ad9361_rf_phy *phy, uint32_t tx1_atten_mdb,
+	uint32_t tx2_atten_mdb, bool tx1, bool tx2, bool immed)
 {
-	uint8_t buf[2];
+	uint8_t tx1_buf[2], tx2_buf[2];
 	uint32_t old_tx1_atten = 0, old_tx2_atten = 0;
 	int32_t ret = 0, cleanup_ret, restore_ret;
 	bool immediate_update_touched = false;
@@ -1850,10 +1843,13 @@ int32_t ad9361_set_tx_atten(struct ad9361_rf_phy *phy, uint32_t atten_mdb,
 	if (!phy || !phy->spi || (!tx1 && !tx2))
 		return -EINVAL;
 
-	dev_dbg(&phy->spi->dev, "%s : attenuation %"PRIu32" mdB tx1=%d tx2=%d",
-		__func__, atten_mdb, tx1, tx2);
+	dev_dbg(&phy->spi->dev,
+		"%s : attenuation tx1=%"PRIu32" mdB tx2=%"PRIu32
+		" mdB tx1=%d tx2=%d",
+		__func__, tx1_atten_mdb, tx2_atten_mdb, tx1, tx2);
 
-	if (atten_mdb > MAX_TX_ATTENUATION_DB) /* 89.75 dB */
+	if ((tx1 && tx1_atten_mdb > MAX_TX_ATTENUATION_DB) ||
+	    (tx2 && tx2_atten_mdb > MAX_TX_ATTENUATION_DB)) /* 89.75 dB */
 		return -EINVAL;
 
 	/* Snapshot every selected channel before the first write. A failed
@@ -1864,18 +1860,19 @@ int32_t ad9361_set_tx_atten(struct ad9361_rf_phy *phy, uint32_t atten_mdb,
 		if (ret < 0)
 			return ret;
 		old_tx1_atten = (uint32_t)ret;
+		tx1_atten_mdb /= 250;
+		tx1_buf[0] = tx1_atten_mdb >> 8;
+		tx1_buf[1] = tx1_atten_mdb & 0xFF;
 	}
 	if (tx2) {
 		ret = ad9361_get_tx_atten(phy, 2);
 		if (ret < 0)
 			return ret;
 		old_tx2_atten = (uint32_t)ret;
+		tx2_atten_mdb /= 250;
+		tx2_buf[0] = tx2_atten_mdb >> 8;
+		tx2_buf[1] = tx2_atten_mdb & 0xFF;
 	}
-
-	atten_mdb /= 250; /* Scale to 0.25dB / LSB */
-
-	buf[0] = atten_mdb >> 8;
-	buf[1] = atten_mdb & 0xFF;
 
 	/* When immediate mode is requested, arm cleanup before the control
 	 * write: an SPI error cannot tell us whether the disable reached the RFIC. */
@@ -1887,14 +1884,14 @@ int32_t ad9361_set_tx_atten(struct ad9361_rf_phy *phy, uint32_t atten_mdb,
 
 	if (tx1) {
 		attenuation_write_started = true;
-		ret = ad9361_spi_writem(phy->spi, REG_TX1_ATTEN_1, buf, 2);
+		ret = ad9361_spi_writem(phy->spi, REG_TX1_ATTEN_1, tx1_buf, 2);
 		if (ret < 0)
 			goto cleanup;
 	}
 
 	if (tx2) {
 		attenuation_write_started = true;
-		ret = ad9361_spi_writem(phy->spi, REG_TX2_ATTEN_1, buf, 2);
+		ret = ad9361_spi_writem(phy->spi, REG_TX2_ATTEN_1, tx2_buf, 2);
 		if (ret < 0)
 			goto cleanup;
 	}
@@ -1948,6 +1945,22 @@ cleanup:
 				cleanup_ret);
 	}
 	return ret;
+}
+
+/**
+ * Set the attenuation for the selected TX channels.
+ * @param phy The AD9361 state structure.
+ * @param atten_mdb Attenuation value [mdB].
+ * @param tx1 Set true, the attenuation of the TX1 will be affected.
+ * @param tx2 Set true, the attenuation of the TX2 will be affected.
+ * @param immed Set true, an immediate update will take place.
+ * @return 0 in case of success, negative error code otherwise.
+ */
+int32_t ad9361_set_tx_atten(struct ad9361_rf_phy *phy, uint32_t atten_mdb,
+			    bool tx1, bool tx2, bool immed)
+{
+	return ad9361_set_tx_atten_channels(phy, atten_mdb, atten_mdb,
+					     tx1, tx2, immed);
 }
 
 /**
@@ -2018,12 +2031,9 @@ int32_t ad9361_tx_mute(struct ad9361_rf_phy *phy, uint32_t state)
 			return ret;
 		}
 
-		ret = ad9361_set_tx_atten(phy, phy->tx_mute_restore_atten[0],
-					  true, false, true);
-		if (ret < 0)
-			return ret;
-		ret = ad9361_set_tx_atten(phy, phy->tx_mute_restore_atten[1],
-					  false, true, true);
+		ret = ad9361_set_tx_atten_channels(
+			phy, phy->tx_mute_restore_atten[0],
+			phy->tx_mute_restore_atten[1], true, true, true);
 		if (ret == 0)
 			phy->tx_mute_restore_valid = false;
 
