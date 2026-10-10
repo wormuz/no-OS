@@ -1987,6 +1987,7 @@ int32_t ad9361_get_tx_rssi(struct ad9361_rf_phy *phy,
 {
 	uint8_t reg_val_buf[3];
 	uint32_t val;
+	int32_t tx_channel;
 	int32_t ret;
 
 	if (!phy || !phy->pdata || !rssi_db_x_1000 || ch > 1 ||
@@ -1999,11 +2000,12 @@ int32_t ad9361_get_tx_rssi(struct ad9361_rf_phy *phy,
 		return ret;
 	}
 
-	switch (ch) {
-	case 0:
+	tx_channel = ad9361_1rx1tx_channel_map(phy, true, ch + 1);
+	switch (tx_channel) {
+	case 1:
 		val = (reg_val_buf[2] << 1) | (reg_val_buf[0] & TX_RSSI_1);
 		break;
-	case 1:
+	case 2:
 		val = (reg_val_buf[1] << 1) | ((reg_val_buf[0] & TX_RSSI_2) >> 1);
 		break;
 	default:
