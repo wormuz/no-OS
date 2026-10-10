@@ -2037,10 +2037,11 @@ int32_t ad9361_set_tx_rf_port_output(struct ad9361_rf_phy *phy,
 				     uint32_t mode)
 {
 	int32_t ret;
-	uint32_t old_mode = phy->pdata->rf_tx_output_sel;
+	uint32_t old_mode;
 
-	if (mode > 1)
+	if (!phy || !phy->spi || !phy->pdata || mode > 1)
 		return -EINVAL;
+	old_mode = phy->pdata->rf_tx_output_sel;
 
 	phy->pdata->rf_tx_output_sel = mode;
 
@@ -2062,6 +2063,9 @@ int32_t ad9361_set_tx_rf_port_output(struct ad9361_rf_phy *phy,
 int32_t ad9361_get_tx_rf_port_output(struct ad9361_rf_phy *phy,
 				     uint32_t *mode)
 {
+	if (!phy || !phy->pdata || !mode)
+		return -EINVAL;
+
 	*mode = phy->pdata->rf_tx_output_sel;
 
 	return 0;
