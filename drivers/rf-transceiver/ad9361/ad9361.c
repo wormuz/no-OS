@@ -8293,7 +8293,7 @@ static int32_t ad9361_fastlock_get_freq(struct ad9361_rf_phy *phy, bool tx,
 	const uint8_t *data;
 	int32_t ret;
 
-	if (phy == NULL || freq_hz == NULL || profile >= 8)
+	if (phy == NULL || phy->spi == NULL || freq_hz == NULL || profile >= 8)
 		return -EINVAL;
 
 	/* ad9361_fastlock_load() has already accepted these exact bytes and
