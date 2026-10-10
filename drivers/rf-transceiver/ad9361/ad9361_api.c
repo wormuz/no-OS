@@ -1078,7 +1078,7 @@ int32_t ad9361_get_rx_rssi(struct ad9361_rf_phy *phy,
 	int32_t ret;
 	struct rf_rssi result = {0};
 
-	if (!phy || !phy->pdata || !rssi || ch > 1 ||
+	if (!phy || !phy->spi || !phy->pdata || !rssi || ch > 1 ||
 	    (!phy->pdata->rx2tx2 && ch != 0))
 		return -EINVAL;
 
@@ -1617,7 +1617,7 @@ int32_t ad9361_get_tx_attenuation(struct ad9361_rf_phy *phy,
 {
 	int32_t ret;
 
-	if (!phy || !phy->pdata || !attenuation_mdb || ch > 1 ||
+	if (!phy || !phy->spi || !phy->pdata || !attenuation_mdb || ch > 1 ||
 	    (!phy->pdata->rx2tx2 && ch != 0))
 		return -EINVAL;
 
@@ -1994,7 +1994,7 @@ int32_t ad9361_get_tx_rssi(struct ad9361_rf_phy *phy,
 	int32_t tx_channel;
 	int32_t ret;
 
-	if (!phy || !phy->pdata || !rssi_db_x_1000 || ch > 1 ||
+	if (!phy || !phy->spi || !phy->pdata || !rssi_db_x_1000 || ch > 1 ||
 	    (!phy->pdata->rx2tx2 && ch != 0))
 		return -EINVAL;
 

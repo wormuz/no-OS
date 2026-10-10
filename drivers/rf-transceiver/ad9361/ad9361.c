@@ -1897,7 +1897,7 @@ int32_t ad9361_get_tx_atten(struct ad9361_rf_phy *phy, uint32_t tx_num)
 	int32_t ret = 0;
 	uint32_t code;
 
-	if (tx_num != 1 && tx_num != 2)
+	if (!phy || !phy->spi || (tx_num != 1 && tx_num != 2))
 		return -EINVAL;
 
 	ret = ad9361_spi_readm(phy->spi, (tx_num == 1) ?
@@ -2859,9 +2859,14 @@ out:
  */
 int32_t ad9361_read_rssi(struct ad9361_rf_phy *phy, struct rf_rssi *rssi)
 {
-	struct no_os_spi_desc *spi = phy->spi;
+	struct no_os_spi_desc *spi;
 	uint8_t reg_val_buf[6];
 	int32_t rc;
+
+	if (!phy || !phy->spi || !rssi || (rssi->ant != 1 && rssi->ant != 2))
+		return -EINVAL;
+
+	spi = phy->spi;
 
 	rc = ad9361_spi_readm(spi, REG_PREAMBLE_LSB,
 			      reg_val_buf, NO_OS_ARRAY_SIZE(reg_val_buf));
