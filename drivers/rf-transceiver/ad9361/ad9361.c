@@ -6843,8 +6843,16 @@ int32_t ad9361_do_calib_run(struct ad9361_rf_phy *phy, uint32_t cal,
 	dev_dbg(&phy->spi->dev, "%s: CAL %"PRIu32" ARG %"PRId32, __func__, cal, arg);
 
 	ret = ad9361_tracking_control(phy, false, false, false);
-	if (ret < 0)
+	if (ret < 0) {
+		int32_t tracking_restore_ret = ad9361_tracking_control(
+			phy, phy->bbdc_track_en, phy->rfdc_track_en,
+			phy->quad_track_en);
+		if (tracking_restore_ret < 0)
+			dev_err(&phy->spi->dev,
+				"Unable to restore tracking after calibration setup failure: %"PRId32,
+				tracking_restore_ret);
 		return ret;
+	}
 
 	ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
 	if (ret >= 0) {
@@ -6887,8 +6895,16 @@ int32_t ad9361_do_calib_timeout(struct ad9361_rf_phy *phy, uint32_t cal,
 		return -EINVAL;
 
 	ret = ad9361_tracking_control(phy, false, false, false);
-	if (ret < 0)
+	if (ret < 0) {
+		int32_t tracking_restore_ret = ad9361_tracking_control(
+			phy, phy->bbdc_track_en, phy->rfdc_track_en,
+			phy->quad_track_en);
+		if (tracking_restore_ret < 0)
+			dev_err(&phy->spi->dev,
+				"Unable to restore tracking after calibration setup failure: %"PRId32,
+				tracking_restore_ret);
 		return ret;
+	}
 
 	ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
 	if (ret >= 0)
@@ -6918,8 +6934,16 @@ int32_t ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
 	int32_t ret, tracking_ret, restore_ret;
 
 	ret = ad9361_tracking_control(phy, false, false, false);
-	if (ret < 0)
+	if (ret < 0) {
+		int32_t tracking_restore_ret = ad9361_tracking_control(
+			phy, phy->bbdc_track_en, phy->rfdc_track_en,
+			phy->quad_track_en);
+		if (tracking_restore_ret < 0)
+			dev_err(&phy->spi->dev,
+				"Unable to restore tracking after bandwidth setup failure: %"PRId32,
+				tracking_restore_ret);
 		return ret;
+	}
 
 	ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
 	if (ret < 0)
