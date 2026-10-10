@@ -713,6 +713,9 @@ int32_t ad9361_set_en_state_machine_mode(struct ad9361_rf_phy *phy,
 	bool pinctrl = false;
 	bool fdd_independent = false;
 
+	if (!phy || !phy->pdata || !phy->spi)
+		return -EINVAL;
+
 	switch (mode) {
 	case ENSM_MODE_TX:
 		ensm_state = ENSM_STATE_TX;
@@ -767,6 +770,9 @@ int32_t ad9361_get_en_state_machine_mode(struct ad9361_rf_phy *phy,
 	uint8_t ensm_state;
 	bool pinctrl = false;
 	int32_t ret;
+
+	if (!phy || !phy->pdata || !phy->spi || !mode)
+		return -EINVAL;
 
 	ret = ad9361_spi_read(phy->spi, REG_STATE);
 	if (ret < 0)
@@ -831,7 +837,7 @@ int32_t ad9361_set_rx_rf_gain(struct ad9361_rf_phy *phy,
 	struct rf_rx_gain rx_gain = {0, 0, 0, 0, 0, 0, 0, 0, 0};
 	int32_t ret = 0;
 
-	if (!phy || !phy->pdata || ch > 1 ||
+	if (!phy || !phy->spi || !phy->pdata || ch > 1 ||
 	    (!phy->pdata->rx2tx2 && ch != 0))
 		return -EINVAL;
 
@@ -888,7 +894,7 @@ int32_t ad9361_set_rx_rf_bandwidth(struct ad9361_rf_phy *phy,
 				   uint32_t bandwidth_hz)
 {
 	int32_t ret = 0;
-	if (!phy)
+	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 
 	bandwidth_hz = ad9361_validate_rf_bw(phy, bandwidth_hz);
@@ -934,7 +940,7 @@ int32_t ad9361_set_rx_sampling_freq(struct ad9361_rf_phy *phy,
 {
 	int32_t ret;
 	uint32_t rx[6], tx[6];
-	if (!phy)
+	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 
 	ret = ad9361_calculate_rf_clock_chain(phy, sampling_freq_hz,
@@ -994,7 +1000,7 @@ int32_t ad9361_set_rx_lo_freq(struct ad9361_rf_phy *phy,
 {
 	int32_t ret;
 
-	if (!phy)
+	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 
 	ret = clk_set_rate(phy, phy->ref_clk_scale[RX_RFPLL],
@@ -1064,7 +1070,7 @@ int32_t ad9361_set_rx_lo_int_ext(struct ad9361_rf_phy *phy, uint8_t int_ext)
 	uint8_t old_use_ext;
 	int32_t ret;
 
-	if (!phy || !phy->pdata || !phy->ref_clk_scale[RX_RFPLL] ||
+	if (!phy || !phy->spi || !phy->pdata || !phy->ref_clk_scale[RX_RFPLL] ||
 	    (int_ext != INT_LO && int_ext != EXT_LO))
 		return -EINVAL;
 	old_use_ext = phy->pdata->use_ext_rx_lo;
@@ -1134,7 +1140,7 @@ int32_t ad9361_set_rx_gain_control_mode(struct ad9361_rf_phy *phy,
 {
 	struct rf_gain_ctrl gc = {0, 0};
 
-	if (!phy || !phy->pdata || ch > 1 ||
+	if (!phy || !phy->spi || !phy->pdata || ch > 1 ||
 	    (!phy->pdata->rx2tx2 && ch != 0))
 		return -EINVAL;
 
@@ -1289,7 +1295,7 @@ int32_t ad9361_set_rx_fir_en_dis(struct ad9361_rf_phy *phy,
 {
 	int32_t ret = 0;
 	bool old_bypass;
-	if (!phy)
+	if (!phy || !phy->spi)
 		return -EINVAL;
 	old_bypass = phy->bypass_rx_fir;
 	if (en_dis > 1)
@@ -1336,7 +1342,11 @@ int32_t ad9361_set_rx_rfdc_track_en_dis(struct ad9361_rf_phy *phy,
 					uint8_t en_dis)
 {
 	int32_t ret;
-	uint8_t old_en = phy->rfdc_track_en;
+	uint8_t old_en;
+
+	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
+	old_en = phy->rfdc_track_en;
 
 	if (en_dis > 1)
 		return -EINVAL;
@@ -1362,6 +1372,9 @@ int32_t ad9361_set_rx_rfdc_track_en_dis(struct ad9361_rf_phy *phy,
 int32_t ad9361_get_rx_rfdc_track_en_dis(struct ad9361_rf_phy *phy,
 					uint8_t *en_dis)
 {
+	if (!phy || !en_dis)
+		return -EINVAL;
+
 	*en_dis = phy->rfdc_track_en;
 
 	return 0;
@@ -1380,7 +1393,11 @@ int32_t ad9361_set_rx_bbdc_track_en_dis(struct ad9361_rf_phy *phy,
 					uint8_t en_dis)
 {
 	int32_t ret;
-	uint8_t old_en = phy->bbdc_track_en;
+	uint8_t old_en;
+
+	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
+	old_en = phy->bbdc_track_en;
 
 	if (en_dis > 1)
 		return -EINVAL;
@@ -1406,6 +1423,9 @@ int32_t ad9361_set_rx_bbdc_track_en_dis(struct ad9361_rf_phy *phy,
 int32_t ad9361_get_rx_bbdc_track_en_dis(struct ad9361_rf_phy *phy,
 					uint8_t *en_dis)
 {
+	if (!phy || !en_dis)
+		return -EINVAL;
+
 	*en_dis = phy->bbdc_track_en;
 
 	return 0;
@@ -1424,7 +1444,11 @@ int32_t ad9361_set_rx_quad_track_en_dis(struct ad9361_rf_phy *phy,
 					uint8_t en_dis)
 {
 	int32_t ret;
-	uint8_t old_en = phy->quad_track_en;
+	uint8_t old_en;
+
+	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
+	old_en = phy->quad_track_en;
 
 	if (en_dis > 1)
 		return -EINVAL;
@@ -1450,6 +1474,9 @@ int32_t ad9361_set_rx_quad_track_en_dis(struct ad9361_rf_phy *phy,
 int32_t ad9361_get_rx_quad_track_en_dis(struct ad9361_rf_phy *phy,
 					uint8_t *en_dis)
 {
+	if (!phy || !en_dis)
+		return -EINVAL;
+
 	*en_dis = phy->quad_track_en;
 
 	return 0;
@@ -1629,7 +1656,7 @@ int32_t ad9361_set_tx_attenuation(struct ad9361_rf_phy *phy,
 	int32_t ret;
 	int32_t channel;
 
-	if (!phy || !phy->pdata || ch > 1 ||
+	if (!phy || !phy->spi || !phy->pdata || ch > 1 ||
 	    (!phy->pdata->rx2tx2 && ch != 0))
 		return -EINVAL;
 
@@ -1689,7 +1716,7 @@ int32_t ad9361_set_tx_rf_bandwidth(struct ad9361_rf_phy *phy,
 				   uint32_t  bandwidth_hz)
 {
 	int32_t ret = 0;
-	if (!phy)
+	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 
 	bandwidth_hz = ad9361_validate_rf_bw(phy, bandwidth_hz);
@@ -1735,7 +1762,7 @@ int32_t ad9361_set_tx_sampling_freq(struct ad9361_rf_phy *phy,
 {
 	int32_t ret;
 	uint32_t rx[6], tx[6];
-	if (!phy)
+	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 
 	ret = ad9361_calculate_rf_clock_chain(phy, sampling_freq_hz,
@@ -1795,7 +1822,7 @@ int32_t ad9361_set_tx_lo_freq(struct ad9361_rf_phy *phy,
 {
 	int32_t ret;
 
-	if (!phy)
+	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 
 	ret = clk_set_rate(phy, phy->ref_clk_scale[TX_RFPLL],
@@ -1865,7 +1892,7 @@ int32_t ad9361_set_tx_lo_int_ext(struct ad9361_rf_phy *phy, uint8_t int_ext)
 	uint8_t old_use_ext;
 	int32_t ret;
 
-	if (!phy || !phy->pdata || !phy->ref_clk_scale[TX_RFPLL] ||
+	if (!phy || !phy->spi || !phy->pdata || !phy->ref_clk_scale[TX_RFPLL] ||
 	    (int_ext != INT_LO && int_ext != EXT_LO))
 		return -EINVAL;
 	old_use_ext = phy->pdata->use_ext_tx_lo;
@@ -1992,7 +2019,7 @@ int32_t ad9361_set_tx_fir_en_dis(struct ad9361_rf_phy *phy,
 {
 	int32_t ret = 0;
 	bool old_bypass;
-	if (!phy)
+	if (!phy || !phy->spi)
 		return -EINVAL;
 	old_bypass = phy->bypass_tx_fir;
 	if (en_dis > 1)
@@ -2045,6 +2072,9 @@ int32_t ad9361_get_tx_fir_en_dis(struct ad9361_rf_phy *phy,
  */
 int32_t ad9361_txmon_enable(struct ad9361_rf_phy *phy, int32_t en_mask)
 {
+	if (!phy || !phy->spi)
+		return -EINVAL;
+
 	return ad9361_txmon_control(phy, en_mask);
 }
 
@@ -2295,7 +2325,7 @@ int32_t ad9361_set_trx_path_clks(struct ad9361_rf_phy *phy,
 {
 	int32_t ret;
 
-	if (!phy || !rx_path_clks || !tx_path_clks)
+	if (!phy || !phy->spi || !phy->pdata || !rx_path_clks || !tx_path_clks)
 		return -EINVAL;
 
 	ret = ad9361_set_trx_clock_chain(phy, rx_path_clks, tx_path_clks);
@@ -2552,7 +2582,7 @@ int32_t ad9361_set_trx_fir_en_dis(struct ad9361_rf_phy *phy,
 	bool old_rx_bypass;
 	bool old_tx_bypass;
 
-	if (!phy)
+	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 
 	old_rx_bypass = phy->bypass_rx_fir;
@@ -2587,7 +2617,7 @@ int32_t ad9361_set_trx_fir_en_dis(struct ad9361_rf_phy *phy,
  */
 int32_t ad9361_set_trx_rate_gov(struct ad9361_rf_phy *phy, uint32_t rate_gov)
 {
-	if (!phy)
+	if (!phy || rate_gov > 1)
 		return -EINVAL;
 
 	if (rate_gov == 0)
@@ -2628,7 +2658,7 @@ int32_t ad9361_get_trx_rate_gov(struct ad9361_rf_phy *phy, uint32_t *rate_gov)
  */
 int32_t ad9361_do_calib(struct ad9361_rf_phy *phy, uint32_t cal, int32_t arg)
 {
-	if (!phy)
+	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 
 	return ad9361_do_calib_run(phy, cal, arg);
@@ -2649,7 +2679,7 @@ int32_t ad9361_trx_load_enable_fir(struct ad9361_rf_phy *phy,
 {
 	int32_t rtx = -1, rrx = -1, ret;
 
-	if (!phy)
+	if (!phy || !phy->spi)
 		return -EINVAL;
 
 	phy->filt_rx_bw_Hz = 0;
@@ -2705,7 +2735,7 @@ int32_t ad9361_do_dcxo_tune_coarse(struct ad9361_rf_phy *phy,
 {
 	int32_t ret;
 
-	if (!phy || !phy->pdata)
+	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 
 	ret = ad9361_set_dcxo_tune(phy, coarse, phy->pdata->dcxo_fine);
@@ -2725,7 +2755,7 @@ int32_t ad9361_do_dcxo_tune_fine(struct ad9361_rf_phy *phy,
 {
 	int32_t ret;
 
-	if (!phy || !phy->pdata)
+	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 
 	ret = ad9361_set_dcxo_tune(phy, phy->pdata->dcxo_coarse, fine);
@@ -2745,7 +2775,7 @@ int32_t ad9361_get_temperature(struct ad9361_rf_phy *phy,
 {
 	int32_t ret;
 
-	if (!phy || !temp)
+	if (!phy || !phy->spi || !temp)
 		return -EINVAL;
 
 	ret = ad9361_get_temp(phy);

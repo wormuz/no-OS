@@ -4010,9 +4010,13 @@ out_restore:
 int32_t ad9361_tracking_control(struct ad9361_rf_phy *phy, bool bbdc_track,
 				bool rfdc_track, bool rxquad_track)
 {
-	struct no_os_spi_desc *spi = phy->spi;
+	struct no_os_spi_desc *spi;
 	uint32_t qtrack = 0;
 	int32_t ret;
+
+	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
+	spi = phy->spi;
 
 	dev_dbg(&spi->dev, "%s : bbdc_track=%d, rfdc_track=%d, rxquad_track=%d",
 		__func__, bbdc_track, rfdc_track, rxquad_track);
@@ -4324,7 +4328,7 @@ int32_t ad9361_txmon_control(struct ad9361_rf_phy *phy,
 {
 	int32_t ret;
 
-	if (en_mask & ~(TX_1 | TX_2))
+	if (!phy || !phy->spi || (en_mask & ~(TX_1 | TX_2)))
 		return -EINVAL;
 
 	dev_dbg(&phy->spi->dev, "%s: mask 0x%"PRIx32, __func__, en_mask);
@@ -9506,6 +9510,9 @@ int32_t ad9361_read_clock_data_delays(struct ad9361_rf_phy *phy)
 {
 	int32_t rx_delay, tx_delay;
 
+	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
+
 	rx_delay = ad9361_spi_read(phy->spi, REG_RX_CLOCK_DATA_DELAY);
 	if (rx_delay < 0)
 		return rx_delay;
@@ -9527,6 +9534,9 @@ int32_t ad9361_write_clock_data_delays(struct ad9361_rf_phy *phy)
 {
 	int32_t ret;
 
+	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
+
 	ret = ad9361_spi_write(phy->spi, REG_RX_CLOCK_DATA_DELAY,
 			       phy->pdata->port_ctrl.rx_clk_data_delay);
 	if (ret < 0)
@@ -9544,7 +9554,7 @@ int32_t ad9361_write_clock_data_delays(struct ad9361_rf_phy *phy)
 int32_t ad9361_get_dig_tune_data(struct ad9361_rf_phy *phy,
 				 struct ad9361_dig_tune_data *data)
 {
-	if (!data)
+	if (!phy || !phy->pdata || !data)
 		return -EINVAL;
 
 	data->skip_mode     = phy->pdata->dig_interface_tune_skipmode;
@@ -9564,7 +9574,12 @@ int32_t ad9361_get_dig_tune_data(struct ad9361_rf_phy *phy,
  */
 int32_t ad9361_write_bist_reg(struct ad9361_rf_phy *phy, uint32_t val)
 {
-	int32_t ret = ad9361_spi_write(phy->spi,
+	int32_t ret;
+
+	if (!phy || !phy->spi)
+		return -EINVAL;
+
+	ret = ad9361_spi_write(phy->spi,
 				       REG_BIST_AND_DATA_PORT_TEST_CONFIG, val);
 	if (ret < 0)
 		return ret;
@@ -9580,6 +9595,9 @@ int32_t ad9361_write_bist_reg(struct ad9361_rf_phy *phy, uint32_t val)
  */
 int32_t ad9361_ensm_mode_disable_pinctrl(struct ad9361_rf_phy *phy)
 {
+	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
+
 	if (!phy->pdata->fdd)
 		return ad9361_set_ensm_mode(phy, true, false);
 	return 0;
@@ -9592,6 +9610,9 @@ int32_t ad9361_ensm_mode_disable_pinctrl(struct ad9361_rf_phy *phy)
  */
 int32_t ad9361_ensm_mode_restore_pinctrl(struct ad9361_rf_phy *phy)
 {
+	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
+
 	if (!phy->pdata->fdd)
 		return ad9361_set_ensm_mode(phy, phy->pdata->fdd,
 					    phy->pdata->ensm_pin_ctrl);
@@ -9610,6 +9631,8 @@ int32_t ad9361_ensm_mode_restore_pinctrl(struct ad9361_rf_phy *phy)
 int32_t ad9361_set_cal_sw(struct ad9361_rf_phy *phy, uint32_t val)
 {
 	int32_t ret;
+	if (!phy || !phy->spi)
+		return -EINVAL;
 	if (val > 3)
 		return -EINVAL;
 
