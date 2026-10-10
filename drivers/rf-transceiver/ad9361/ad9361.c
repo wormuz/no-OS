@@ -9136,6 +9136,13 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 	if (!phy->pdata)
 		return -EINVAL;
 	tx = clk_priv->source == TX_RFPLL_INT;
+	/* Once RFPLL programming starts, the prior software LO value no longer
+	 * proves what is active if any later SPI operation or lock check fails.
+	 * Leave the target-side cache unknown until the full sequence succeeds. */
+	if (tx)
+		phy->current_tx_lo_freq = 0;
+	else
+		phy->current_rx_lo_freq = 0;
 	rx_lo_freq = tx ? phy->current_rx_lo_freq : rate;
 	tx_lo_freq = tx ? rate : phy->current_tx_lo_freq;
 	tx_use_tdd_table = phy->current_tx_use_tdd_table;
@@ -9595,6 +9602,8 @@ int32_t ad9361_clk_mux_set_parent(struct refclk_scale *clk_priv, uint8_t index)
 {
 	struct ad9361_rf_phy *phy;
 	int32_t ret, restore_ret;
+	bool tx;
+	uint64_t restore_hz;
 
 	if (!clk_priv || !clk_priv->phy || !clk_priv->phy->pdata ||
 	    !clk_priv->spi || index > 1 ||
@@ -9602,6 +9611,11 @@ int32_t ad9361_clk_mux_set_parent(struct refclk_scale *clk_priv, uint8_t index)
 	     clk_priv->source != TX_RFPLL))
 		return -EINVAL;
 	phy = clk_priv->phy;
+	tx = (clk_priv->source == TX_RFPLL);
+	restore_hz = tx ? phy->current_tx_lo_freq : phy->current_rx_lo_freq;
+	/* Do not switch from an external LO to an unconfigured internal PLL. */
+	if (!index && !restore_hz)
+		return -EIO;
 
 	dev_dbg(&clk_priv->spi->dev, "%s: index %d", __func__, index);
 
@@ -9627,31 +9641,25 @@ int32_t ad9361_clk_mux_set_parent(struct refclk_scale *clk_priv, uint8_t index)
 	 * known frequency so the PLL actually locks.
 	 */
 	if (ret >= 0 && index == 0) {
-		bool tx = (clk_priv->source == TX_RFPLL);
-		uint64_t restore_hz = tx ? phy->current_tx_lo_freq
-				      : phy->current_rx_lo_freq;
+		enum ad9361_clocks int_src = tx ? TX_RFPLL_INT : RX_RFPLL_INT;
+		struct refclk_scale *int_clk = phy->ref_clk_scale[int_src];
+		uint32_t restore_rate = ad9361_to_clk(restore_hz);
 
-		if (restore_hz) {
-			enum ad9361_clocks int_src = tx ? TX_RFPLL_INT : RX_RFPLL_INT;
-			struct refclk_scale *int_clk = phy->ref_clk_scale[int_src];
-			uint32_t restore_rate = ad9361_to_clk(restore_hz);
-
-			if (!int_clk ||
-			    (uint32_t)int_clk->parent_source >= NUM_AD9361_CLKS ||
-			    !phy->clks[int_clk->parent_source]) {
-				ret = -EINVAL;
-			} else {
-				ret = ad9361_rfpll_int_set_rate(
-					int_clk, restore_rate,
-					phy->clks[int_clk->parent_source]->rate);
-			}
-			if (ret < 0)
-				dev_err(&phy->spi->dev,
-					"%s: %s internal PLL re-lock to %"PRIu64
-					" Hz failed: %"PRId32"\n",
-					__func__, tx ? "TX" : "RX",
-					restore_hz, ret);
+		if (!int_clk ||
+		    (uint32_t)int_clk->parent_source >= NUM_AD9361_CLKS ||
+		    !phy->clks[int_clk->parent_source]) {
+			ret = -EINVAL;
+		} else {
+			ret = ad9361_rfpll_int_set_rate(
+				int_clk, restore_rate,
+				phy->clks[int_clk->parent_source]->rate);
 		}
+		if (ret < 0)
+			dev_err(&phy->spi->dev,
+				"%s: %s internal PLL re-lock to %"PRIu64
+				" Hz failed: %"PRId32"\n",
+				__func__, tx ? "TX" : "RX",
+				restore_hz, ret);
 	}
 
 	restore_ret = ad9361_ensm_restore_prev_state_checked(phy);
