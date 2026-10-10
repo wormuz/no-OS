@@ -5984,14 +5984,14 @@ int32_t ad9361_fastlock_load(struct ad9361_rf_phy *phy, bool tx,
 	int32_t i, ret = 0;
 	uint8_t buf[4];
 
+	if (!phy || !phy->spi || profile >= 8 || values == NULL)
+		return -EINVAL;
+
 	dev_dbg(&phy->spi->dev, "%s: %s Profile %"PRIu32":",
 		__func__, tx ? "TX" : "RX", profile);
 
 	if (tx)
 		offs = REG_TX_FAST_LOCK_SETUP - REG_RX_FAST_LOCK_SETUP;
-	if (profile >= 8 || values == NULL)
-		return -EINVAL;
-
 	buf[0] = values[0];
 	buf[1] = RX_FAST_LOCK_PROFILE_ADDR(profile) | RX_FAST_LOCK_PROFILE_WORD(0);
 	ret = ad9361_spi_writem(phy->spi, REG_RX_FAST_LOCK_PROGRAM_DATA + offs,
@@ -6123,19 +6123,20 @@ int32_t ad9361_fastlock_exit_foreign(struct ad9361_rf_phy *phy, bool tx)
 int32_t ad9361_fastlock_store(struct ad9361_rf_phy *phy, bool tx,
 			      uint32_t profile)
 {
-	struct no_os_spi_desc *spi = phy->spi;
+	struct no_os_spi_desc *spi;
 	uint8_t val[16];
 	uint32_t offs = 0, x, y;
 	int32_t ret;
+
+	if (!phy || !phy->spi || profile >= 8)
+		return -EINVAL;
+	spi = phy->spi;
 
 	dev_dbg(&phy->spi->dev, "%s: %s Profile %"PRIu32":",
 		__func__, tx ? "TX" : "RX", profile);
 
 	if (tx)
 		offs = REG_TX_FAST_LOCK_SETUP - REG_RX_FAST_LOCK_SETUP;
-	if (profile >= 8)
-		return -EINVAL;
-
 #define FASTLOCK_READ(dst, call) do { \
 	ret = (call); \
 	if (ret < 0) \
@@ -6384,12 +6385,22 @@ int32_t ad9361_fastlock_save(struct ad9361_rf_phy *phy, bool tx,
 			     uint32_t profile, uint8_t *values)
 {
 	int32_t i;
+	int32_t ret;
+	uint8_t staged[RX_FAST_LOCK_CONFIG_WORD_NUM];
+
+	if (!phy || !phy->spi || !values || profile >= 8)
+		return -EINVAL;
 
 	dev_dbg(&phy->spi->dev, "%s: %s Profile %"PRIu32":",
 		__func__, tx ? "TX" : "RX", profile);
 
-	for (i = 0; i < RX_FAST_LOCK_CONFIG_WORD_NUM; i++)
-		values[i] = ad9361_fastlock_readval(phy->spi, tx, profile, i);
+	for (i = 0; i < RX_FAST_LOCK_CONFIG_WORD_NUM; i++) {
+		ret = ad9361_fastlock_readval(phy->spi, tx, profile, i);
+		if (ret < 0)
+			return ret;
+		staged[i] = ret;
+	}
+	memcpy(values, staged, sizeof(staged));
 
 	return 0;
 }
