@@ -1448,7 +1448,11 @@ int32_t ad9361_set_rx_rf_port_input(struct ad9361_rf_phy *phy,
 				    uint32_t mode)
 {
 	int32_t ret;
-	uint32_t old_mode = phy->pdata->rf_rx_input_sel;
+	uint32_t old_mode;
+
+	if (!phy || !phy->spi || !phy->pdata || mode > 11)
+		return -EINVAL;
+	old_mode = phy->pdata->rf_rx_input_sel;
 
 	phy->pdata->rf_rx_input_sel = mode;
 
@@ -1470,6 +1474,9 @@ int32_t ad9361_set_rx_rf_port_input(struct ad9361_rf_phy *phy,
 int32_t ad9361_get_rx_rf_port_input(struct ad9361_rf_phy *phy,
 				    uint32_t *mode)
 {
+	if (!phy || !phy->pdata || !mode)
+		return -EINVAL;
+
 	*mode = phy->pdata->rf_rx_input_sel;
 
 	return 0;
