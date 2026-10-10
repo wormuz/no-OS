@@ -4613,21 +4613,45 @@ int32_t ad9361_txmon_control(struct ad9361_rf_phy *phy,
 int32_t ad9361_rf_port_setup(struct ad9361_rf_phy *phy, bool is_out,
 			     uint32_t rx_inputs, uint32_t txb)
 {
-	uint32_t val;
-	int32_t ret;
+	uint32_t val, old_input_select;
+	int32_t ret, rollback_ret;
+	int32_t old_analog_power = 0, old_tpm_mode = 0;
+	bool txmon_snapshot = false;
+
+	if (!phy || !phy->spi)
+		return -EINVAL;
 
 	if (rx_inputs > 11)
 		return -EINVAL;
+
+	/* This operation can update TXMON before INPUT_SELECT. Keep the old
+	 * hardware image so a failure in either SPI phase cannot leave the RF
+	 * switch and monitor enables describing different ports. */
+	ret = ad9361_spi_read(phy->spi, REG_INPUT_SELECT);
+	if (ret < 0)
+		return ret;
+	old_input_select = ret;
+
+	if (!is_out) {
+		old_analog_power = ad9361_spi_read(
+			phy->spi, REG_ANALOG_POWER_DOWN_OVERRIDE);
+		if (old_analog_power < 0)
+			return old_analog_power;
+		old_tpm_mode = ad9361_spi_read(phy->spi, REG_TPM_MODE_ENABLE);
+		if (old_tpm_mode < 0)
+			return old_tpm_mode;
+		txmon_snapshot = true;
+	}
 
 	if (!is_out) {
 		if (rx_inputs > 8) {
 			ret = ad9361_txmon_control(phy, rx_inputs & (TX_1 | TX_2));
 			if (ret < 0)
-				return ret;
+				goto rollback;
 		} else {
 			ret = ad9361_txmon_control(phy, 0);
 			if (ret < 0)
-				return ret;
+				goto rollback;
 		}
 	}
 
@@ -4642,7 +4666,51 @@ int32_t ad9361_rf_port_setup(struct ad9361_rf_phy *phy, bool is_out,
 	dev_dbg(&phy->spi->dev, "%s : INPUT_SELECT 0x%"PRIx32,
 		__func__, val);
 
-	return ad9361_spi_write(phy->spi, REG_INPUT_SELECT, val);
+	ret = ad9361_spi_write(phy->spi, REG_INPUT_SELECT, val);
+	if (ret < 0)
+		goto rollback;
+
+	return 0;
+
+rollback:
+	/* A failed SPI transfer may have reached the device despite reporting an
+	 * error. Restore every register this routine may have changed; retain the
+	 * original error while making rollback failures visible in the log. */
+	rollback_ret = ad9361_spi_write(phy->spi, REG_INPUT_SELECT,
+					old_input_select);
+	if (rollback_ret < 0)
+		dev_err(&phy->spi->dev,
+			"%s: INPUT_SELECT rollback failed: %d",
+			__func__, rollback_ret);
+
+	if (txmon_snapshot) {
+		rollback_ret = ad9361_spi_writef(
+			phy->spi, REG_ANALOG_POWER_DOWN_OVERRIDE,
+			TX_MONITOR_POWER_DOWN(~0),
+			(old_analog_power & TX_MONITOR_POWER_DOWN(~0)) >> 2);
+		if (rollback_ret < 0)
+			dev_err(&phy->spi->dev,
+				"%s: TX monitor power rollback failed: %d",
+				__func__, rollback_ret);
+
+		rollback_ret = ad9361_spi_writef(
+			phy->spi, REG_TPM_MODE_ENABLE, TX1_MON_ENABLE,
+			!!(old_tpm_mode & TX1_MON_ENABLE));
+		if (rollback_ret < 0)
+			dev_err(&phy->spi->dev,
+				"%s: TX1 monitor rollback failed: %d",
+				__func__, rollback_ret);
+
+		rollback_ret = ad9361_spi_writef(
+			phy->spi, REG_TPM_MODE_ENABLE, TX2_MON_ENABLE,
+			!!(old_tpm_mode & TX2_MON_ENABLE));
+		if (rollback_ret < 0)
+			dev_err(&phy->spi->dev,
+				"%s: TX2 monitor rollback failed: %d",
+				__func__, rollback_ret);
+	}
+
+	return ret;
 }
 
 /**
