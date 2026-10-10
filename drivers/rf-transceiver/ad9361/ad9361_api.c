@@ -2370,20 +2370,37 @@ int32_t ad9361_set_no_ch_mode(struct ad9361_rf_phy *phy, uint8_t no_ch_mode)
 {
 	int32_t ret;
 	uint32_t rates[NUM_AD9361_CLKS];
+	size_t i;
+	bool new_rx2tx2;
 
-	if (!phy || !phy->pdata || !phy->spi)
+	if (!phy || !phy->pdata || !phy->spi || !phy->clk_refin ||
+	    !phy->clk_refin->rate)
 		return -EINVAL;
 
 	switch (no_ch_mode) {
 	case 1:
-		phy->pdata->rx2tx2 = 0;
+		new_rx2tx2 = false;
 		break;
 	case 2:
-		phy->pdata->rx2tx2 = 1;
+		new_rx2tx2 = true;
 		break;
 	default:
 		return -EINVAL;
 	}
+
+#if !defined(AXI_ADC_NOT_PRESENT) && !defined(BLADERF_NIOS_BUILD)
+	if (!phy->adc_conv)
+		return -EINVAL;
+#endif
+
+	/* Channel-mode reset is destructive. Validate every clock object used by
+	 * the subsequent rebuild before changing pdata or touching the RFIC. */
+	for (i = 0; i < NUM_AD9361_CLKS; ++i) {
+		if (!phy->ref_clk_scale[i] || !phy->clks[i])
+			return -EINVAL;
+	}
+
+	phy->pdata->rx2tx2 = new_rx2tx2;
 
 #if !defined(AXI_ADC_NOT_PRESENT) && !defined(BLADERF_NIOS_BUILD)
 	phy->adc_conv->chip_info = &axiadc_chip_info_tbl[phy->pdata->rx2tx2 ?
