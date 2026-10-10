@@ -73,6 +73,13 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 	int32_t rev = 0;
 	int32_t i   = 0;
 
+	if (!ad9361_phy)
+		return -EINVAL;
+
+	*ad9361_phy = NULL;
+	if (!init_param)
+		return -EINVAL;
+
 	phy = (struct ad9361_rf_phy *)no_os_calloc(1, sizeof(*phy));
 	if (!phy) {
 		return -ENOMEM;
@@ -665,6 +672,9 @@ out:
  */
 int32_t ad9361_remove(struct ad9361_rf_phy *phy)
 {
+	if (!phy)
+		return -EINVAL;
+
 	ad9361_unregister_clocks(phy);
 	no_os_spi_remove(phy->spi);
 	no_os_gpio_remove(phy->gpio_desc_resetb);
