@@ -6489,8 +6489,10 @@ int32_t ad9361_setup(struct ad9361_rf_phy *phy)
 	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_BANDGAP_CONFIG1,
 					   BANDGAP_TEMP_TRIM(0x0E)));
 
-	AD9361_SETUP_TRY(ad9361_set_dcxo_tune(phy, pd->dcxo_coarse,
-					       pd->dcxo_fine));
+	/* An external reference has no on-chip DCXO to tune. */
+	if (!pd->use_extclk)
+		AD9361_SETUP_TRY(ad9361_set_dcxo_tune(phy, pd->dcxo_coarse,
+						       pd->dcxo_fine));
 
 	refin_Hz = phy->clk_refin->rate;
 
