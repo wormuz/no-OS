@@ -421,6 +421,8 @@ int32_t ad9361_dig_interface_timing_analysis(struct ad9361_rf_phy *phy,
 	ret = ad9361_timing_analysis_validate(phy, buf, buflen);
 	if (ret < 0)
 		return ret;
+	if (!phy->bist_config_valid)
+		return -EIO;
 
 	dev_dbg(&phy->spi->dev, "%s:\n", __func__);
 
@@ -480,9 +482,14 @@ cleanup:
 	if (ret >= 0 && cleanup_ret < 0)
 		ret = cleanup_ret;
 	cleanup_ret = ad9361_spi_write(phy->spi, REG_BIST_CONFIG, bist);
-	if (ret >= 0 && cleanup_ret < 0)
-		ret = cleanup_ret;
-	phy->bist_config = bist;
+	if (cleanup_ret < 0) {
+		phy->bist_config_valid = false;
+		if (ret >= 0)
+			ret = cleanup_ret;
+	} else {
+		phy->bist_config = bist;
+		phy->bist_config_valid = true;
+	}
 	if (!phy->pdata->fdd) {
 		cleanup_ret = ad9361_set_ensm_mode(phy, phy->pdata->fdd,
 						   phy->pdata->ensm_pin_ctrl);
@@ -767,6 +774,8 @@ int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 	ret = ad9361_conv_phy_validate(phy, true);
 	if (ret < 0)
 		return ret;
+	if (!phy->bist_config_valid)
+		return -EIO;
 	rx_adc = phy->rx_adc;
 
 	dev_dbg(&phy->spi->dev, "%s: freq %"PRIu32" flags 0x%X\n", __func__,
@@ -820,9 +829,14 @@ int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 		if (ret >= 0 && cleanup_ret < 0)
 			ret = cleanup_ret;
 		cleanup_ret = ad9361_spi_write(phy->spi, REG_BIST_CONFIG, bist);
-		if (ret >= 0 && cleanup_ret < 0)
-			ret = cleanup_ret;
-		phy->bist_config = bist;
+		if (cleanup_ret < 0) {
+			phy->bist_config_valid = false;
+			if (ret >= 0)
+				ret = cleanup_ret;
+		} else {
+			phy->bist_config = bist;
+			phy->bist_config_valid = true;
+		}
 
 		if (ret == -EIO)
 			restore = true;

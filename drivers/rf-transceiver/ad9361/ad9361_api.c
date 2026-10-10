@@ -551,6 +551,7 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 
 	phy->bist_loopback_mode = 0;
 	phy->bist_config = 0;
+	phy->bist_config_valid = true;
 	phy->bist_prbs_mode = BIST_DISABLE;
 	phy->bist_tone_mode = BIST_DISABLE;
 	phy->bist_tone_freq_Hz = 0;

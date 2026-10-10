@@ -1295,11 +1295,14 @@ int32_t ad9361_bist_prbs(struct ad9361_rf_phy *phy, enum ad9361_bist_mode mode)
 	}
 
 	ret = ad9361_spi_write(phy->spi, REG_BIST_CONFIG, reg);
-	if (ret < 0)
+	if (ret < 0) {
+		phy->bist_config_valid = false;
 		return ret;
+	}
 
 	phy->bist_prbs_mode = mode;
 	phy->bist_config = reg;
+	phy->bist_config_valid = true;
 	return 0;
 }
 
@@ -1389,14 +1392,17 @@ int32_t ad9361_bist_tone(struct ad9361_rf_phy *phy,
 		return ret;
 
 	ret = ad9361_spi_write(phy->spi, REG_BIST_CONFIG, reg);
-	if (ret < 0)
+	if (ret < 0) {
+		phy->bist_config_valid = false;
 		return ret;
+	}
 
 	phy->bist_tone_mode = mode;
 	phy->bist_tone_freq_Hz = freq_Hz;
 	phy->bist_tone_level_dB = level_dB;
 	phy->bist_tone_mask = mask;
 	phy->bist_config = reg;
+	phy->bist_config_valid = true;
 
 	return 0;
 }
@@ -10102,9 +10108,12 @@ int32_t ad9361_write_bist_reg(struct ad9361_rf_phy *phy, uint32_t val)
 
 	ret = ad9361_spi_write(phy->spi,
 				       REG_BIST_AND_DATA_PORT_TEST_CONFIG, val);
-	if (ret < 0)
+	if (ret < 0) {
+		phy->bist_config_valid = false;
 		return ret;
+	}
 	phy->bist_config = val;
+	phy->bist_config_valid = true;
 	return 0;
 }
 
