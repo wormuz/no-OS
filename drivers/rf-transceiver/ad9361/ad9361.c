@@ -7195,7 +7195,9 @@ int32_t ad9361_do_calib_timeout(struct ad9361_rf_phy *phy, uint32_t cal,
 	int32_t ret, ret2, restore_ret;
 
 	(void)arg;
-	if (cal != RFDC_CAL || timeout_us == 0)
+	if (!phy || !phy->spi || !phy->pdata || cal != RFDC_CAL ||
+	    timeout_us == 0 || !phy->clks[RX_RFPLL] ||
+	    phy->clks[RX_RFPLL]->rate == 0)
 		return -EINVAL;
 
 	ret = ad9361_tracking_control(phy, false, false, false);
