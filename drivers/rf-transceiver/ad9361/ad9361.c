@@ -1826,7 +1826,8 @@ int32_t ad9361_set_tx_atten(struct ad9361_rf_phy *phy, uint32_t atten_mdb,
 			    bool tx1, bool tx2, bool immed)
 {
 	uint8_t buf[2];
-	int32_t ret = 0;
+	int32_t ret = 0, cleanup_ret;
+	bool immediate_update_touched = false;
 
 	if (!phy || !phy->spi || (!tx1 && !tx2))
 		return -EINVAL;
@@ -1842,27 +1843,45 @@ int32_t ad9361_set_tx_atten(struct ad9361_rf_phy *phy, uint32_t atten_mdb,
 	buf[0] = atten_mdb >> 8;
 	buf[1] = atten_mdb & 0xFF;
 
+	/* When immediate mode is requested, arm cleanup before the control
+	 * write: an SPI error cannot tell us whether the disable reached the RFIC. */
+	immediate_update_touched = immed;
 	ret = ad9361_spi_writef(phy->spi, REG_TX2_DIG_ATTEN,
 				IMMEDIATELY_UPDATE_TPC_ATTEN, 0);
 	if (ret < 0)
-		return ret;
+		goto cleanup;
 
 	if (tx1) {
 		ret = ad9361_spi_writem(phy->spi, REG_TX1_ATTEN_1, buf, 2);
 		if (ret < 0)
-			return ret;
+			goto cleanup;
 	}
 
 	if (tx2) {
 		ret = ad9361_spi_writem(phy->spi, REG_TX2_ATTEN_1, buf, 2);
 		if (ret < 0)
-			return ret;
+			goto cleanup;
 	}
 
-	if (immed)
-		return ad9361_spi_writef(phy->spi, REG_TX2_DIG_ATTEN,
-					  IMMEDIATELY_UPDATE_TPC_ATTEN, 1);
+	if (immed) {
+		ret = ad9361_spi_writef(phy->spi, REG_TX2_DIG_ATTEN,
+					IMMEDIATELY_UPDATE_TPC_ATTEN, 1);
+		if (ret < 0)
+			goto cleanup;
+		return 0;
+	}
 
+	return ret;
+
+cleanup:
+	if (immediate_update_touched) {
+		cleanup_ret = ad9361_spi_writef(phy->spi, REG_TX2_DIG_ATTEN,
+						IMMEDIATELY_UPDATE_TPC_ATTEN, 1);
+		if (cleanup_ret < 0)
+			dev_err(&phy->spi->dev,
+				"Unable to restore immediate TX attenuation update: %"PRId32,
+				cleanup_ret);
+	}
 	return ret;
 }
 
