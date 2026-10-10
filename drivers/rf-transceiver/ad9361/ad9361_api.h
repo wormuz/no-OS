@@ -439,7 +439,8 @@ int32_t ad9361_get_rx_quad_track_en_dis(struct ad9361_rf_phy *phy,
 					uint8_t *en_dis);
 /* Set the RX RF input port. */
 int32_t ad9361_set_rx_rf_port_input(struct ad9361_rf_phy *phy, uint32_t mode);
-/* Get the selected RX RF input port. */
+/* Get the selected RX RF input port. Returns -EIO if a partial RF-port write
+ * left the selector state unknown; output is unchanged on error. */
 int32_t ad9361_get_rx_rf_port_input(struct ad9361_rf_phy *phy, uint32_t *mode);
 /* Store RX fastlock profile. */
 int32_t ad9361_rx_fastlock_store(struct ad9361_rf_phy *phy, uint32_t profile);
@@ -510,7 +511,8 @@ int32_t ad9361_get_tx_rssi(struct ad9361_rf_phy *phy, uint8_t ch,
 			   uint32_t *rssi_db_x_1000);
 /* Set the TX RF output port. */
 int32_t ad9361_set_tx_rf_port_output(struct ad9361_rf_phy *phy, uint32_t mode);
-/* Get the selected TX RF output port. */
+/* Get the selected TX RF output port. Returns -EIO if a partial RF-port write
+ * left the selector state unknown; output is unchanged on error. */
 int32_t ad9361_get_tx_rf_port_output(struct ad9361_rf_phy *phy,
 				     uint32_t *mode);
 /* Enable/disable the auto calibration. */

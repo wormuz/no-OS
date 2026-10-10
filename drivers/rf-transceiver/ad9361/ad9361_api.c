@@ -1587,6 +1587,8 @@ int32_t ad9361_get_rx_rf_port_input(struct ad9361_rf_phy *phy,
 {
 	if (!phy || !phy->pdata || !mode)
 		return -EINVAL;
+	if (!phy->rf_port_select_valid)
+		return -EIO;
 
 	*mode = phy->pdata->rf_rx_input_sel;
 
@@ -2224,6 +2226,8 @@ int32_t ad9361_get_tx_rf_port_output(struct ad9361_rf_phy *phy,
 {
 	if (!phy || !phy->pdata || !mode)
 		return -EINVAL;
+	if (!phy->rf_port_select_valid)
+		return -EIO;
 
 	*mode = phy->pdata->rf_tx_output_sel;
 

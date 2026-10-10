@@ -4739,10 +4739,10 @@ int32_t ad9361_rf_port_setup(struct ad9361_rf_phy *phy, bool is_out,
 	int32_t old_analog_power = 0, old_tpm_mode = 0;
 	bool txmon_snapshot = false;
 
-	if (!phy || !phy->spi)
+	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 
-	if (rx_inputs > 11)
+	if (rx_inputs > 11 || txb > 1)
 		return -EINVAL;
 
 	/* This operation can update TXMON before INPUT_SELECT. Keep the old
@@ -4763,6 +4763,9 @@ int32_t ad9361_rf_port_setup(struct ad9361_rf_phy *phy, bool is_out,
 			return old_tpm_mode;
 		txmon_snapshot = true;
 	}
+	/* The following writes may partially reach the device. Until the full
+	 * selector image is written again, cached RX/TX port getters are unknown. */
+	phy->rf_port_select_valid = false;
 
 	if (!is_out) {
 		if (rx_inputs > 8) {
@@ -4790,6 +4793,9 @@ int32_t ad9361_rf_port_setup(struct ad9361_rf_phy *phy, bool is_out,
 	ret = ad9361_spi_write(phy->spi, REG_INPUT_SELECT, val);
 	if (ret < 0)
 		goto rollback;
+	if (rx_inputs == phy->pdata->rf_rx_input_sel &&
+	    txb == phy->pdata->rf_tx_output_sel)
+		phy->rf_port_select_valid = true;
 
 	return 0;
 

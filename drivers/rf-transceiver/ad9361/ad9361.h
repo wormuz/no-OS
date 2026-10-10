@@ -3423,6 +3423,8 @@ struct ad9361_rf_phy {
 	uint8_t			rx_fir_dec;
 	uint8_t			rx_fir_ntaps;
 	uint8_t			agc_mode[2];
+	/* RF input/output selectors are cached together in REG_INPUT_SELECT. */
+	bool			rf_port_select_valid;
 	bool			rfdc_track_en;
 	bool			bbdc_track_en;
 	bool			quad_track_en;

@@ -143,6 +143,10 @@ Gain and RSSI:
   ``RF_GAIN_SLOWATTACK_AGC``, ``RF_GAIN_HYBRID_AGC``).
 * **ad9361_get_rx_rssi** - read the RSSI of a channel into a ``struct rf_rssi``.
 
+RF port getters return an error without changing the output value after a
+partial selector write leaves the hardware state unknown. A successful full
+RX or TX port write restores the cached selector state.
+
 Tracking and calibration:
 
 * **ad9361_set_rx_rfdc_track_en_dis** / **ad9361_get_rx_rfdc_track_en_dis** -
