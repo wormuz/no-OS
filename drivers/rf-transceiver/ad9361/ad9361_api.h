@@ -448,6 +448,10 @@ int32_t ad9361_rx_fastlock_load(struct ad9361_rf_phy *phy, uint32_t profile,
 /* Save RX fastlock profile. */
 int32_t ad9361_rx_fastlock_save(struct ad9361_rf_phy *phy, uint32_t profile,
 				uint8_t *values);
+/* Read the LO encoded in an RX/TX fastlock profile without using the
+ * potentially stale clock-tree rate cache. */
+int32_t ad9361_rx_fastlock_get_freq(struct ad9361_rf_phy *phy,
+				    uint32_t profile, uint64_t *freq_hz);
 /* Power down the RX Local Oscillator. */
 int32_t ad9361_rx_lo_powerdown(struct ad9361_rf_phy *phy, uint8_t option);
 /* Get the RX Local Oscillator power status. */
@@ -522,6 +526,8 @@ int32_t ad9361_tx_fastlock_load(struct ad9361_rf_phy *phy, uint32_t profile,
 /* Save TX fastlock profile. */
 int32_t ad9361_tx_fastlock_save(struct ad9361_rf_phy *phy, uint32_t profile,
 				uint8_t *values);
+int32_t ad9361_tx_fastlock_get_freq(struct ad9361_rf_phy *phy,
+				    uint32_t profile, uint64_t *freq_hz);
 /* Power down the TX Local Oscillator. */
 int32_t ad9361_tx_lo_powerdown(struct ad9361_rf_phy *phy, uint8_t option);
 /* Get the TX Local Oscillator power status. */

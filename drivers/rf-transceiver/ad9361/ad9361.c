@@ -8141,8 +8141,8 @@ static uint64_t ad9361_calc_rfpll_int_freq(uint64_t parent_rate,
  * A recall performed by the FPGA Nios core does not update the host driver's
  * clock-tree cache, so ad9361_get_rx_lo_freq() can report the previous tune.
  * Read the profile bank itself; the caller separately verifies PLL lock. */
-int32_t ad9361_rx_fastlock_get_freq(struct ad9361_rf_phy *phy,
-				    uint32_t profile, uint64_t *freq_hz)
+static int32_t ad9361_fastlock_get_freq(struct ad9361_rf_phy *phy, bool tx,
+					uint32_t profile, uint64_t *freq_hz)
 {
 	uint32_t fract, integer, vco_div;
 	uint64_t parent_rate;
@@ -8158,30 +8158,30 @@ int32_t ad9361_rx_fastlock_get_freq(struct ad9361_rf_phy *phy,
 	 * for the per-recall LO verification instead of six serialized SPI reads
 	 * (measured at 2.8 ms on bladeRF 2.0 micro xA4). Retain the hardware read
 	 * fallback for profiles not loaded through this driver's cache. */
-	if (phy->fastlock.entry[0][profile].flags & FASTLOOK_INIT) {
-		data = phy->fastlock.entry[0][profile].profile_data;
+	if (phy->fastlock.entry[tx ? 1 : 0][profile].flags & FASTLOOK_INIT) {
+		data = phy->fastlock.entry[tx ? 1 : 0][profile].profile_data;
 	} else {
-		ret = ad9361_fastlock_readval(phy->spi, false, profile, 4);
+		ret = ad9361_fastlock_readval(phy->spi, tx, profile, 4);
 		if (ret < 0)
 			return ret;
 		b0 = ret;
-		ret = ad9361_fastlock_readval(phy->spi, false, profile, 3);
+		ret = ad9361_fastlock_readval(phy->spi, tx, profile, 3);
 		if (ret < 0)
 			return ret;
 		b1 = ret;
-		ret = ad9361_fastlock_readval(phy->spi, false, profile, 2);
+		ret = ad9361_fastlock_readval(phy->spi, tx, profile, 2);
 		if (ret < 0)
 			return ret;
 		b2 = ret;
-		ret = ad9361_fastlock_readval(phy->spi, false, profile, 1);
+		ret = ad9361_fastlock_readval(phy->spi, tx, profile, 1);
 		if (ret < 0)
 			return ret;
 		b3 = ret;
-		ret = ad9361_fastlock_readval(phy->spi, false, profile, 0);
+		ret = ad9361_fastlock_readval(phy->spi, tx, profile, 0);
 		if (ret < 0)
 			return ret;
 		b4 = ret;
-		ret = ad9361_fastlock_readval(phy->spi, false, profile, 12);
+		ret = ad9361_fastlock_readval(phy->spi, tx, profile, 12);
 		if (ret < 0)
 			return ret;
 		div_word = ret;
@@ -8199,7 +8199,7 @@ calculate:
 	fract = (SYNTH_FRACT_WORD(b0) << 16) | ((uint32_t)b1 << 8) | b2;
 	integer = (SYNTH_INTEGER_WORD(b3) << 8) | b4;
 	vco_div = div_word & 0x0f;
-	ret = clk_get_rate_checked(phy, phy->ref_clk_scale[RX_REFCLK],
+	ret = clk_get_rate_checked(phy, phy->ref_clk_scale[tx ? TX_REFCLK : RX_REFCLK],
 				   &parent_rate);
 	if (ret < 0)
 		return ret;
@@ -8209,6 +8209,18 @@ calculate:
 	*freq_hz = ad9361_calc_rfpll_int_freq(parent_rate, integer,
 					      fract, vco_div);
 	return 0;
+}
+
+int32_t ad9361_rx_fastlock_get_freq(struct ad9361_rf_phy *phy,
+				    uint32_t profile, uint64_t *freq_hz)
+{
+	return ad9361_fastlock_get_freq(phy, false, profile, freq_hz);
+}
+
+int32_t ad9361_tx_fastlock_get_freq(struct ad9361_rf_phy *phy,
+				    uint32_t profile, uint64_t *freq_hz)
+{
+	return ad9361_fastlock_get_freq(phy, true, profile, freq_hz);
 }
 
 /**
