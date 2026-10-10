@@ -197,8 +197,10 @@ int32_t ad9361_hdl_loopback(struct ad9361_rf_phy *phy, bool enable)
 	struct axiadc_converter *conv;
 	struct axi_adc *rx_adc;
 	uint32_t reg, addr;
+	uint32_t old_regs[16], new_regs[16], scratch_regs[16];
+	bool update_scratch[16] = { false };
 	uint32_t version;
-	int32_t chan;
+	uint32_t chan, num_channels, attempted = 0;
 	int32_t ret;
 
 	ret = ad9361_conv_phy_validate(phy, false);
@@ -206,6 +208,7 @@ int32_t ad9361_hdl_loopback(struct ad9361_rf_phy *phy, bool enable)
 		return ret;
 	conv = phy->adc_conv;
 	rx_adc = phy->rx_adc;
+	num_channels = conv->chip_info->num_channels;
 
 	ret = axi_adc_read(rx_adc, 0x4000, &version);
 	if (ret < 0)
@@ -217,17 +220,20 @@ int32_t ad9361_hdl_loopback(struct ad9361_rf_phy *phy, bool enable)
 	else
 		addr = 0x4414;
 
-	for (chan = 0; chan < conv->chip_info->num_channels; chan++) {
-		ret = axi_adc_read(rx_adc, addr + (chan) * 0x40, &reg);
+	for (chan = 0; chan < num_channels; chan++) {
+		ret = axi_adc_read(rx_adc, addr + chan * 0x40, &reg);
 		if (ret < 0)
 			return ret;
+		old_regs[chan] = reg;
+		scratch_regs[chan] = conv->scratch_reg[chan];
 
 		if (PCORE_VERSION_MAJOR(version) > 7) {
 			if (enable && reg != 0x8) {
-				conv->scratch_reg[chan] = reg;
+				scratch_regs[chan] = reg;
+				update_scratch[chan] = true;
 				reg = 0x8;
 			} else if (reg == 0x8) {
-				reg = conv->scratch_reg[chan];
+				reg = scratch_regs[chan];
 			}
 		} else {
 			/* DAC_LB_ENB If set enables loopback of receive data */
@@ -236,9 +242,30 @@ int32_t ad9361_hdl_loopback(struct ad9361_rf_phy *phy, bool enable)
 			else
 				reg &= ~NO_OS_BIT(1);
 		}
-		ret = axi_adc_write(rx_adc, addr + (chan) * 0x40, reg);
-		if (ret < 0)
+		new_regs[chan] = reg;
+	}
+
+	for (chan = 0; chan < num_channels; chan++) {
+		attempted = chan + 1;
+		ret = axi_adc_write(rx_adc, addr + chan * 0x40, new_regs[chan]);
+		if (ret < 0) {
+			/* A failed bus write may have reached the core. Restore the
+			 * failed lane as well as every preceding lane. */
+			while (attempted > 0) {
+				uint32_t rollback_chan = --attempted;
+				int32_t rollback_ret = axi_adc_write(
+					rx_adc, addr + rollback_chan * 0x40,
+					old_regs[rollback_chan]);
+				if (rollback_ret < 0)
+					phy->bist_loopback_valid = false;
+			}
 			return ret;
+		}
+	}
+
+	for (chan = 0; chan < num_channels; chan++) {
+		if (update_scratch[chan])
+			conv->scratch_reg[chan] = scratch_regs[chan];
 	}
 
 	return 0;
@@ -422,6 +449,8 @@ int32_t ad9361_dig_interface_timing_analysis(struct ad9361_rf_phy *phy,
 	if (ret < 0)
 		return ret;
 	if (!phy->bist_config_valid)
+		return -EIO;
+	if (!phy->bist_loopback_valid)
 		return -EIO;
 
 	dev_dbg(&phy->spi->dev, "%s:\n", __func__);
@@ -775,6 +804,8 @@ int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 	if (ret < 0)
 		return ret;
 	if (!phy->bist_config_valid)
+		return -EIO;
+	if (!phy->bist_loopback_valid)
 		return -EIO;
 	rx_adc = phy->rx_adc;
 

@@ -1198,6 +1198,9 @@ int32_t ad9361_bist_loopback(struct ad9361_rf_phy *phy, int32_t mode)
 	if (ret < 0)
 		return ret;
 	reg = ret;
+	/* This operation spans RFIC and FPGA registers. If any later step fails,
+	 * callers must not treat the previously cached mode as confirmed. */
+	phy->bist_loopback_valid = false;
 
 	switch (mode) {
 	case 0:
@@ -1249,6 +1252,7 @@ int32_t ad9361_bist_loopback(struct ad9361_rf_phy *phy, int32_t mode)
 	if (ret < 0)
 		return ret;
 	phy->bist_loopback_mode = mode;
+	phy->bist_loopback_valid = true;
 	return 0;
 }
 
@@ -1259,7 +1263,7 @@ int32_t ad9361_bist_loopback(struct ad9361_rf_phy *phy, int32_t mode)
  */
 void ad9361_get_bist_loopback(struct ad9361_rf_phy *phy, int32_t *mode)
 {
-	if (!phy || !mode)
+	if (!phy || !mode || !phy->bist_loopback_valid)
 		return;
 
 	*mode = phy->bist_loopback_mode;

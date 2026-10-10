@@ -550,6 +550,7 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 	phy->quad_track_en = true;
 
 	phy->bist_loopback_mode = 0;
+	phy->bist_loopback_valid = true;
 	phy->bist_config = 0;
 	phy->bist_config_valid = true;
 	phy->bist_prbs_mode = BIST_DISABLE;

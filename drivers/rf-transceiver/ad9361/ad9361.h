@@ -3441,6 +3441,7 @@ struct ad9361_rf_phy {
 	struct axiadc_converter	*adc_conv;
 	struct axiadc_state		*adc_state;
 	int32_t					bist_loopback_mode;
+	bool					bist_loopback_valid;
 	int32_t					bist_config;
 	bool					bist_config_valid;
 	enum ad9361_bist_mode	bist_prbs_mode;
