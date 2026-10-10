@@ -2680,11 +2680,15 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 		if (!fir_div)
 			return -EIO;
 		dec_pow_meas_dur = phy->pdata->gain_ctrl.dec_pow_measuremnt_duration;
+		if (dec_pow_meas_dur < 16)
+			return -EINVAL;
 
 		if (((reg * 2 / fir_div) / dec_pow_meas_dur) < 2) {
 			dec_pow_meas_dur = reg / fir_div;
 		}
 	}
+	if (dec_pow_meas_dur < 16)
+		return -EINVAL;
 
 	/* Power Measurement Duration */
 	GC_WRITE(ad9361_spi_writef(spi, REG_DEC_POWER_MEASURE_DURATION_0,
@@ -4537,6 +4541,15 @@ static int32_t ad9361_gc_setup(struct ad9361_rf_phy *phy,
 
 	AD9361_GC_TRY(ad9361_spi_writef(spi, REG_DEC_POWER_MEASURE_DURATION_0,
 			  ENABLE_DEC_PWR_MEAS, 1)); // Power Measurement Duration
+
+	if ((ctrl->rx1_mode == RF_GAIN_FASTATTACK_AGC ||
+	     ctrl->rx2_mode == RF_GAIN_FASTATTACK_AGC) &&
+	    ctrl->f_agc_dec_pow_measuremnt_duration < 16)
+		return -EINVAL;
+	if (ctrl->rx1_mode != RF_GAIN_FASTATTACK_AGC &&
+	    ctrl->rx2_mode != RF_GAIN_FASTATTACK_AGC &&
+	    ctrl->dec_pow_measuremnt_duration < 16)
+		return -EINVAL;
 
 	if (ctrl->rx1_mode == RF_GAIN_FASTATTACK_AGC ||
 	    ctrl->rx2_mode == RF_GAIN_FASTATTACK_AGC)
