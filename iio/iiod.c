@@ -390,6 +390,8 @@ static void conn_clean_state(struct iiod_conn_priv *conn)
 	memset(&conn->cmd_data, 0, sizeof(conn->cmd_data));
 	memset(&conn->res, 0, sizeof(conn->res));
 	memset(&conn->nb_buf, 0, sizeof(conn->nb_buf));
+	conn->write_payload_remaining = 0;
+	conn->discard_write_payload = false;
 
 	conn->res.buf.buf = NULL;
 	conn->res.buf.idx = 0;
@@ -403,7 +405,7 @@ int32_t iiod_conn_add(struct iiod_desc *desc, struct iiod_conn_data *data,
 	uint32_t i;
 	struct iiod_conn_priv *conn;
 
-	if (!desc || !new_conn_id)
+	if (!desc || !data || !new_conn_id || !data->buf || data->len == 0)
 		return -EINVAL;
 
 	for (i = 0; i < IIOD_MAX_CONNECTIONS; ++i)
@@ -430,7 +432,7 @@ int32_t iiod_conn_add(struct iiod_desc *desc, struct iiod_conn_data *data,
 int32_t iiod_conn_remove(struct iiod_desc *desc, uint32_t conn_id,
 			 struct iiod_conn_data *data)
 {
-	if (!desc || conn_id > IIOD_MAX_CONNECTIONS ||
+	if (!desc || !data || conn_id >= IIOD_MAX_CONNECTIONS ||
 	    !desc->conns[conn_id].used)
 		return -EINVAL;
 	struct iiod_conn_priv *conn;
@@ -675,6 +677,12 @@ static int32_t iiod_run_cmd(struct iiod_desc *desc,
 		}
 		break;
 	case IIOD_CMD_WRITE:
+		if (!conn->payload_buf ||
+		    data->bytes_count >= conn->payload_buf_len) {
+			conn->res.val = (uint32_t)-E2BIG;
+			conn->res.write_val = true;
+			break;
+		}
 		conn->payload_buf[data->bytes_count] = '\0';
 		ret = desc->ops.write_attr(&ctx, data->device, &attr,
 					   conn->payload_buf,
@@ -775,7 +783,17 @@ static int32_t iiod_run_state(struct iiod_desc *desc,
 		} else if (conn->cmd_data.cmd == IIOD_CMD_WRITE) {
 			/* Special case. Attribute needs to be read */
 			conn->nb_buf.buf = conn->payload_buf;
-			conn->nb_buf.len = conn->cmd_data.bytes_count;
+			conn->discard_write_payload =
+				conn->cmd_data.bytes_count >= conn->payload_buf_len;
+			if (conn->discard_write_payload) {
+				conn->write_payload_remaining =
+					conn->cmd_data.bytes_count;
+				conn->nb_buf.len = no_os_min(
+					conn->write_payload_remaining,
+					conn->payload_buf_len);
+			} else {
+				conn->nb_buf.len = conn->cmd_data.bytes_count;
+			}
 			conn->nb_buf.idx = 0;
 			conn->state = IIOD_READING_WRITE_DATA;
 		} else {
@@ -864,10 +882,26 @@ static int32_t iiod_run_state(struct iiod_desc *desc,
 
 		return 0;
 	case IIOD_READING_WRITE_DATA:
-		/* Read attribute */
+		/* Drain oversized payloads to preserve command framing, but never
+		 * invoke an attribute handler with a truncated value. */
 		ret = rw_iiod_buff(desc, conn, &conn->nb_buf, IIOD_RD);
 		if (NO_OS_IS_ERR_VALUE(ret))
 			return ret;
+		if (conn->discard_write_payload) {
+			conn->write_payload_remaining -= conn->nb_buf.len;
+			if (conn->write_payload_remaining) {
+				conn->nb_buf.len = no_os_min(
+					conn->write_payload_remaining,
+					conn->payload_buf_len);
+				conn->nb_buf.idx = 0;
+				return 0;
+			}
+			conn->res.val = (uint32_t)(int32_t)-E2BIG;
+			conn->res.write_val = true;
+			conn->nb_buf.len = 0;
+			conn->state = IIOD_WRITING_CMD_RESULT;
+			return 0;
+		}
 
 		conn->state = IIOD_RUNNING_CMD;
 

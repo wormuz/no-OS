@@ -132,6 +132,8 @@ struct iiod_conn_priv {
 		IIOD_RW_BUF,
 		/* I/O operations for WRITE cmd */
 		IIOD_READING_WRITE_DATA,
+		/* Drain oversized attribute writes without storing them */
+		IIOD_DRAINING_WRITE_DATA,
 		/* Set when a operation is finalized */
 		IIOD_LINE_DONE,
 		/* Pushing  cyclic buffer until IIO device is closed  */
@@ -148,6 +150,10 @@ struct iiod_conn_priv {
 	uint32_t payload_buf_len;
 	/* Used in nonbloking transfers to save indexes */
 	struct iiod_buff nb_buf;
+	/* Oversized attribute writes are drained to preserve command framing,
+	 * but never passed to an attribute callback or stored past payload_buf. */
+	uint32_t write_payload_remaining;
+	bool discard_write_payload;
 
 	/* Mask of current opened buffer */
 	uint32_t mask;
