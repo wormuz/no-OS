@@ -2323,7 +2323,9 @@ static int get_bist_prbs(void *device, char *buf, uint32_t len,
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
 	enum ad9361_bist_mode mode;
-	ad9361_get_bist_prbs(ad9361_phy, &mode);
+	int32_t ret = ad9361_get_bist_prbs(ad9361_phy, &mode);
+	if (ret < 0)
+		return ret;
 	return snprintf(buf, len, "%"PRIi32, (int32_t)mode);
 }
 
@@ -2346,7 +2348,10 @@ static int get_bist_tone(void *device, char *buf, uint32_t len,
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
 	enum ad9361_bist_mode mode;
 	uint32_t freq_Hz, level_dB, mask;
-	ad9361_get_bist_tone(ad9361_phy, &mode, &freq_Hz, &level_dB, &mask);
+	int32_t ret = ad9361_get_bist_tone(ad9361_phy, &mode, &freq_Hz,
+					   &level_dB, &mask);
+	if (ret < 0)
+		return ret;
 	return snprintf(buf, len, "%"PRIi32, (int32_t)mode);
 }
 
@@ -2372,7 +2377,9 @@ static int get_loopback(void *device, char *buf, uint32_t len,
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
 	int32_t mode;
-	ad9361_get_bist_loopback(ad9361_phy, &mode);
+	int32_t ret = ad9361_get_bist_loopback(ad9361_phy, &mode);
+	if (ret < 0)
+		return ret;
 	return snprintf(buf, len, "%"PRIi32, mode);
 }
 

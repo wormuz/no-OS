@@ -1269,12 +1269,15 @@ int32_t ad9361_bist_loopback(struct ad9361_rf_phy *phy, int32_t mode)
  * @param phy The AD9361 state structure.
  * @param mode BIST loopback mode.
  */
-void ad9361_get_bist_loopback(struct ad9361_rf_phy *phy, int32_t *mode)
+int32_t ad9361_get_bist_loopback(struct ad9361_rf_phy *phy, int32_t *mode)
 {
-	if (!phy || !mode || !phy->bist_loopback_valid)
-		return;
+	if (!phy || !mode)
+		return -EINVAL;
+	if (!phy->bist_loopback_valid)
+		return -EIO;
 
 	*mode = phy->bist_loopback_mode;
+	return 0;
 }
 
 /**
@@ -1322,13 +1325,16 @@ int32_t ad9361_bist_prbs(struct ad9361_rf_phy *phy, enum ad9361_bist_mode mode)
  * @param phy The AD9361 state structure.
  * @param mode Bist mode.
  */
-void ad9361_get_bist_prbs(struct ad9361_rf_phy *phy,
-			  enum ad9361_bist_mode *mode)
+int32_t ad9361_get_bist_prbs(struct ad9361_rf_phy *phy,
+			     enum ad9361_bist_mode *mode)
 {
 	if (!phy || !mode)
-		return;
+		return -EINVAL;
+	if (!phy->bist_config_valid)
+		return -EIO;
 
 	*mode = phy->bist_prbs_mode;
+	return 0;
 }
 
 /**
@@ -1402,8 +1408,10 @@ int32_t ad9361_bist_tone(struct ad9361_rf_phy *phy,
 
 	reg1 = ((mask << 2) & reg_mask);
 	ret = ad9361_spi_write(phy->spi, REG_BIST_AND_DATA_PORT_TEST_CONFIG, reg1);
-	if (ret < 0)
+	if (ret < 0) {
+		phy->bist_config_valid = false;
 		return ret;
+	}
 
 	ret = ad9361_spi_write(phy->spi, REG_BIST_CONFIG, reg);
 	if (ret < 0) {
@@ -1429,17 +1437,20 @@ int32_t ad9361_bist_tone(struct ad9361_rf_phy *phy,
  * @param level_dB Bist tone level.
  * @param mask Bist reg mask.
  */
-void ad9361_get_bist_tone(struct ad9361_rf_phy *phy,
-			  enum ad9361_bist_mode *mode, uint32_t *freq_Hz,
-			  uint32_t *level_dB, uint32_t *mask)
+int32_t ad9361_get_bist_tone(struct ad9361_rf_phy *phy,
+			     enum ad9361_bist_mode *mode, uint32_t *freq_Hz,
+			     uint32_t *level_dB, uint32_t *mask)
 {
 	if (!phy || !mode || !freq_Hz || !level_dB || !mask)
-		return;
+		return -EINVAL;
+	if (!phy->bist_config_valid)
+		return -EIO;
 
 	*mode = phy->bist_tone_mode;
 	*freq_Hz = phy->bist_tone_freq_Hz;
 	*level_dB = phy->bist_tone_level_dB;
 	*mask = phy->bist_tone_mask;
+	return 0;
 }
 
 /**
