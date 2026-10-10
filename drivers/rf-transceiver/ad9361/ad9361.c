@@ -6093,18 +6093,32 @@ int32_t ad9361_fastlock_exit_foreign(struct ad9361_rf_phy *phy, bool tx)
 	uint32_t offs = tx ? REG_TX_FAST_LOCK_SETUP - REG_RX_FAST_LOCK_SETUP : 0;
 	uint32_t ready_mask = tx ? TX_SYNTH_READY_MASK : RX_SYNTH_READY_MASK;
 	int32_t setup, ret;
+	bool cleanup_pending;
+
+	if (!phy || !phy->spi)
+		return -EINVAL;
+
+	cleanup_pending = phy->fastlock.current_profile[tx] == 0xffu;
 
 	setup = ad9361_spi_read(phy->spi, REG_RX_FAST_LOCK_SETUP + offs);
-	if (setup < 0)
+	if (setup < 0) {
+		phy->fastlock.current_profile[tx] = 0xffu;
 		return setup;
+	}
 
-	/* Nothing to do unless the part is actually in fastlock mode. */
-	if (!(setup & RX_FAST_LOCK_MODE_ENABLE))
+	/* A prior partial cleanup must finish even if the fastlock mode bit was
+	 * already cleared. Otherwise force-ALC/VCO state can remain half restored. */
+	if (!(setup & RX_FAST_LOCK_MODE_ENABLE) && !cleanup_pending) {
+		phy->fastlock.current_profile[tx] = 0;
 		return 0;
+	}
+	phy->fastlock.current_profile[tx] = 0xffu;
 
-	ret = ad9361_spi_write(phy->spi, REG_RX_FAST_LOCK_SETUP + offs, 0);
-	if (ret < 0)
-		return ret;
+	if (setup & RX_FAST_LOCK_MODE_ENABLE) {
+		ret = ad9361_spi_write(phy->spi, REG_RX_FAST_LOCK_SETUP + offs, 0);
+		if (ret < 0)
+			return ret;
+	}
 
 	/* Workaround: Exiting Fastlock Mode. Same sequence as the one in
 	 * ad9361_fastlock_prepare(); it is repeated rather than shared because
@@ -6254,6 +6268,11 @@ static int32_t ad9361_fastlock_prepare(struct ad9361_rf_phy *phy, bool tx,
 		if (ret < 0) \
 			return ret; \
 	} while (0)
+
+	/* 0xff marks a profile whose hardware state needs cleanup. Never treat it
+	 * as an ordinary prepared profile and report a new prepare as successful. */
+	if (prepare && phy->fastlock.current_profile[tx] > 8)
+		return -EIO;
 
 	dev_dbg(&phy->spi->dev, "%s: %s Profile %"PRIu32": %s",
 		__func__, tx ? "TX" : "RX", profile,
