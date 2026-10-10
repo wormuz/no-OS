@@ -1828,6 +1828,9 @@ int32_t ad9361_set_tx_atten(struct ad9361_rf_phy *phy, uint32_t atten_mdb,
 	uint8_t buf[2];
 	int32_t ret = 0;
 
+	if (!phy || !phy->spi || (!tx1 && !tx2))
+		return -EINVAL;
+
 	dev_dbg(&phy->spi->dev, "%s : attenuation %"PRIu32" mdB tx1=%d tx2=%d",
 		__func__, atten_mdb, tx1, tx2);
 
