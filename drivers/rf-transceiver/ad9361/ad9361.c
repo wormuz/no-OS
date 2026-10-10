@@ -2986,11 +2986,15 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 int32_t ad9361_set_gain_ctrl_mode(struct ad9361_rf_phy *phy,
 				  struct rf_gain_ctrl *gain_ctrl)
 {
-	struct no_os_spi_desc *spi = phy->spi;
+	struct no_os_spi_desc *spi;
 	int32_t rc = 0;
 	uint32_t gain_ctl_shift, mode;
 	uint8_t val;
 	bool rx_disabled = false;
+
+	if (!phy || !phy->spi || !phy->pdata || !gain_ctrl)
+		return -EINVAL;
+	spi = phy->spi;
 
 	rc = ad9361_spi_readm(spi, REG_AGC_CONFIG_1, &val, 1);
 	if (rc) {
