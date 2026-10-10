@@ -132,8 +132,6 @@ struct iiod_conn_priv {
 		IIOD_RW_BUF,
 		/* I/O operations for WRITE cmd */
 		IIOD_READING_WRITE_DATA,
-		/* Drain oversized attribute writes without storing them */
-		IIOD_DRAINING_WRITE_DATA,
 		/* Set when a operation is finalized */
 		IIOD_LINE_DONE,
 		/* Pushing  cyclic buffer until IIO device is closed  */
