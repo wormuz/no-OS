@@ -1923,6 +1923,9 @@ int32_t ad9361_tx_mute(struct ad9361_rf_phy *phy, uint32_t state)
 {
 	int32_t ret, tx1_atten, tx2_atten;
 
+	if (!phy || !phy->spi || state > 1)
+		return -EINVAL;
+
 	if (state) {
 		tx1_atten = ad9361_get_tx_atten(phy, 1);
 		if (tx1_atten < 0)
