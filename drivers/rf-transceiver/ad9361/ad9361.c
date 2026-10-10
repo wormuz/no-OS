@@ -2877,6 +2877,9 @@ static int32_t ad9361_rx_adc_setup(struct ad9361_rf_phy *phy,
 
 	uint8_t c3_msb, c3_lsb, r2346;
 
+	if (!bbpll_freq || !adc_sampl_freq_Hz || !phy->rxbbf_div)
+		return -EIO;
+
 	ret = ad9361_spi_read(phy->spi, REG_RX_BBF_C3_MSB);
 	if (ret < 0)
 		return ret;
@@ -2926,6 +2929,8 @@ static int32_t ad9361_rx_adc_setup(struct ad9361_rf_phy *phy,
 	}
 
 	no_os_do_div(&invrc_tconst_1e6, 1000000000UL);
+	if (!invrc_tconst_1e6)
+		return -EIO;
 
 	if (invrc_tconst_1e6 > ULONG_MAX)
 		dev_err(&phy->spi->dev, "invrc_tconst_1e6 > ULONG_MAX");
