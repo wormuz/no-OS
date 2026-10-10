@@ -1916,7 +1916,7 @@ int32_t ad9361_get_tx_atten(struct ad9361_rf_phy *phy, uint32_t tx_num)
 /**
  * Mute TX.
  * @param phy The AD9361 state structure.
- * @param state The state - 0 mute; 1 - unmute.
+ * @param state The state - 1 mute; 0 - unmute.
  * @return 0 in case of success
  */
 int32_t ad9361_tx_mute(struct ad9361_rf_phy *phy, uint32_t state)
