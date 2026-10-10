@@ -7222,6 +7222,23 @@ int32_t ad9361_do_calib_timeout(struct ad9361_rf_phy *phy, uint32_t cal,
  * @param rf_tx_bw The desired TX bandwidth [Hz].
  * @return 0 in case of success, negative error code otherwise.
  */
+static int32_t ad9361_commit_rf_bandwidth_cache_if_complete(
+		struct ad9361_rf_phy *phy, uint32_t rf_rx_bw, uint32_t rf_tx_bw,
+	int32_t bandwidth_status, int32_t tracking_status,
+	int32_t ensm_restore_status)
+{
+	if (bandwidth_status < 0)
+		return bandwidth_status;
+	if (tracking_status < 0)
+		return tracking_status;
+	if (ensm_restore_status < 0)
+		return ensm_restore_status;
+
+	phy->current_rx_bw_Hz = rf_rx_bw;
+	phy->current_tx_bw_Hz = rf_tx_bw;
+	return 0;
+}
+
 int32_t ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
 				   uint32_t rf_rx_bw, uint32_t rf_tx_bw)
 {
@@ -7259,21 +7276,13 @@ int32_t ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
 					       phy->quad_track_en);
 
 	restore_ret = ad9361_ensm_restore_prev_state_checked(phy);
-	if (ret < 0)
-		return ret;
-	if (tracking_ret < 0)
-		return tracking_ret;
-	if (restore_ret < 0)
-		return restore_ret;
-
 	/* Keep the cached request as the last completely successful setup. The
 	 * analog filters may have been programmed before TX quad calibration or
 	 * ENSM/tracking restoration fails. If the cache is advanced earlier, a
 	 * retry with the same bandwidth can be mistaken for a no-op and skip the
 	 * failed calibration/recovery work. */
-	phy->current_rx_bw_Hz = rf_rx_bw;
-	phy->current_tx_bw_Hz = rf_tx_bw;
-	return 0;
+	return ad9361_commit_rf_bandwidth_cache_if_complete(
+		phy, rf_rx_bw, rf_tx_bw, ret, tracking_ret, restore_ret);
 }
 
 /**

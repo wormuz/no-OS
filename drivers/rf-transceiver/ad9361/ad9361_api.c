@@ -1351,9 +1351,9 @@ int32_t ad9361_set_rx_rfdc_track_en_dis(struct ad9361_rf_phy *phy,
 	if (en_dis > 1)
 		return -EINVAL;
 
-	if (phy->rfdc_track_en == en_dis)
-		return 0;
-
+	/* Reapply the complete tracking register set even when the requested
+	 * value matches the cache. A previous multi-register SPI write may have
+	 * failed partway through, leaving hardware different from that cache. */
 	phy->rfdc_track_en = en_dis;
 	ret = ad9361_tracking_control(phy, phy->bbdc_track_en,
 				      phy->rfdc_track_en, phy->quad_track_en);
@@ -1402,9 +1402,8 @@ int32_t ad9361_set_rx_bbdc_track_en_dis(struct ad9361_rf_phy *phy,
 	if (en_dis > 1)
 		return -EINVAL;
 
-	if (phy->bbdc_track_en == en_dis)
-		return 0;
-
+	/* Reapply all tracking registers: a prior partial SPI failure can leave
+	 * hardware inconsistent with the cached enable bits. */
 	phy->bbdc_track_en = en_dis;
 	ret = ad9361_tracking_control(phy, phy->bbdc_track_en,
 				      phy->rfdc_track_en, phy->quad_track_en);
@@ -1453,9 +1452,8 @@ int32_t ad9361_set_rx_quad_track_en_dis(struct ad9361_rf_phy *phy,
 	if (en_dis > 1)
 		return -EINVAL;
 
-	if (phy->quad_track_en == en_dis)
-		return 0;
-
+	/* Reapply all tracking registers: a prior partial SPI failure can leave
+	 * hardware inconsistent with the cached enable bits. */
 	phy->quad_track_en = en_dis;
 	ret = ad9361_tracking_control(phy, phy->bbdc_track_en,
 				      phy->rfdc_track_en, phy->quad_track_en);

@@ -904,8 +904,10 @@ static int set_gain_control_mode(void *device, char *buf, uint32_t len,
 		return -EINVAL;
 
 	mode = i;
-	if (ad9361_phy->agc_mode[channel->ch_num] == mode)
-		return len;
+	/* The mode update disables RX, writes the mode register, re-enables RX,
+	 * and then programs AGC state. A failure can leave some of those steps
+	 * applied while agc_mode still holds the old value, so repeat writes must
+	 * replay the hardware sequence even when the cache matches. */
 	ret = ad9361_set_rx_gain_control_mode(ad9361_phy, channel->ch_num,
 					       (uint8_t)mode);
 	if (ret < 0)
@@ -1093,8 +1095,8 @@ static int set_gain_control_mode_available(void *device, char *buf,
 		return -EINVAL;
 
 	mode = i;
-	if (ad9361_phy->agc_mode[channel->ch_num] == mode)
-		return len;
+	/* Keep the available-modes setter recoverable after a partial SPI failure
+	 * in the same multi-step RX/AGC update path. */
 	ret = ad9361_set_rx_gain_control_mode(ad9361_phy, channel->ch_num,
 					       (uint8_t)mode);
 	if (ret < 0)

@@ -182,9 +182,6 @@ static int apply_setting(struct ad9361_rf_phy *phy,
 		}
 	}
 
-	if (curr_ptr)
-		*curr_ptr = new_sett;
-
 	/* Apply post-sequence steps */
 	if (new_sett->post_seq && new_sett->post_seq_len > 0) {
 		uint32_t i;
@@ -196,6 +193,12 @@ static int apply_setting(struct ad9361_rf_phy *phy,
 				no_os_udelay(new_sett->post_seq[i].delay_us);
 		}
 	}
+
+	/* Publish the cached setting only after every GPIO, port, and post-sequence
+	 * operation succeeds. Otherwise a retry of the same LO band can be skipped
+	 * even though the failed post-sequence left the RF path partially set. */
+	if (curr_ptr)
+		*curr_ptr = new_sett;
 
 	dev_dbg(&phy->spi->dev, "%s: applied '%s'",
 		__func__, new_sett->name ? new_sett->name : "<unnamed>");
