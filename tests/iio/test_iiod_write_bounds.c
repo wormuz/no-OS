@@ -16,6 +16,16 @@ static int fake_recv(struct iiod_ctx *ctx, uint8_t *buf, uint32_t len)
 	return (int)len;
 }
 
+static int fake_oversized_read(struct iiod_ctx *ctx, const char *device,
+			       struct iiod_attr *attr, char *buf, uint32_t len)
+{
+	(void)ctx;
+	(void)device;
+	(void)attr;
+	(void)buf;
+	return (int)len + 1;
+}
+
 int main(void)
 {
 	struct iiod_desc desc = {0};
@@ -55,6 +65,13 @@ int main(void)
 	assert(conn->res.write_val);
 	assert(received_bytes == 6);
 	assert(payload[sizeof(payload) - 1] == (char)0x5a);
+
+	desc.ops.read_attr = fake_oversized_read;
+	conn->cmd_data.cmd = IIOD_CMD_READ;
+	conn->res.buf.buf = NULL;
+	assert(iiod_run_cmd(&desc, conn) == 0);
+	assert((int32_t)conn->res.val == -EOVERFLOW);
+	assert(conn->res.buf.buf == NULL);
 
 	return 0;
 }

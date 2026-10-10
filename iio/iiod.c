@@ -669,6 +669,8 @@ static int32_t iiod_run_cmd(struct iiod_desc *desc,
 			ret = desc->ops.get_trigger(&ctx, data->device,
 						    conn->payload_buf,
 						    conn->payload_buf_len);
+		if (ret >= 0 && (uint32_t)ret > conn->payload_buf_len)
+			ret = -EOVERFLOW;
 		conn->res.val = ret;
 		conn->res.write_val = 1;
 		if (!NO_OS_IS_ERR_VALUE(ret)) {
