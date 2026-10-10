@@ -4638,6 +4638,11 @@ static int32_t ad9361_gc_setup(struct ad9361_rf_phy *phy,
 		return -EINVAL;
 	spi = phy->spi;
 	dev_dbg(&phy->spi->dev, "%s", __func__);
+	if (ctrl->lmt_overload_high_thresh < 16U ||
+	    ctrl->lmt_overload_high_thresh > 800U ||
+	    ctrl->lmt_overload_low_thresh < 16U ||
+	    ctrl->lmt_overload_low_thresh > 800U)
+		return -EINVAL;
 	ret = ad9361_gc_preflight(phy, ctrl->rx1_mode, ctrl->rx2_mode);
 	if (ret < 0)
 		return ret;
