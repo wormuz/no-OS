@@ -1190,9 +1190,10 @@ int32_t ad9361_get_rx_fir_config(struct ad9361_rf_phy *phy, uint8_t rx_ch,
 {
 	int32_t ret;
 	uint32_t fir_conf;
+	uint32_t original_fir_conf;
 	uint8_t index;
 	AD9361_RXFIRConfig result = {0};
-	if (!fir_cfg || rx_ch > 1)
+	if (!phy || !phy->spi || !fir_cfg || rx_ch > 1)
 		return -EINVAL;
 
 	rx_ch += 1;
@@ -1200,7 +1201,8 @@ int32_t ad9361_get_rx_fir_config(struct ad9361_rf_phy *phy, uint8_t rx_ch,
 	ret = ad9361_spi_read(phy->spi, REG_RX_FILTER_CONFIG);
 	if (ret < 0)
 		return ret;
-	fir_conf = ret;
+	original_fir_conf = ret;
+	fir_conf = original_fir_conf;
 
 	result.rx_coef_size = (((fir_conf & FIR_NUM_TAPS(7)) >> 5) + 1) * 16;
 
@@ -1214,7 +1216,7 @@ int32_t ad9361_get_rx_fir_config(struct ad9361_rf_phy *phy, uint8_t rx_ch,
 	fir_conf |= FIR_SELECT(rx_ch) | FIR_START_CLK;
 	ret = ad9361_spi_write(phy->spi, REG_RX_FILTER_CONFIG, fir_conf);
 	if (ret < 0)
-		return ret;
+		goto rx_fir_restore;
 
 	for (index = 0; index < 128; index++) {
 		ret = ad9361_spi_write(phy->spi, REG_RX_FILTER_COEF_ADDR, index);
@@ -1231,10 +1233,10 @@ int32_t ad9361_get_rx_fir_config(struct ad9361_rf_phy *phy, uint8_t rx_ch,
 	}
 
 	rx_fir_restore:
-	fir_conf &= ~FIR_START_CLK;
 	{
 		int32_t restore_ret = ad9361_spi_write(phy->spi,
-						       REG_RX_FILTER_CONFIG, fir_conf);
+						       REG_RX_FILTER_CONFIG,
+						       original_fir_conf & ~FIR_START_CLK);
 		if (ret >= 0 && restore_ret < 0)
 			ret = restore_ret;
 	}
@@ -1853,9 +1855,10 @@ int32_t ad9361_get_tx_fir_config(struct ad9361_rf_phy *phy, uint8_t tx_ch,
 {
 	int32_t ret;
 	uint32_t fir_conf;
+	uint32_t original_fir_conf;
 	uint8_t index;
 	AD9361_TXFIRConfig result = {0};
-	if (!fir_cfg || tx_ch > 1)
+	if (!phy || !phy->spi || !fir_cfg || tx_ch > 1)
 		return -EINVAL;
 
 	tx_ch += 1;
@@ -1863,7 +1866,8 @@ int32_t ad9361_get_tx_fir_config(struct ad9361_rf_phy *phy, uint8_t tx_ch,
 	ret = ad9361_spi_read(phy->spi, REG_TX_FILTER_CONF);
 	if (ret < 0)
 		return ret;
-	fir_conf = ret;
+	original_fir_conf = ret;
+	fir_conf = original_fir_conf;
 	result.tx_coef_size = (((fir_conf & FIR_NUM_TAPS(7)) >> 5) + 1) * 16;
 	result.tx_gain = -6 * (fir_conf & TX_FIR_GAIN_6DB);
 	result.tx = tx_ch;
@@ -1872,7 +1876,7 @@ int32_t ad9361_get_tx_fir_config(struct ad9361_rf_phy *phy, uint8_t tx_ch,
 	fir_conf |= FIR_SELECT(tx_ch) | FIR_START_CLK;
 	ret = ad9361_spi_write(phy->spi, REG_TX_FILTER_CONF, fir_conf);
 	if (ret < 0)
-		return ret;
+		goto tx_fir_restore;
 
 	for (index = 0; index < 128; index++) {
 		ret = ad9361_spi_write(phy->spi, REG_TX_FILTER_COEF_ADDR, index);
@@ -1889,10 +1893,10 @@ int32_t ad9361_get_tx_fir_config(struct ad9361_rf_phy *phy, uint8_t tx_ch,
 	}
 
 	tx_fir_restore:
-	fir_conf &= ~FIR_START_CLK;
 	{
 		int32_t restore_ret = ad9361_spi_write(phy->spi,
-						       REG_TX_FILTER_CONF, fir_conf);
+						       REG_TX_FILTER_CONF,
+						       original_fir_conf & ~FIR_START_CLK);
 		if (ret >= 0 && restore_ret < 0)
 			ret = restore_ret;
 	}
