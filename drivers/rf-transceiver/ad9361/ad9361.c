@@ -1686,7 +1686,14 @@ static int32_t ad9361_load_gt(struct ad9361_rf_phy *phy, uint64_t freq,
 failed:
 	/* A partial table cannot be trusted. Stop the indirect table clock on
 	 * a best-effort basis and force a complete reload on the next attempt. */
-	(void)ad9361_spi_write(spi, REG_GAIN_TABLE_CONFIG, 0);
+	{
+		int32_t cleanup_ret = ad9361_spi_write(
+			spi, REG_GAIN_TABLE_CONFIG, 0);
+		if (cleanup_ret < 0)
+			dev_err(&spi->dev,
+				"Unable to stop gain-table clock after load failure: %"PRId32,
+				cleanup_ret);
+	}
 	phy->current_table = NO_GAIN_TABLE;
 #undef GT_WRITE
 	return ret;
@@ -9072,7 +9079,13 @@ int32_t ad9361_rssi_program_lna_gain(struct ad9361_rf_phy *phy)
 	return ad9361_spi_write(spi, REG_CONFIG, 0x00);
 
 cleanup:
-	ad9361_spi_write(spi, REG_CONFIG, 0x00);
+	{
+		int32_t cleanup_ret = ad9361_spi_write(spi, REG_CONFIG, 0x00);
+		if (cleanup_ret < 0)
+			dev_err(&spi->dev,
+				"Unable to stop RSSI gain-table clock: %"PRId32,
+				cleanup_ret);
+	}
 	return ret;
 }
 
@@ -9134,7 +9147,13 @@ int32_t ad9361_rssi_write_err_tbl(struct ad9361_rf_phy *phy)
 				ENABLE_DIG_GAIN_CORR | SETTLE_TIME(0x10));
 
 cleanup:
-	ad9361_spi_write(spi, REG_CONFIG, 0x00);
+	{
+		int32_t cleanup_ret = ad9361_spi_write(spi, REG_CONFIG, 0x00);
+		if (cleanup_ret < 0)
+			dev_err(&spi->dev,
+				"Unable to stop RSSI error-table clock: %"PRId32,
+				cleanup_ret);
+	}
 	return ret;
 }
 
