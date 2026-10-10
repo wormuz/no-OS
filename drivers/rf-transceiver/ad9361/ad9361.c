@@ -750,6 +750,9 @@ int32_t ad9361_reg_read(struct ad9361_rf_phy *phy, uint32_t reg, uint32_t *val)
 {
 	int32_t ret;
 
+	if (!phy || !phy->spi || !val)
+		return -EINVAL;
+
 	ret = ad9361_spi_read(phy->spi, reg);
 	if (ret < 0)
 		return ret;
@@ -838,6 +841,9 @@ int32_t ad9361_spi_write(struct no_os_spi_desc *spi,
 int32_t ad9361_reg_write(struct ad9361_rf_phy *phy,
 			 uint32_t reg, uint32_t val)
 {
+	if (!phy || !phy->spi)
+		return -EINVAL;
+
 	return ad9361_spi_write(phy->spi, reg, val);
 }
 
@@ -1061,6 +1067,9 @@ int32_t ad9361_1rx1tx_channel_map(struct ad9361_rf_phy *phy, bool tx,
  */
 int32_t ad9361_reset(struct ad9361_rf_phy *phy)
 {
+	if (!phy || !phy->spi)
+		return -EINVAL;
+
 	if (phy->gpio_desc_resetb) {
 		int32_t ret = no_os_gpio_set_value(phy->gpio_desc_resetb, 0);
 		if (ret < 0)
@@ -1104,6 +1113,9 @@ int32_t ad9361_reset(struct ad9361_rf_phy *phy)
 int32_t ad9361_en_dis_tx(struct ad9361_rf_phy *phy, uint32_t tx_if,
 			 uint32_t enable)
 {
+	if (!phy || !phy->spi)
+		return -EINVAL;
+
 	if ((tx_if & enable) > 1 && AD9364_DEVICE && enable)
 		return -EINVAL;
 
@@ -1121,6 +1133,9 @@ int32_t ad9361_en_dis_tx(struct ad9361_rf_phy *phy, uint32_t tx_if,
 int32_t ad9361_en_dis_rx(struct ad9361_rf_phy *phy, uint32_t rx_if,
 			 uint32_t enable)
 {
+	if (!phy || !phy->spi)
+		return -EINVAL;
+
 	if ((rx_if & enable) > 1 && AD9364_DEVICE && enable)
 		return -EINVAL;
 
@@ -2398,6 +2413,9 @@ out:
  */
 int32_t ad9361_ensm_get_state(struct ad9361_rf_phy *phy)
 {
+	if (!phy || !phy->spi)
+		return -EINVAL;
+
 	return ad9361_spi_readf(phy->spi, REG_STATE, ENSM_STATE(~0));
 }
 
@@ -4480,6 +4498,9 @@ int32_t ad9361_set_dcxo_tune(struct ad9361_rf_phy *phy,
 {
 	int32_t ret;
 
+	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
+
 	dev_dbg(&phy->spi->dev, "%s : coarse %"PRIu32" fine %"PRIu32,
 		__func__, coarse, fine);
 
@@ -5380,6 +5401,9 @@ int32_t ad9361_get_temp(struct ad9361_rf_phy *phy)
 {
 	int32_t ret, restore_ret;
 	uint32_t val;
+
+	if (!phy || !phy->spi)
+		return -EINVAL;
 
 	ret = ad9361_spi_writef(phy->spi, REG_AUXADC_CONFIG, AUXADC_POWER_DOWN, 1);
 	if (ret < 0) {
@@ -7448,6 +7472,9 @@ int32_t ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
 				   uint32_t rf_rx_bw, uint32_t rf_tx_bw)
 {
 	int32_t ret, tracking_ret, restore_ret;
+
+	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
 
 	ret = ad9361_tracking_control(phy, false, false, false);
 	if (ret < 0) {
