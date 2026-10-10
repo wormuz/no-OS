@@ -8980,10 +8980,16 @@ invalidate:
 	 * it described the newly selected RFIC profile. */
 	if (tx) {
 		phy->current_tx_lo_freq = 0;
+		phy->cached_tx_rfpll_div = 0;
 		phy->rfpll_requested_valid[1] = false;
+		if (phy->clks[TX_RFPLL] != NULL)
+			phy->clks[TX_RFPLL]->rate = 0;
 	} else {
 		phy->current_rx_lo_freq = 0;
+		phy->cached_rx_rfpll_div = 0;
 		phy->rfpll_requested_valid[0] = false;
+		if (phy->clks[RX_RFPLL] != NULL)
+			phy->clks[RX_RFPLL]->rate = 0;
 	}
 	return ret;
 }
