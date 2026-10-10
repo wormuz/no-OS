@@ -5140,20 +5140,35 @@ static int32_t ad9361_auxadc_setup(struct ad9361_rf_phy *phy,
 				   struct auxadc_control *ctrl,
 				   uint32_t bbpll_freq)
 {
-	struct no_os_spi_desc *spi = phy->spi;
+	struct no_os_spi_desc *spi;
 	uint32_t val, reg[6], value[6];
+	uint32_t clock_divider;
+	uint64_t interval_cycles, interval_count;
 	int32_t ret;
 	uint32_t i;
 
+	if (!phy || !ctrl || !phy->spi)
+		return -EINVAL;
+	spi = phy->spi;
 	dev_dbg(&phy->spi->dev, "%s", __func__);
-	if (!ctrl->auxadc_clock_rate || ctrl->temp_sensor_decimation < 256 ||
+	if (!bbpll_freq || !ctrl->auxadc_clock_rate ||
+	    ctrl->temp_sensor_decimation < 256 ||
+	    ctrl->temp_sensor_decimation > 32768 ||
 	    (ctrl->temp_sensor_decimation & (ctrl->temp_sensor_decimation - 1)) ||
 	    ctrl->auxadc_decimation < 256 ||
+	    ctrl->auxadc_decimation > 32768 ||
 	    (ctrl->auxadc_decimation & (ctrl->auxadc_decimation - 1)))
 		return -EINVAL;
 
-	val = NO_OS_DIV_ROUND_CLOSEST(ctrl->temp_time_inteval_ms *
-				      (bbpll_freq / 1000UL), (1 << 29));
+	clock_divider = bbpll_freq / ctrl->auxadc_clock_rate;
+	if (!clock_divider || clock_divider > 0x3FU)
+		return -ERANGE;
+	interval_cycles = (uint64_t)ctrl->temp_time_inteval_ms *
+		(bbpll_freq / 1000U);
+	interval_count = (interval_cycles + (1ULL << 28)) / (1ULL << 29);
+	if (interval_count > 0x7FU)
+		return -ERANGE;
+	val = (uint32_t)interval_count;
 
 	reg[0] = REG_TEMP_OFFSET;
 	value[0] = ctrl->offset;
@@ -5167,7 +5182,7 @@ static int32_t ad9361_auxadc_setup(struct ad9361_rf_phy *phy,
 	value[3] = TEMP_SENSOR_DECIMATION(
 		ilog2(ctrl->temp_sensor_decimation) - 8);
 	reg[4] = REG_AUXADC_CLOCK_DIVIDER;
-	value[4] = bbpll_freq / ctrl->auxadc_clock_rate;
+	value[4] = clock_divider;
 	reg[5] = REG_AUXADC_CONFIG;
 	value[5] = AUX_ADC_DECIMATION(ilog2(ctrl->auxadc_decimation) - 8);
 
