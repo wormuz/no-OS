@@ -7719,6 +7719,8 @@ int32_t ad9361_validate_enable_fir(struct ad9361_rf_phy *phy)
 	uint32_t rx[6], tx[6];
 	uint32_t max, min, valid;
 
+	phy->fir_config_valid = false;
+
 	dev_dbg(dev, "%s: TX FIR EN=%d/TAPS%d/INT%d, RX FIR EN=%d/TAPS%d/DEC%d",
 		__func__, !phy->bypass_tx_fir, phy->tx_fir_ntaps, phy->tx_fir_int,
 		!phy->bypass_rx_fir, phy->rx_fir_ntaps, phy->rx_fir_dec);
@@ -7838,9 +7840,12 @@ int32_t ad9361_validate_enable_fir(struct ad9361_rf_phy *phy)
 			return ret;
 	}
 
-	return ad9361_update_rf_bandwidth(phy,
-					  valid ? phy->filt_rx_bw_Hz : phy->current_rx_bw_Hz,
-					  valid ? phy->filt_tx_bw_Hz : phy->current_tx_bw_Hz);
+	ret = ad9361_update_rf_bandwidth(phy,
+					 valid ? phy->filt_rx_bw_Hz : phy->current_rx_bw_Hz,
+					 valid ? phy->filt_tx_bw_Hz : phy->current_tx_bw_Hz);
+	if (ret >= 0)
+		phy->fir_config_valid = true;
+	return ret;
 }
 
 /*

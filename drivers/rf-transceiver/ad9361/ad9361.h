@@ -3406,6 +3406,8 @@ struct ad9361_rf_phy {
 	uint32_t			rate_governor;
 	bool			bypass_rx_fir;
 	bool			bypass_tx_fir;
+	/* True only when the last FIR enable/clock/bandwidth update completed. */
+	bool			fir_config_valid;
 	bool			rx_eq_2tx;
 	bool			filt_valid;
 	uint32_t		filt_rx_path_clks[NUM_RX_CLOCKS];

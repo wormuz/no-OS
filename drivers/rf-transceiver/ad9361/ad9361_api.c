@@ -1197,6 +1197,7 @@ int32_t ad9361_set_rx_fir_config(struct ad9361_rf_phy *phy,
 		return -EINVAL;
 	old_rx_fir_dec = phy->rx_fir_dec;
 
+	phy->fir_config_valid = false;
 	phy->rx_fir_dec = fir_cfg.rx_dec;
 	ret = ad9361_load_fir_filter_coef(phy, (enum fir_dest)(fir_cfg.rx | FIR_IS_RX),
 					  fir_cfg.rx_gain, fir_cfg.rx_coef_size, fir_cfg.rx_coef);
@@ -1301,7 +1302,7 @@ int32_t ad9361_set_rx_fir_en_dis(struct ad9361_rf_phy *phy,
 	if (en_dis > 1)
 		return -EINVAL;
 
-	if (phy->bypass_rx_fir == !en_dis)
+	if (phy->fir_config_valid && phy->bypass_rx_fir == !en_dis)
 		return ret;
 
 	phy->bypass_rx_fir = !en_dis;
@@ -1924,6 +1925,7 @@ int32_t ad9361_set_tx_fir_config(struct ad9361_rf_phy *phy,
 		return -EINVAL;
 	old_tx_fir_int = phy->tx_fir_int;
 
+	phy->fir_config_valid = false;
 	phy->tx_fir_int = fir_cfg.tx_int;
 	ret = ad9361_load_fir_filter_coef(phy, (enum fir_dest)fir_cfg.tx,
 					  fir_cfg.tx_gain, fir_cfg.tx_coef_size, fir_cfg.tx_coef);
@@ -2023,7 +2025,7 @@ int32_t ad9361_set_tx_fir_en_dis(struct ad9361_rf_phy *phy,
 	if (en_dis > 1)
 		return -EINVAL;
 
-	if (phy->bypass_tx_fir == !en_dis)
+	if (phy->fir_config_valid && phy->bypass_tx_fir == !en_dis)
 		return ret;
 
 	phy->bypass_tx_fir = !en_dis;
@@ -2606,7 +2608,8 @@ int32_t ad9361_set_trx_fir_en_dis(struct ad9361_rf_phy *phy,
 	if (en_dis > 1)
 		return -EINVAL;
 
-	if ((phy->bypass_rx_fir == phy->bypass_tx_fir) &&
+	if (phy->fir_config_valid &&
+	    (phy->bypass_rx_fir == phy->bypass_tx_fir) &&
 	    (phy->bypass_rx_fir == !en_dis))
 		return ret;
 
