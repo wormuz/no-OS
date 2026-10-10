@@ -1292,6 +1292,7 @@ int32_t ad9361_bist_tone(struct ad9361_rf_phy *phy,
 {
 	uint32_t clk = 0;
 	uint32_t reg = 0, reg1, reg_mask;
+	uint64_t tone_freq;
 	int32_t ret;
 
 	dev_dbg(&phy->spi->dev, "%s: mode %d", __func__, mode);
@@ -1328,7 +1329,13 @@ int32_t ad9361_bist_tone(struct ad9361_rf_phy *phy,
 	} else {
 		if (clk == 0)
 			return -EIO;
-		reg |= TONE_FREQ(NO_OS_DIV_ROUND_CLOSEST(freq_Hz * 32, clk) - 1);
+		/* TONE_FREQ is a two-bit code for a quarter-rate range. Keep
+		 * the multiply wide and reject frequencies that would underflow,
+		 * overflow, or silently wrap through the register mask. */
+		tone_freq = (((uint64_t)freq_Hz * 32U) + clk / 2U) / clk;
+		if (tone_freq == 0 || tone_freq > 4)
+			return -EINVAL;
+		reg |= TONE_FREQ((uint32_t)(tone_freq - 1U));
 	}
 
 	reg_mask = BIST_MASK_CHANNEL_1_I_DATA | BIST_MASK_CHANNEL_1_Q_DATA |
