@@ -3408,6 +3408,10 @@ struct ad9361_rf_phy {
 	bool			bypass_tx_fir;
 	/* True only when the last FIR enable/clock/bandwidth update completed. */
 	bool			fir_config_valid;
+	/* Per-lane masks prevent a successful update of one FIR lane from
+	 * clearing a failed coefficient write in another lane/direction. */
+	uint8_t		rx_fir_coefficients_valid_mask;
+	uint8_t		tx_fir_coefficients_valid_mask;
 	bool			rx_eq_2tx;
 	bool			filt_valid;
 	uint32_t		filt_rx_path_clks[NUM_RX_CLOCKS];

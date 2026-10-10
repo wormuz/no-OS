@@ -7579,11 +7579,21 @@ int32_t ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
 				    enum fir_dest dest, int32_t gain_dB,
 				    uint32_t ntaps, int16_t *coef)
 {
-	struct no_os_spi_desc *spi = phy->spi;
+	struct no_os_spi_desc *spi;
 	uint32_t val, offs = 0, fir_conf = 0, fir_enable = 0;
 	uint32_t fir_enable_mask;
 	int32_t ret, cleanup_ret;
+	uint8_t selected_mask = (uint8_t)dest & 0x03;
 	bool ensm_forced = false, fir_enable_saved = false, fir_clock_started = false;
+	bool is_rx = (dest & FIR_IS_RX) != 0;
+
+	if (!phy || !phy->spi)
+		return -EINVAL;
+	spi = phy->spi;
+	if (selected_mask == 0 ||
+	    (dest != FIR_TX1 && dest != FIR_TX2 && dest != FIR_TX1_TX2 &&
+	     dest != FIR_RX1 && dest != FIR_RX2 && dest != FIR_RX1_RX2))
+		return -EINVAL;
 
 	dev_dbg(&phy->spi->dev, "%s: TAPS %"PRIu32", gain %"PRId32", dest %d",
 		__func__, ntaps, gain_dB, dest);
@@ -7600,8 +7610,16 @@ int32_t ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
 	if (ret < 0)
 		return ret;
 	ensm_forced = true;
+	phy->fir_config_valid = false;
+	if (is_rx) {
+		/* Gain/decimation controls are shared by RX1/RX2. Invalidate both
+		 * lanes until the requested coefficient image is complete. */
+		phy->rx_fir_coefficients_valid_mask = 0;
+	} else {
+		phy->tx_fir_coefficients_valid_mask = 0;
+	}
 
-	if (dest & FIR_IS_RX) {
+	if (is_rx) {
 		val = 3 - (gain_dB + 12) / 6;
 		offs = REG_RX_FILTER_COEF_ADDR - REG_TX_FILTER_COEF_ADDR;
 		fir_enable_mask = RX_FIR_ENABLE_DECIMATION(~0);
@@ -7701,10 +7719,13 @@ int32_t ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
 			ret = cleanup_ret;
 	}
 	if (ret >= 0) {
-		if (dest & FIR_IS_RX)
+		if (is_rx) {
 			phy->rx_fir_ntaps = ntaps;
-		else
+			phy->rx_fir_coefficients_valid_mask = selected_mask;
+		} else {
 			phy->tx_fir_ntaps = ntaps;
+			phy->tx_fir_coefficients_valid_mask = selected_mask;
+		}
 	}
 
 	return ret;
@@ -8018,8 +8039,14 @@ int32_t ad9361_validate_enable_fir(struct ad9361_rf_phy *phy)
 	ret = ad9361_update_rf_bandwidth(phy,
 					 valid ? phy->filt_rx_bw_Hz : phy->current_rx_bw_Hz,
 					 valid ? phy->filt_tx_bw_Hz : phy->current_tx_bw_Hz);
-	if (ret >= 0)
-		phy->fir_config_valid = true;
+	if (ret >= 0) {
+		const uint8_t required_mask = phy->pdata->rx2tx2 ? 0x03 : 0x01;
+		phy->fir_config_valid =
+			(phy->rx_fir_coefficients_valid_mask & required_mask) ==
+			required_mask &&
+			(phy->tx_fir_coefficients_valid_mask & required_mask) ==
+			required_mask;
+	}
 	return ret;
 }
 
