@@ -1500,8 +1500,12 @@ static int32_t ad9361_gt_tableindex(struct ad9361_rf_phy *phy, uint64_t freq)
  */
 uint32_t ad9361_gt(struct ad9361_rf_phy *phy)
 {
+	if (!phy)
+		return 0;
+
 	if (phy->current_table == NO_GAIN_TABLE) {
-		dev_err(&phy->spi->dev, "%s: ERROR", __func__);
+		if (phy->spi)
+			dev_err(&phy->spi->dev, "%s: ERROR", __func__);
 		return 0;
 	}
 
@@ -6925,6 +6929,9 @@ int32_t ad9361_mcs(struct ad9361_rf_phy *phy, int32_t step)
  */
 void ad9361_clear_state(struct ad9361_rf_phy *phy)
 {
+	if (!phy)
+		return;
+
 	phy->current_table = NO_GAIN_TABLE;
 	phy->bypass_tx_fir = true;
 	phy->bypass_rx_fir = true;
