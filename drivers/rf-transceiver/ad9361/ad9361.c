@@ -5356,7 +5356,7 @@ static int32_t ad9361_rssi_setup(struct ad9361_rf_phy *phy,
 				 struct rssi_control *ctrl,
 				 bool is_update)
 {
-	struct no_os_spi_desc *spi = phy->spi;
+	struct no_os_spi_desc *spi;
 	uint32_t total_weight, weight[4], total_dur = 0, temp;
 	uint32_t reg[9], value[9];
 	uint8_t dur_buf[4] = { 0 };
@@ -5366,7 +5366,11 @@ static int32_t ad9361_rssi_setup(struct ad9361_rf_phy *phy,
 	uint32_t rssi_wait;
 	int32_t rssi_duration;
 	uint32_t rate;
+	uint64_t delay_samples, wait_samples;
 
+	if (!phy || !phy->spi || !phy->pdata || !ctrl)
+		return -EINVAL;
+	spi = phy->spi;
 	dev_dbg(&phy->spi->dev, "%s", __func__);
 
 	if (ctrl->rssi_unit_is_rx_samples) {
@@ -5379,11 +5383,18 @@ static int32_t ad9361_rssi_setup(struct ad9361_rf_phy *phy,
 		rssi_wait = ctrl->rssi_wait;
 		rssi_duration = ctrl->rssi_duration;
 	} else {
+		if (!phy->clks[RX_SAMPL_CLK])
+			return -EINVAL;
 		/* update sample based on RX rate */
-		rate = NO_OS_DIV_ROUND_CLOSEST(phy->clks[RX_SAMPL_CLK]->rate, 1000);
+		rate = (uint32_t)(((uint64_t)phy->clks[RX_SAMPL_CLK]->rate + 500U) /
+				  1000U);
 		/* units are in us */
-		rssi_delay = NO_OS_DIV_ROUND_CLOSEST(ctrl->rssi_delay * rate, 1000);
-		rssi_wait = NO_OS_DIV_ROUND_CLOSEST(ctrl->rssi_wait * rate, 1000);
+		delay_samples = ((uint64_t)ctrl->rssi_delay * rate + 500U) / 1000U;
+		wait_samples = ((uint64_t)ctrl->rssi_wait * rate + 500U) / 1000U;
+		rssi_delay = delay_samples > UINT32_MAX
+			? UINT32_MAX : (uint32_t)delay_samples;
+		rssi_wait = wait_samples > UINT32_MAX
+			? UINT32_MAX : (uint32_t)wait_samples;
 		duration_samples = NO_OS_DIV_ROUND_CLOSEST(
 			(uint64_t)ctrl->rssi_duration * rate, 1000);
 		if (!duration_samples || duration_samples > 65536)
