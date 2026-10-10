@@ -6454,6 +6454,12 @@ int32_t ad9361_setup(struct ad9361_rf_phy *phy)
 	bool tmp_use_ext_tx_lo = pd->use_ext_tx_lo;
 
 	dev_dbg(dev, "%s", __func__);
+	if (!phy->clk_refin || !phy->clk_refin->rate)
+		return -EINVAL;
+	refin_Hz = phy->clk_refin->rate;
+	ref_freq = ad9361_ref_div_sel(refin_Hz, MAX_BBPLL_FREF);
+	if (!ref_freq)
+		return -EINVAL;
 
 #define AD9361_SETUP_TRY(_expr) do { \
 	ret = (_expr); \
@@ -6498,12 +6504,6 @@ int32_t ad9361_setup(struct ad9361_rf_phy *phy)
 	if (!pd->use_extclk)
 		AD9361_SETUP_TRY(ad9361_set_dcxo_tune(phy, pd->dcxo_coarse,
 						       pd->dcxo_fine));
-
-	refin_Hz = phy->clk_refin->rate;
-
-	ref_freq = ad9361_ref_div_sel(refin_Hz, MAX_BBPLL_FREF);
-	if (!ref_freq)
-		return -EINVAL;
 
 	AD9361_SETUP_TRY(ad9361_spi_writef(spi, REG_REF_DIVIDE_CONFIG_1,
 					   RX_REF_RESET_BAR, 1));
