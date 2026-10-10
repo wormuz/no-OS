@@ -3728,7 +3728,7 @@ static int ad9361_tx_quad_calib(struct ad9361_rf_phy *phy,
 			ret = ad9361_spi_writef(spi, REG_TX_SYNTH_POWER_DOWN_OVERRIDE,
 						TX_LO_POWER_DOWN, 0);
 			if (ret < 0)
-				return ret;
+				goto out_restore;
 		} else {
 			dev_err(dev,
 				"%s : Tx QUAD Cal abort due to TX LO in powerdown\n",
@@ -3746,13 +3746,15 @@ static int ad9361_tx_quad_calib(struct ad9361_rf_phy *phy,
 	ret = clk_get_rate_checked(phy, phy->ref_clk_scale[CLKRF_CLK],
 				   &clkrf);
 	if (ret < 0)
-		return ret;
+		goto out_restore;
 	ret = clk_get_rate_checked(phy, phy->ref_clk_scale[CLKTF_CLK],
 				   &clktf);
 	if (ret < 0)
-		return ret;
-	if (clkrf == 0 || clktf == 0)
-		return -EINVAL;
+		goto out_restore;
+	if (clkrf == 0 || clktf == 0) {
+		ret = -EINVAL;
+		goto out_restore;
+	}
 
 	dev_dbg(&phy->spi->dev, "%s : bw_tx %"PRIu32" clkrf %"PRIu32" clktf %"PRIu32,
 		__func__, bw_tx, clkrf, clktf);
@@ -3799,7 +3801,7 @@ static int ad9361_tx_quad_calib(struct ad9361_rf_phy *phy,
 		case 1:
 			ret = ad9361_spi_readf(spi, REG_TX_ENABLE_FILTER_CTRL, 0x3F);
 			if (ret < 0)
-				return ret;
+				goto out_restore;
 			if (ret == 0x22)
 				__rx_phase = 0x15; 	/* REVISIT */
 			else
@@ -3809,7 +3811,8 @@ static int ad9361_tx_quad_calib(struct ad9361_rf_phy *phy,
 	} else if (rx_phase < 0) {
 		dev_err(dev, "Unhandled case in %s line %d clkrf %"PRIu32" clktf %"PRIu32,
 			__func__, __LINE__, clkrf, clktf);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out_restore;
 	}
 
 	if (rx_phase >= 0)
