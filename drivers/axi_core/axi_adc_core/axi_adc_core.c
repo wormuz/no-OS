@@ -41,6 +41,16 @@
 #include "axi_adc_core.h"
 #include "no_os_axi_io.h"
 
+static int32_t axi_adc_validate_channel(struct axi_adc *adc, uint32_t chan)
+{
+	if (!adc)
+		return -EINVAL;
+	if (chan >= adc->num_channels)
+		return -EINVAL;
+
+	return 0;
+}
+
 
 /**
  * @brief AXI ADC Data read.
@@ -111,6 +121,10 @@ int32_t axi_adc_set_pnsel(struct axi_adc *adc,
 {
 	uint32_t reg_data;
 	int32_t ret;
+
+	ret = axi_adc_validate_channel(adc, chan);
+	if (ret < 0)
+		return ret;
 
 	ret = axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL_3(chan), &reg_data);
 	if (ret < 0)
@@ -360,6 +374,10 @@ int32_t axi_adc_set_calib_phase_scale(struct axi_adc *adc,
 	int32_t ret;
 	int64_t signed_val2 = val2;
 
+	ret = axi_adc_validate_channel(adc, chan);
+	if (ret < 0)
+		return ret;
+
 	if (signed_val2 < -999999 || signed_val2 > 999999)
 		return -EINVAL;
 
@@ -419,6 +437,12 @@ int32_t axi_adc_get_calib_phase_scale(struct axi_adc *adc,
 	int32_t sign;
 	uint64_t llval;
 	int32_t ret, result, result2;
+
+	ret = axi_adc_validate_channel(adc, chan);
+	if (ret < 0)
+		return ret;
+	if (!val || !val2)
+		return -EINVAL;
 
 	ret = axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL_2(chan), &tmp);
 	if (ret < 0)
@@ -534,6 +558,14 @@ int32_t axi_adc_set_calib_bias(struct axi_adc *adc,
 	uint32_t tmp;
 	int32_t ret;
 
+	ret = axi_adc_validate_channel(adc, chan);
+	if (ret < 0)
+		return ret;
+	/* The hardware offset register is integer-only; don't silently discard
+	 * a fractional value supplied by IIO or another caller. */
+	if (val2 != 0)
+		return -EINVAL;
+
 	ret = axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL_1(chan), &tmp);
 	if (ret < 0)
 		return ret;
@@ -559,10 +591,17 @@ int32_t axi_adc_get_calib_bias(struct axi_adc *adc,
 	uint32_t tmp;
 	int32_t ret;
 
+	ret = axi_adc_validate_channel(adc, chan);
+	if (ret < 0)
+		return ret;
+	if (!val || !val2)
+		return -EINVAL;
+
 	ret = axi_adc_read(adc, AXI_ADC_REG_CHAN_CNTRL_1(chan), &tmp);
 	if (ret < 0)
 		return ret;
 	*val = (uint16_t)AXI_ADC_TO_DCFILT_OFFSET(tmp);
+	*val2 = 0;
 
 	return 0;
 }
