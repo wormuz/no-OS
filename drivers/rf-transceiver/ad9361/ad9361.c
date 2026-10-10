@@ -9351,7 +9351,10 @@ int32_t ad9361_rssi_program_lna_gain(struct ad9361_rf_phy *phy)
 	ret = ad9361_spi_write(spi, REG_CONFIG, START_CALIB_TABLE_CLOCK);
 	if (ret < 0)
 		goto cleanup;
-	return ad9361_spi_write(spi, REG_CONFIG, 0x00);
+	ret = ad9361_spi_write(spi, REG_CONFIG, 0x00);
+	if (ret < 0)
+		goto cleanup;
+	return 0;
 
 cleanup:
 	{
@@ -9417,7 +9420,7 @@ int32_t ad9361_rssi_write_err_tbl(struct ad9361_rf_phy *phy)
 
 	ret = ad9361_spi_write(spi, REG_CONFIG, 0x00);
 	if (ret < 0)
-		return ret;
+		goto cleanup;
 	return ad9361_spi_write(spi, REG_SETTLE_TIME,
 				ENABLE_DIG_GAIN_CORR | SETTLE_TIME(0x10));
 
