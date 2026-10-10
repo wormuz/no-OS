@@ -2219,12 +2219,16 @@ static int32_t ad9361_get_full_table_gain(struct ad9361_rf_phy *phy,
 int32_t ad9361_get_rx_gain(struct ad9361_rf_phy *phy,
 			   uint32_t rx_id, struct rf_rx_gain *rx_gain)
 {
-	struct no_os_spi_desc *spi = phy->spi;
+	struct no_os_spi_desc *spi;
 	uint32_t val, idx_reg;
 	struct rf_rx_gain result;
 	uint8_t gain_ctl_shift, rx_enable_mask;
 	uint8_t fast_atk_shift;
 	int32_t rc = 0, spi_ret;
+
+	if (!phy || !phy->spi || !phy->pdata || !rx_gain)
+		return -EINVAL;
+	spi = phy->spi;
 
 	if (rx_id == 1) {
 		gain_ctl_shift = RX1_GAIN_CTRL_SHIFT;
@@ -2590,10 +2594,14 @@ out:
 int32_t ad9361_set_rx_gain(struct ad9361_rf_phy *phy,
 			   uint32_t rx_id, struct rf_rx_gain *rx_gain)
 {
-	struct no_os_spi_desc *spi = phy->spi;
+	struct no_os_spi_desc *spi;
 	uint32_t val, idx_reg;
 	uint8_t gain_ctl_shift;
 	int32_t rc = 0, spi_ret;
+
+	if (!phy || !phy->spi || !phy->pdata || !rx_gain)
+		return -EINVAL;
+	spi = phy->spi;
 
 	if (rx_id == 1) {
 		gain_ctl_shift = RX1_GAIN_CTRL_SHIFT;

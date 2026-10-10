@@ -867,7 +867,7 @@ int32_t ad9361_get_rx_rf_gain(struct ad9361_rf_phy *phy,
 	struct rf_rx_gain rx_gain = {0, 0, 0, 0, 0, 0, 0, 0, 0};
 	int32_t ret = 0;
 
-	if (!phy || !phy->pdata || !gain_db || ch > 1 ||
+	if (!phy || !phy->spi || !phy->pdata || !gain_db || ch > 1 ||
 	    (!phy->pdata->rx2tx2 && ch != 0))
 		return -EINVAL;
 
