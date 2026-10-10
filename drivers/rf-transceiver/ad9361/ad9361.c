@@ -5015,8 +5015,14 @@ int32_t ad9361_get_temp(struct ad9361_rf_phy *phy)
 	uint32_t val;
 
 	ret = ad9361_spi_writef(phy->spi, REG_AUXADC_CONFIG, AUXADC_POWER_DOWN, 1);
-	if (ret < 0)
+	if (ret < 0) {
+		restore_ret = ad9361_spi_writef(phy->spi, REG_AUXADC_CONFIG,
+						AUXADC_POWER_DOWN, 0);
+		if (restore_ret < 0)
+			dev_err(&phy->spi->dev,
+				"Unable to restore AUX ADC power after setup failure");
 		return ret;
+	}
 	ret = ad9361_spi_read(phy->spi, REG_TEMPERATURE);
 	if (ret >= 0)
 		val = ret;
@@ -5042,8 +5048,14 @@ int32_t ad9361_get_auxadc(struct ad9361_rf_phy *phy)
 
 	ret = ad9361_spi_writef(phy->spi, REG_AUXADC_CONFIG,
 				AUXADC_POWER_DOWN, 1);
-	if (ret < 0)
+	if (ret < 0) {
+		restore_ret = ad9361_spi_writef(phy->spi, REG_AUXADC_CONFIG,
+						AUXADC_POWER_DOWN, 0);
+		if (restore_ret < 0)
+			dev_err(&phy->spi->dev,
+				"Unable to restore AUX ADC power after setup failure");
 		return ret;
+	}
 	ret = ad9361_spi_readm(phy->spi, REG_AUXADC_LSB, buf, 2);
 	restore_ret = ad9361_spi_writef(phy->spi, REG_AUXADC_CONFIG,
 					AUXADC_POWER_DOWN, 0);
