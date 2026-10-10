@@ -3613,6 +3613,8 @@ int32_t ad9361_set_trx_clock_chain_freq(struct ad9361_rf_phy *phy,
 int32_t ad9361_find_opt(uint8_t *field, uint32_t size, uint32_t *ret_start);
 int32_t ad9361_hdl_loopback(struct ad9361_rf_phy *phy, bool enable);
 #define AD9361_TIMING_ANALYSIS_BUFFER_SIZE 640
+/* buflen must be at least AD9361_TIMING_ANALYSIS_BUFFER_SIZE. Smaller
+ * buffers are rejected before the timing-analysis sequence changes RF state. */
 int32_t ad9361_dig_interface_timing_analysis(struct ad9361_rf_phy *phy,
 		char *buf, int32_t buflen);
 int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
