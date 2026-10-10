@@ -2254,6 +2254,10 @@ static int set_gpo(void *device, char *buf, uint32_t len,
 					(ctrl->gpo3_inactive_state_high_en << 3)));
 	if (ret < 0)
 		return ret;
+	/* This register write has committed the new output mask. If the following
+	 * external-LNA selector read/write fails, a later partial pin update must
+	 * build on the mask already present in hardware, not the stale old cache. */
+	ctrl->gpo_manual_mode_enable_mask = new_state;
 
 	/* Ensure GPO_MANUAL_SELECT is set in the external LNA control register */
 	lna_reg = ad9361_spi_read(ad9361_phy->spi, REG_EXTERNAL_LNA_CTRL);
@@ -2265,8 +2269,6 @@ static int set_gpo(void *device, char *buf, uint32_t len,
 		if (ret < 0)
 			return ret;
 	}
-	ctrl->gpo_manual_mode_enable_mask = new_state;
-
 	return (int)len;
 }
 
