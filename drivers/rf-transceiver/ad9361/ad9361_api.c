@@ -1576,6 +1576,9 @@ int32_t ad9361_rx_fastlock_save(struct ad9361_rf_phy *phy, uint32_t profile,
  */
 int32_t ad9361_rx_lo_powerdown(struct ad9361_rf_phy *phy, uint8_t option)
 {
+	if (option > 1)
+		return -EINVAL;
+
 	return ad9361_synth_lo_powerdown(phy, option ? LO_OFF : LO_ON, LO_DONTCARE);
 }
 
@@ -2233,6 +2236,9 @@ int32_t ad9361_tx_fastlock_save(struct ad9361_rf_phy *phy, uint32_t profile,
  */
 int32_t ad9361_tx_lo_powerdown(struct ad9361_rf_phy *phy, uint8_t option)
 {
+	if (option > 1)
+		return -EINVAL;
+
 	return ad9361_synth_lo_powerdown(phy, LO_DONTCARE, option ? LO_OFF : LO_ON);
 }
 

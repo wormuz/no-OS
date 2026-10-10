@@ -4180,6 +4180,11 @@ int ad9361_synth_lo_powerdown(struct ad9361_rf_phy *phy,
 			      enum synth_pd_ctrl rx,
 			      enum synth_pd_ctrl tx)
 {
+	if (!phy || !phy->spi ||
+	    (rx != LO_DONTCARE && rx != LO_OFF && rx != LO_ON) ||
+	    (tx != LO_DONTCARE && tx != LO_OFF && tx != LO_ON))
+		return -EINVAL;
+
 	dev_dbg(&phy->spi->dev, "%s : RX(%d) TX(%d)", __func__, rx, tx);
 
 	switch (rx) {
