@@ -2698,6 +2698,56 @@ static int32_t ad9361_gc_gain_update_counter(uint32_t interval_us,
 	return 0;
 }
 
+/* Validate every derived AGC timing value before a setup routine starts its
+ * multi-register programming sequence. Modes are arguments so setup can
+ * preflight its requested configuration without changing phy->agc_mode. */
+static int32_t ad9361_gc_preflight(struct ad9361_rf_phy *phy,
+				   uint32_t rx1_mode, uint32_t rx2_mode)
+{
+	uint32_t clkrf, rx_sample_rate;
+	uint32_t settling_delay, gain_update_counter, dec_pow_meas_dur;
+	uint32_t fir_div;
+	uint64_t calc;
+
+	if (!phy || !phy->pdata || !phy->clks[CLKRF_CLK] ||
+	    !phy->clks[RX_SAMPL_CLK])
+		return -EINVAL;
+	clkrf = phy->clks[CLKRF_CLK]->rate;
+	rx_sample_rate = phy->clks[RX_SAMPL_CLK]->rate;
+	if (clkrf < 1000U || !rx_sample_rate)
+		return -EIO;
+	if ((rx1_mode == RF_GAIN_FASTATTACK_AGC ||
+	     rx2_mode == RF_GAIN_FASTATTACK_AGC)
+	    ? phy->pdata->gain_ctrl.f_agc_dec_pow_measuremnt_duration < 16U
+	    : phy->pdata->gain_ctrl.dec_pow_measuremnt_duration < 16U)
+		return -EINVAL;
+
+	calc = ((uint64_t)phy->pdata->elna_ctrl.settling_delay_ns + 200U) *
+		(clkrf / 2000U);
+	calc = (calc + 999999U) / 1000000U + 7U;
+	settling_delay = calc > 31U ? 31U : (uint32_t)calc;
+	if (ad9361_gc_gain_update_counter(
+			phy->pdata->gain_ctrl.gain_update_interval_us, clkrf,
+			settling_delay, &gain_update_counter) < 0)
+		return -EINVAL;
+
+	if (rx1_mode == RF_GAIN_FASTATTACK_AGC ||
+	    rx2_mode == RF_GAIN_FASTATTACK_AGC) {
+		dec_pow_meas_dur =
+			phy->pdata->gain_ctrl.f_agc_dec_pow_measuremnt_duration;
+	} else {
+		fir_div = (uint32_t)(((uint64_t)clkrf + rx_sample_rate / 2U) /
+				     rx_sample_rate);
+		if (!fir_div)
+			return -EIO;
+		dec_pow_meas_dur = phy->pdata->gain_ctrl.dec_pow_measuremnt_duration;
+		if (((gain_update_counter * 2U / fir_div) / dec_pow_meas_dur) < 2U)
+			dec_pow_meas_dur = gain_update_counter / fir_div;
+	}
+
+	return dec_pow_meas_dur < 16U ? -EINVAL : 0;
+}
+
 /**
  * Update the Gain Control.
  * @param phy The AD9361 state structure.
@@ -2705,7 +2755,7 @@ static int32_t ad9361_gc_gain_update_counter(uint32_t interval_us,
  */
 static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 {
-	struct no_os_spi_desc *spi = phy->spi;
+	struct no_os_spi_desc *spi;
 	uint32_t clkrf;
 	uint32_t reg, delay_lna, settling_delay, dec_pow_meas_dur;
 	int32_t ret;
@@ -2714,6 +2764,10 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 	uint32_t gain_update_counter;
 	uint64_t calc;
 
+	if (!phy || !phy->spi || !phy->pdata || !phy->clks[CLKRF_CLK] ||
+	    !phy->clks[RX_SAMPL_CLK])
+		return -EINVAL;
+	spi = phy->spi;
 	clkrf = phy->clks[CLKRF_CLK]->rate;
 	rx_sample_rate = phy->clks[RX_SAMPL_CLK]->rate;
 	if (clkrf < 1000U || !rx_sample_rate)
@@ -4570,7 +4624,7 @@ static int32_t ad9361_pp_port_setup(struct ad9361_rf_phy *phy, bool restore_c3)
 static int32_t ad9361_gc_setup(struct ad9361_rf_phy *phy,
 			       struct gain_control *ctrl)
 {
-	struct no_os_spi_desc *spi = phy->spi;
+	struct no_os_spi_desc *spi;
 	uint32_t reg, tmp1, tmp2;
 	int32_t ret;
 
@@ -4580,7 +4634,13 @@ static int32_t ad9361_gc_setup(struct ad9361_rf_phy *phy,
 			return ret; \
 	} while (0)
 
+	if (!phy || !ctrl || !phy->spi || !phy->pdata)
+		return -EINVAL;
+	spi = phy->spi;
 	dev_dbg(&phy->spi->dev, "%s", __func__);
+	ret = ad9361_gc_preflight(phy, ctrl->rx1_mode, ctrl->rx2_mode);
+	if (ret < 0)
+		return ret;
 	if ((ctrl->rx1_mode == RF_GAIN_FASTATTACK_AGC ||
 	     ctrl->rx2_mode == RF_GAIN_FASTATTACK_AGC)
 	    ? ctrl->f_agc_dec_pow_measuremnt_duration < 16
