@@ -7871,36 +7871,32 @@ int32_t ad9361_clk_factor_round_rate(struct refclk_scale *clk_priv,
 				     uint32_t rate,
 				     uint32_t *prate)
 {
+	struct refclk_scale candidate;
 	int32_t ret;
-	uint32_t old_mult, old_div;
 	if (!clk_priv || !clk_priv->phy || !clk_priv->spi || !prate ||
 	    !*prate || !rate)
 		return -EINVAL;
-	old_mult = clk_priv->mult;
-	old_div = clk_priv->div;
+	candidate = *clk_priv;
 
 	if (rate >= *prate) {
-		clk_priv->mult = NO_OS_DIV_ROUND_CLOSEST(rate, *prate);
-		clk_priv->div = 1;
+		candidate.mult = NO_OS_DIV_ROUND_CLOSEST(rate, *prate);
+		candidate.div = 1;
 
 	} else {
-		clk_priv->div = NO_OS_DIV_ROUND_CLOSEST(*prate, rate);
-		clk_priv->mult = 1;
-		if (!clk_priv->div) {
-			dev_err(&clk_priv->spi->dev, "%s: divide by zero",
+		candidate.div = NO_OS_DIV_ROUND_CLOSEST(*prate, rate);
+		candidate.mult = 1;
+		if (!candidate.div) {
+			dev_err(&candidate.spi->dev, "%s: divide by zero",
 				__func__);
-			clk_priv->div = 1;
+			candidate.div = 1;
 		}
 	}
 
-	ret = ad9361_set_clk_scaler(clk_priv, false);
-	if (ret < 0) {
-		clk_priv->mult = old_mult;
-		clk_priv->div = old_div;
+	ret = ad9361_set_clk_scaler(&candidate, false);
+	if (ret < 0)
 		return ret;
-	}
 
-	return (*prate / clk_priv->div) * clk_priv->mult;
+	return (*prate / candidate.div) * candidate.mult;
 }
 
 /**
