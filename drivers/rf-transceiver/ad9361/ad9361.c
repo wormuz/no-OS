@@ -2712,10 +2712,11 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 	uint32_t fir_div;
 	uint32_t rx_sample_rate;
 	uint32_t gain_update_counter;
+	uint64_t calc;
 
 	clkrf = phy->clks[CLKRF_CLK]->rate;
 	rx_sample_rate = phy->clks[RX_SAMPL_CLK]->rate;
-	if (!clkrf || !rx_sample_rate)
+	if (clkrf < 1000U || !rx_sample_rate)
 		return -EIO;
 	if ((phy->agc_mode[0] == RF_GAIN_FASTATTACK_AGC ||
 	     phy->agc_mode[1] == RF_GAIN_FASTATTACK_AGC)
@@ -2723,9 +2724,9 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 	    : phy->pdata->gain_ctrl.dec_pow_measuremnt_duration < 16)
 		return -EINVAL;
 	delay_lna = phy->pdata->elna_ctrl.settling_delay_ns;
-	reg = (delay_lna + 200UL) * (clkrf / 2000UL);
-	reg = NO_OS_DIV_ROUND_UP(reg, 1000000UL) + 7;
-	settling_delay = no_os_clamp_t(uint8_t, reg, 0U, 31U);
+	calc = ((uint64_t)delay_lna + 200U) * (clkrf / 2000U);
+	calc = (calc + 999999U) / 1000000U + 7U;
+	settling_delay = calc > 31U ? 31U : (uint32_t)calc;
 	ret = ad9361_gc_gain_update_counter(
 		phy->pdata->gain_ctrl.gain_update_interval_us, clkrf,
 		settling_delay, &gain_update_counter);
@@ -2737,10 +2738,33 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 	 * ClkRF in MHz, delay in us
 	 */
 
-	reg = (200 + delay_lna) / 2 + (14000000UL / (clkrf / 500U));
-	reg = NO_OS_DIV_ROUND_UP(reg, 1000UL) +
-	      phy->pdata->gain_ctrl.agc_attack_delay_extra_margin_us;
-	reg = no_os_clamp_t(uint8_t, reg, 0U, 31U);
+	calc = ((uint64_t)200U + delay_lna) / 2U +
+		14000000ULL / (clkrf / 500U);
+	calc = (calc + 999U) / 1000U +
+		phy->pdata->gain_ctrl.agc_attack_delay_extra_margin_us;
+	reg = calc > 31U ? 31U : (uint32_t)calc;
+
+	/* Preflight the measurement-duration path before the first register write.
+	 * A late divider/ilog2 failure must not leave a partially programmed AGC. */
+	if (phy->agc_mode[0] == RF_GAIN_FASTATTACK_AGC ||
+	    phy->agc_mode[1] == RF_GAIN_FASTATTACK_AGC) {
+		dec_pow_meas_dur =
+			phy->pdata->gain_ctrl.f_agc_dec_pow_measuremnt_duration;
+	} else {
+		fir_div = (uint32_t)(((uint64_t)clkrf + rx_sample_rate / 2U) /
+				     rx_sample_rate);
+		if (!fir_div)
+			return -EIO;
+		dec_pow_meas_dur = phy->pdata->gain_ctrl.dec_pow_measuremnt_duration;
+
+		if (((gain_update_counter * 2U / fir_div) /
+		     dec_pow_meas_dur) < 2U) {
+			dec_pow_meas_dur = gain_update_counter / fir_div;
+		}
+	}
+	if (dec_pow_meas_dur < 16U)
+		return -EINVAL;
+
 #define GC_WRITE(call) do { \
 	ret = (call); \
 	if (ret < 0) \
@@ -2753,9 +2777,9 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 	 * Peak Overload Wait Time (ClkRF cycles)=ceiling((0.1+Delay_LNA) *clkRF+1)
 	 */
 
-	reg = (delay_lna + 100UL) * (clkrf / 1000UL);
-	reg = NO_OS_DIV_ROUND_UP(reg, 1000000UL) + 1;
-	reg = no_os_clamp_t(uint8_t, reg, 0U, 31U);
+	calc = ((uint64_t)delay_lna + 100U) * (clkrf / 1000U);
+	calc = (calc + 999999U) / 1000000U + 1U;
+	reg = calc > 31U ? 31U : (uint32_t)calc;
 	GC_WRITE(ad9361_spi_writef(spi, REG_PEAK_WAIT_TIME,
 				   PEAK_OVERLOAD_WAIT_TIME(~0), reg));
 
@@ -2772,23 +2796,6 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 	 * Gain Update Counter [15:0]= round((((time*ClkRF-0x111[D4:D0]*2)-2))/2)
 	 */
 	reg = gain_update_counter;
-
-	if (phy->agc_mode[0] == RF_GAIN_FASTATTACK_AGC ||
-	    phy->agc_mode[1] == RF_GAIN_FASTATTACK_AGC) {
-		dec_pow_meas_dur =
-			phy->pdata->gain_ctrl.f_agc_dec_pow_measuremnt_duration;
-	} else {
-		fir_div = NO_OS_DIV_ROUND_CLOSEST(clkrf, rx_sample_rate);
-		if (!fir_div)
-			return -EIO;
-		dec_pow_meas_dur = phy->pdata->gain_ctrl.dec_pow_measuremnt_duration;
-
-		if (((reg * 2 / fir_div) / dec_pow_meas_dur) < 2) {
-			dec_pow_meas_dur = reg / fir_div;
-		}
-	}
-	if (dec_pow_meas_dur < 16)
-		return -EINVAL;
 
 	/* Power Measurement Duration */
 	GC_WRITE(ad9361_spi_writef(spi, REG_DEC_POWER_MEASURE_DURATION_0,
@@ -2809,9 +2816,10 @@ static int32_t ad9361_gc_update(struct ad9361_rf_phy *phy)
 	 * Fast AGC State Wait Time - Energy Detect Count
 	 */
 
-	reg = NO_OS_DIV_ROUND_CLOSEST(phy->pdata->gain_ctrl.f_agc_state_wait_time_ns *
-				      (clkrf / 1000UL), 1000000UL);
-	reg = no_os_clamp_t(uint32_t, reg, 0U, 31U);
+	calc = (uint64_t)phy->pdata->gain_ctrl.f_agc_state_wait_time_ns *
+		(clkrf / 1000U);
+	calc = (calc + 500000U) / 1000000U;
+	reg = calc > 31U ? 31U : (uint32_t)calc;
 	GC_WRITE(ad9361_spi_writef(spi, REG_FAST_ENERGY_DETECT_COUNT,
 				   ENERGY_DETECT_COUNT(~0), reg));
 #undef GC_WRITE
