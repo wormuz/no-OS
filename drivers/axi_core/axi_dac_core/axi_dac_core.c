@@ -359,6 +359,9 @@ int32_t axi_dac_read(struct axi_dac *dac,
 		     uint32_t reg_addr,
 		     uint32_t *reg_data)
 {
+	if (!dac || !reg_data)
+		return -EINVAL;
+
 	return no_os_axi_io_read(dac->base, reg_addr, reg_data);
 }
 
@@ -373,6 +376,9 @@ int32_t axi_dac_write(struct axi_dac *dac,
 		      uint32_t reg_addr,
 		      uint32_t reg_data)
 {
+	if (!dac || sleep_us == 0)
+		return -EINVAL;
+
 	return no_os_axi_io_write(dac->base, reg_addr, reg_data);
 }
 
@@ -383,17 +389,63 @@ int32_t axi_dac_write(struct axi_dac *dac,
  * @param reg_mask - The data mask.
  * @param reg_data - The data value.
  */
-void axi_dac_update_bits(struct axi_dac *dac, uint32_t reg_addr,
-			 uint32_t reg_mask, uint32_t reg_data)
+static int32_t axi_dac_update_bits(struct axi_dac *dac, uint32_t reg_addr,
+				   uint32_t reg_mask, uint32_t reg_data)
 {
 	uint32_t reg;
+	int32_t ret;
 
-	no_os_axi_io_read(dac->base, reg_addr, &reg);
+	ret = axi_dac_read(dac, reg_addr, &reg);
+	if (ret < 0)
+		return ret;
 
 	reg &= ~reg_mask;
 	reg |= reg_data;
 
-	no_os_axi_io_write(dac->base, reg_addr, reg);
+	return axi_dac_write(dac, reg_addr, reg);
+}
+
+static int32_t axi_dac_read_sync_reg(struct axi_dac *dac, uint32_t reg_addr,
+				     uint32_t *value)
+{
+	uint32_t reg;
+	int32_t ret, restore_ret;
+
+	if (!dac || !value)
+		return -EINVAL;
+	ret = axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, 0);
+	if (ret < 0)
+		return ret;
+	ret = axi_dac_read(dac, reg_addr, &reg);
+	restore_ret = axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL,
+				   AXI_DAC_SYNC);
+	if (ret < 0)
+		return ret;
+	if (restore_ret < 0)
+		return restore_ret;
+	*value = reg;
+	return 0;
+}
+
+static int32_t axi_dac_write_sync_reg(struct axi_dac *dac, uint32_t reg_addr,
+				      uint32_t mask, uint32_t value)
+{
+	uint32_t reg;
+	int32_t ret, restore_ret;
+
+	if (!dac)
+		return -EINVAL;
+	ret = axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, 0);
+	if (ret < 0)
+		return ret;
+	ret = axi_dac_read(dac, reg_addr, &reg);
+	if (ret >= 0) {
+		reg = (reg & ~mask) | (value & mask);
+		ret = axi_dac_write(dac, reg_addr, reg);
+	}
+	restore_ret = axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL,
+				   AXI_DAC_SYNC);
+	return ret < 0 ? ret : restore_ret;
 }
 
 /**
@@ -410,13 +462,21 @@ int32_t axi_dac_read_poll_timeout(struct axi_dac *dac, uint32_t reg_addr,
 				  uint32_t sleep_us, uint32_t timeout_us)
 {
 	uint32_t reg;
+	int32_t ret;
+
+	if (!dac || sleep_us == 0)
+		return -EINVAL;
 
 	while (timeout_us) {
-		no_os_axi_io_read(dac->base, reg_addr, &reg);
+		ret = axi_dac_read(dac, reg_addr, &reg);
+		if (ret < 0)
+			return ret;
 
 		if ((reg & mask) == value)
 			return 0;
 
+		if (timeout_us <= sleep_us)
+			break;
 		no_os_udelay(sleep_us);
 		timeout_us -= sleep_us;
 	}
@@ -437,35 +497,45 @@ int32_t axi_dac_bus_write(struct axi_dac *dac, uint32_t reg_addr,
 {
 	int err;
 
-	if (dac->bus_type != AXI_DAC_BUS_TYPE_QSPI)
+	if (!dac || data_size < 1 || data_size > 2 || reg_addr > 0xff ||
+	    dac->bus_type != AXI_DAC_BUS_TYPE_QSPI)
 		return -EINVAL;
 
-	no_os_axi_io_write(dac->base, AXI_DAC_CNTRL_DATA_WR,
-			   (data_size == 2) ?
-			   AXI_DAC_DATA_WR_16(reg_data) :
-			   AXI_DAC_DATA_WR_8(reg_data));
+	err = axi_dac_write(dac, AXI_DAC_CNTRL_DATA_WR,
+			    (data_size == 2) ? AXI_DAC_DATA_WR_16(reg_data) :
+			    AXI_DAC_DATA_WR_8(reg_data));
+	if (err < 0)
+		return err;
 
-	axi_dac_update_bits(dac, AXI_DAC_REG_CNTRL_2, AXI_DAC_SYMB_8B,
-			    (data_size == 1) ? AXI_DAC_SYMB_8B : 0);
+	err = axi_dac_update_bits(dac, AXI_DAC_REG_CNTRL_2, AXI_DAC_SYMB_8B,
+				  (data_size == 1) ? AXI_DAC_SYMB_8B : 0);
+	if (err < 0)
+		return err;
 
-	axi_dac_update_bits(dac, AXI_DAC_REG_CUSTOM_CTRL,
-			    AXI_DAC_ADDRESS(0xff), AXI_DAC_ADDRESS(reg_addr));
+	err = axi_dac_update_bits(dac, AXI_DAC_REG_CUSTOM_CTRL,
+				  AXI_DAC_ADDRESS(0xff), AXI_DAC_ADDRESS(reg_addr));
+	if (err < 0)
+		return err;
 
-	axi_dac_update_bits(dac, AXI_DAC_REG_CUSTOM_CTRL,
-			    AXI_DAC_TRANSFER_DATA, AXI_DAC_TRANSFER_DATA);
+	err = axi_dac_update_bits(dac, AXI_DAC_REG_CUSTOM_CTRL,
+				  AXI_DAC_TRANSFER_DATA, AXI_DAC_TRANSFER_DATA);
+	if (err < 0)
+		return err;
 
 	err = axi_dac_read_poll_timeout(dac, AXI_DAC_REG_CUSTOM_CTRL,
 					AXI_DAC_TRANSFER_DATA,
 					AXI_DAC_TRANSFER_DATA, 10, 100000);
-	if (err)
+	if (err) {
+		/* A failed transfer must not leave the QSPI engine armed. */
+		axi_dac_update_bits(dac, AXI_DAC_REG_CUSTOM_CTRL,
+				    AXI_DAC_TRANSFER_DATA, 0);
 		return err;
+	}
 
 	no_os_udelay(100);
 
-	axi_dac_update_bits(dac, AXI_DAC_REG_CUSTOM_CTRL,
-			    AXI_DAC_TRANSFER_DATA, 0);
-
-	return 0;
+	return axi_dac_update_bits(dac, AXI_DAC_REG_CUSTOM_CTRL,
+				   AXI_DAC_TRANSFER_DATA, 0);
 }
 
 /**
@@ -483,7 +553,8 @@ int32_t axi_dac_bus_read(struct axi_dac *dac,
 {
 	int err;
 
-	if (dac->bus_type != AXI_DAC_BUS_TYPE_QSPI)
+	if (!dac || !reg_data || data_size < 1 || data_size > 2 ||
+	    reg_addr > 0x7f || dac->bus_type != AXI_DAC_BUS_TYPE_QSPI)
 		return -EINVAL;
 
 	err = axi_dac_bus_write(dac, AXI_DAC_RD_ADDR(reg_addr), 0, data_size);
@@ -497,9 +568,7 @@ int32_t axi_dac_bus_read(struct axi_dac *dac,
 
 	no_os_udelay(100);
 
-	no_os_axi_io_read(dac->base, AXI_DAC_CNTRL_DATA_RD, reg_data);
-
-	return 0;
+	return axi_dac_read(dac, AXI_DAC_CNTRL_DATA_RD, reg_data);
 }
 
 /**
@@ -510,10 +579,9 @@ int32_t axi_dac_bus_read(struct axi_dac *dac,
  */
 int32_t axi_dac_set_ddr(struct axi_dac *dac, bool enable)
 {
-	axi_dac_update_bits(dac, AXI_DAC_REG_CNTRL_2, AXI_DAC_SDR_DDR_N,
-			    enable ? 0 : AXI_DAC_SDR_DDR_N);
-
-	return 0;
+	return axi_dac_update_bits(dac, AXI_DAC_REG_CNTRL_2,
+				   AXI_DAC_SDR_DDR_N,
+				   enable ? 0 : AXI_DAC_SDR_DDR_N);
 }
 
 /**
@@ -524,10 +592,10 @@ int32_t axi_dac_set_ddr(struct axi_dac *dac, bool enable)
  */
 int32_t axi_dac_set_io_mode(struct axi_dac *dac, enum axi_io_mode mode)
 {
-	axi_dac_update_bits(dac, AXI_DAC_REG_CUSTOM_CTRL,
-			    AXI_DAC_IO_MODE(0x03), AXI_DAC_IO_MODE(mode));
-
-	return 0;
+	if (mode < AXI_DAC_IO_MODE_SPI || mode > AXI_DAC_IO_MODE_QSPI)
+		return -EINVAL;
+	return axi_dac_update_bits(dac, AXI_DAC_REG_CUSTOM_CTRL,
+				   AXI_DAC_IO_MODE(0x03), AXI_DAC_IO_MODE(mode));
 }
 
 /**
@@ -539,10 +607,9 @@ int32_t axi_dac_set_io_mode(struct axi_dac *dac, enum axi_io_mode mode)
  */
 int32_t axi_dac_set_data_stream(struct axi_dac *dac, bool enable)
 {
-	axi_dac_update_bits(dac, AXI_DAC_REG_CUSTOM_CTRL, AXI_DAC_STREAM_ENABLE,
-			    enable ? AXI_DAC_STREAM_ENABLE : 0);
-
-	return 0;
+	return axi_dac_update_bits(dac, AXI_DAC_REG_CUSTOM_CTRL,
+				   AXI_DAC_STREAM_ENABLE,
+				   enable ? AXI_DAC_STREAM_ENABLE : 0);
 }
 
 /**
@@ -558,12 +625,11 @@ int32_t axi_dac_data_transfer_addr(struct axi_dac *dac, uint32_t address)
 	 * Sample register address, when the DAC is configured, or stream
 	 * start address when the FSM is in stream state.
 	 */
-	axi_dac_update_bits(dac,
-			    AXI_DAC_REG_CUSTOM_CTRL,
-			    AXI_DAC_ADDRESS(0xff),
-			    AXI_DAC_ADDRESS(address));
-
-	return 0;
+	if (address > 0xff)
+		return -EINVAL;
+	return axi_dac_update_bits(dac, AXI_DAC_REG_CUSTOM_CTRL,
+				   AXI_DAC_ADDRESS(0xff),
+				   AXI_DAC_ADDRESS(address));
 }
 
 /**
@@ -577,12 +643,9 @@ int32_t axi_dac_data_format_set(struct axi_dac *dac, int format)
 	if (format != 8 && format != 16)
 		return -EINVAL;
 
-	axi_dac_update_bits(dac,
-			    AXI_DAC_REG_CNTRL_2,
-			    AXI_DAC_SYMB_8B,
-			    format == 8 ? AXI_DAC_SYMB_8B : 0);
-
-	return 0;
+	return axi_dac_update_bits(dac, AXI_DAC_REG_CNTRL_2,
+				   AXI_DAC_SYMB_8B,
+				   format == 8 ? AXI_DAC_SYMB_8B : 0);
 }
 
 /**
@@ -597,16 +660,27 @@ int32_t axi_dac_set_datasel(struct axi_dac *dac,
 			    enum axi_dac_data_sel sel)
 {
 	int32_t i;
+	int32_t ret;
 
-	if (chan < 0)
-		for (i = 0; i < dac->num_channels; i++)
-			axi_dac_write(dac, AXI_DAC_REG_CHAN_CNTRL_7(i), sel);
-	else
-		axi_dac_write(dac, AXI_DAC_REG_CHAN_CNTRL_7(chan), sel);
+	if (!dac || dac->num_channels == 0 || sel < AXI_DAC_DATA_SEL_DDS ||
+	    sel > AXI_DAC_DATA_SEL_PNXX ||
+	    chan < -1 ||
+	    (chan >= 0 && (uint32_t)chan >= dac->num_channels))
+		return -EINVAL;
 
-	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
+	if (chan < 0) {
+		for (i = 0; i < dac->num_channels; i++) {
+			ret = axi_dac_write(dac, AXI_DAC_REG_CHAN_CNTRL_7(i), sel);
+			if (ret < 0)
+				return ret;
+		}
+	} else {
+		ret = axi_dac_write(dac, AXI_DAC_REG_CHAN_CNTRL_7(chan), sel);
+		if (ret < 0)
+			return ret;
+	}
 
-	return 0;
+	return axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
 }
 
 /**
@@ -622,15 +696,14 @@ int32_t axi_dac_dds_set_frequency(struct axi_dac *dac,
 	uint64_t val64;
 	uint32_t reg;
 
-	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, 0);
-	axi_dac_read(dac, AXI_DAC_REG_DDS_INIT_INCR(chan), &reg);
+	if (!dac || chan >= (uint32_t)dac->num_channels * 2 || !dac->clock_hz ||
+	    freq_hz > dac->clock_hz / 2)
+		return -EINVAL;
 	val64 = (uint64_t) freq_hz * 0xFFFFULL;
 	val64 = val64 / dac->clock_hz;
-	reg = (reg & ~AXI_DAC_DDS_INCR(~0)) | AXI_DAC_DDS_INCR(val64) | 1;
-	axi_dac_write(dac, AXI_DAC_REG_DDS_INIT_INCR(chan), reg);
-	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
-
-	return 0;
+	reg = AXI_DAC_DDS_INCR(val64) | 1;
+	return axi_dac_write_sync_reg(dac, AXI_DAC_REG_DDS_INIT_INCR(chan),
+				       AXI_DAC_DDS_INCR(~0) | 1, reg);
 }
 
 /**
@@ -645,13 +718,22 @@ int32_t axi_dac_dds_get_frequency(struct axi_dac *dac,
 {
 	uint32_t reg;
 	uint64_t val64;
+	int32_t ret;
 
-	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, 0);
-	axi_dac_read(dac, AXI_DAC_REG_DDS_INIT_INCR(chan), &reg);
-	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
+	if (!dac || !freq || chan >= (uint32_t)dac->num_channels * 2 ||
+	    !dac->clock_hz)
+		return -EINVAL;
+
+	ret = axi_dac_read_sync_reg(dac, AXI_DAC_REG_DDS_INIT_INCR(chan), &reg);
+	if (ret < 0)
+		return ret;
 	reg = (reg & AXI_DAC_DDS_INCR(~0));
+	if (reg && dac->clock_hz > UINT64_MAX / reg)
+		return -ERANGE;
 	val64 = (uint64_t) reg * dac->clock_hz;
 	no_os_do_div(&val64, 0xFFFF);
+	if (val64 > UINT32_MAX)
+		return -ERANGE;
 	*freq = val64;
 
 	return 0;
@@ -671,15 +753,14 @@ int32_t axi_dac_dds_set_phase(struct axi_dac *dac,
 	uint64_t val64;
 	uint32_t reg;
 
-	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, 0);
-	axi_dac_read(dac, AXI_DAC_REG_DDS_INIT_INCR(chan), &reg);
+	if (!dac || chan >= (uint32_t)dac->num_channels * 2 || phase > 360000)
+		return -EINVAL;
+
 	val64 = (uint64_t) phase * 0x10000ULL + (360000 / 2);
 	val64 = val64 / 360000;
-	reg = (reg & ~AXI_DAC_DDS_INIT(~0)) | AXI_DAC_DDS_INIT(val64);
-	axi_dac_write(dac, AXI_DAC_REG_DDS_INIT_INCR(chan), reg);
-	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
-
-	return 0;
+	reg = AXI_DAC_DDS_INIT(val64);
+	return axi_dac_write_sync_reg(dac, AXI_DAC_REG_DDS_INIT_INCR(chan),
+				       AXI_DAC_DDS_INIT(~0), reg);
 }
 
 /**
@@ -695,10 +776,14 @@ int32_t axi_dac_dds_get_phase(struct axi_dac *dac,
 {
 	uint64_t val64;
 	uint32_t reg;
+	int32_t ret;
 
-	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, 0);
-	axi_dac_read(dac, AXI_DAC_REG_DDS_INIT_INCR(chan), &reg);
-	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
+	if (!dac || !phase || chan >= (uint32_t)dac->num_channels * 2)
+		return -EINVAL;
+
+	ret = axi_dac_read_sync_reg(dac, AXI_DAC_REG_DDS_INIT_INCR(chan), &reg);
+	if (ret < 0)
+		return ret;
 	reg = (reg & AXI_DAC_DDS_INIT(~0));
 	reg = AXI_DAC_TO_DDS_INIT(reg);
 	val64 = reg * 360000ULL + (0x10000 / 2);
@@ -721,22 +806,23 @@ int32_t axi_dac_dds_set_scale(struct axi_dac *dac,
 			      int32_t scale_micro_units)
 {
 	uint32_t scale_reg;
+	uint32_t magnitude;
 
-	scale_reg = scale_micro_units;
-	if (scale_micro_units < 0)
-		scale_reg = scale_micro_units * -1;
+	if (!dac || chan >= (uint32_t)dac->num_channels * 2)
+		return -EINVAL;
+	magnitude = scale_micro_units < 0 ?
+		(uint32_t)(-(int64_t)scale_micro_units) :
+		(uint32_t)scale_micro_units;
+	scale_reg = magnitude;
 	if (scale_reg >= 1999000)
 		scale_reg = 1999000;
 	scale_reg = (uint32_t)(((uint64_t)scale_reg * 0x4000) / 1000000);
 	if (scale_micro_units < 0)
 		scale_reg = scale_reg | 0x8000;
 
-	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, 0);
-	axi_dac_write(dac, AXI_DAC_REG_DDS_SCALE(chan),
-		      AXI_DAC_DDS_SCALE(scale_reg));
-	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
-
-	return 0;
+	return axi_dac_write_sync_reg(dac, AXI_DAC_REG_DDS_SCALE(chan),
+				       AXI_DAC_DDS_SCALE(~0),
+				       AXI_DAC_DDS_SCALE(scale_reg));
 }
 
 /**
@@ -753,11 +839,15 @@ int32_t axi_dac_dds_get_scale(struct axi_dac *dac,
 {
 	int32_t sign;
 	uint32_t scale_reg;
+	int32_t ret;
 
-	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, 0);
-	axi_dac_read(dac, AXI_DAC_REG_DDS_SCALE(chan),
-		     &scale_reg);
-	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
+	if (!dac || !scale_micro_units ||
+	    chan >= (uint32_t)dac->num_channels * 2)
+		return -EINVAL;
+
+	ret = axi_dac_read_sync_reg(dac, AXI_DAC_REG_DDS_SCALE(chan), &scale_reg);
+	if (ret < 0)
+		return ret;
 	scale_reg = AXI_DAC_TO_DDS_SCALE(scale_reg);
 	sign = (scale_reg & 0x8000) ? -1 : 1;
 	scale_reg &= ~0x8000;
@@ -855,10 +945,17 @@ int32_t axi_dac_dds_set_calib_phase_scale(struct axi_dac *dac,
 {
 	uint32_t reg;
 	uint32_t i;
+	int32_t ret;
+
+	if (!dac || chan >= (uint32_t)dac->num_channels * 2 || phase > 1 ||
+	    val < -1 || val > 1 || val2 < -999999 || val2 > 999999)
+		return -EINVAL;
 
 	i = axi_dac_dds_to_signed_mag_fmt(val, val2);
 
-	axi_dac_read(dac, AXI_DAC_REG_CHAN_CNTRL_8(chan), &reg);
+	ret = axi_dac_read(dac, AXI_DAC_REG_CHAN_CNTRL_8(chan), &reg);
+	if (ret < 0)
+		return ret;
 
 	if (!((chan + phase) % 2)) {
 		reg &= ~AXI_DAC_IQCOR_COEFF_1(~0);
@@ -867,8 +964,13 @@ int32_t axi_dac_dds_set_calib_phase_scale(struct axi_dac *dac,
 		reg &= ~AXI_DAC_IQCOR_COEFF_2(~0);
 		reg |= AXI_DAC_IQCOR_COEFF_2(i);
 	}
-	axi_dac_write(dac, AXI_DAC_REG_CHAN_CNTRL_8(chan), reg);
-	axi_dac_write(dac, AXI_DAC_REG_CHAN_CNTRL_6(chan), AXI_DAC_IQCOR_ENB);
+	ret = axi_dac_write(dac, AXI_DAC_REG_CHAN_CNTRL_8(chan), reg);
+	if (ret < 0)
+		return ret;
+	ret = axi_dac_write(dac, AXI_DAC_REG_CHAN_CNTRL_6(chan),
+			    AXI_DAC_IQCOR_ENB);
+	if (ret < 0)
+		return ret;
 
 	return 0;
 }
@@ -889,8 +991,15 @@ int32_t axi_dac_dds_get_calib_phase_scale(struct axi_dac *dac,
 		int32_t *val2)
 {
 	uint32_t reg;
+	int32_t ret;
 
-	axi_dac_read(dac, AXI_DAC_REG_CHAN_CNTRL_8(chan), &reg);
+	if (!dac || chan >= (uint32_t)dac->num_channels * 2 || phase > 1 ||
+	    !val || !val2)
+		return -EINVAL;
+
+	ret = axi_dac_read(dac, AXI_DAC_REG_CHAN_CNTRL_8(chan), &reg);
+	if (ret < 0)
+		return ret;
 
 	if (!((phase + chan) % 2)) {
 		reg = AXI_DAC_TO_IQCOR_COEFF_1(reg);
@@ -973,8 +1082,8 @@ int32_t axi_dac_dds_get_calib_phase(struct axi_dac *dac,
  * @param address - Address of the sine lut.
  * @return Returns 0 in case of success or negative error code otherwise.
  */
-uint32_t axi_dac_set_sine_lut(struct axi_dac *dac,
-			      uint32_t address)
+int32_t axi_dac_set_sine_lut(struct axi_dac *dac, uint32_t address,
+			     uint32_t *length_out)
 {
 	uint32_t length;
 	uint32_t tx_count;
@@ -988,6 +1097,11 @@ uint32_t axi_dac_set_sine_lut(struct axi_dac *dac,
 	uint32_t data_q1;
 	uint32_t data_i2;
 	uint32_t data_q2;
+	int32_t ret;
+
+	if (!dac || !length_out || dac->num_channels == 0)
+		return -EINVAL;
+	*length_out = 0;
 	tx_count = sizeof(sine_lut) / sizeof(uint16_t);
 	if (dac->num_channels == 4) {
 		for (index = 0, index_mem = 0; index < (tx_count * 2);
@@ -996,10 +1110,13 @@ uint32_t axi_dac_set_sine_lut(struct axi_dac *dac,
 			index_q1 = index + (tx_count / 2);
 			if (index_q1 >= (tx_count * 2))
 				index_q1 -= (tx_count * 2);
-			data_i1 = (sine_lut[index_i1 / 2] << 20);
-			data_q1 = (sine_lut[index_q1 / 2] << 4);
+			data_i1 = ((uint32_t)sine_lut[index_i1 / 2] << 20);
+			data_q1 = ((uint32_t)sine_lut[index_q1 / 2] << 4);
 
-			no_os_axi_io_write(address, index_mem * 4, data_i1 | data_q1);
+			ret = no_os_axi_io_write(address, index_mem * 4,
+					 data_i1 | data_q1);
+			if (ret < 0)
+				return ret;
 
 			index_i2 = index_i1;
 			index_q2 = index_q1;
@@ -1007,10 +1124,13 @@ uint32_t axi_dac_set_sine_lut(struct axi_dac *dac,
 				index_i2 -= (tx_count * 2);
 			if (index_q2 >= (tx_count * 2))
 				index_q2 -= (tx_count * 2);
-			data_i2 = (sine_lut[index_i2 / 2] << 20);
-			data_q2 = (sine_lut[index_q2 / 2] << 4);
+			data_i2 = ((uint32_t)sine_lut[index_i2 / 2] << 20);
+			data_q2 = ((uint32_t)sine_lut[index_q2 / 2] << 4);
 
-			no_os_axi_io_write(address, (index_mem + 1) * 4, data_i2 | data_q2);
+			ret = no_os_axi_io_write(address, (index_mem + 1) * 4,
+					 data_i2 | data_q2);
+			if (ret < 0)
+				return ret;
 
 		}
 	} else {
@@ -1019,15 +1139,19 @@ uint32_t axi_dac_set_sine_lut(struct axi_dac *dac,
 			index_q1 = index + (tx_count / 4);
 			if (index_q1 >= tx_count)
 				index_q1 -= tx_count;
-			data_i1 = (sine_lut[index_i1] << 20);
-			data_q1 = (sine_lut[index_q1] << 4);
+			data_i1 = ((uint32_t)sine_lut[index_i1] << 20);
+			data_q1 = ((uint32_t)sine_lut[index_q1] << 4);
 
-			no_os_axi_io_write(address, index * 4, data_i1 | data_q1);
+			ret = no_os_axi_io_write(address, index * 4,
+					 data_i1 | data_q1);
+			if (ret < 0)
+				return ret;
 		}
 	}
 
 	length = tx_count * dac->num_channels * 2;
-	return length;
+	*length_out = length;
+	return 0;
 }
 
 /**
@@ -1046,12 +1170,19 @@ int32_t axi_dac_set_buff(struct axi_dac *dac,
 	uint32_t index;
 	uint32_t data_i;
 	uint32_t data_q;
+	int32_t ret;
+
+	if (!dac || (buff_size && !buff) || (buff_size & 1) ||
+	    buff_size > UINT32_MAX / 2)
+		return -EINVAL;
 
 	for (index = 0; index < buff_size; index += 2) {
 		data_i = (buff[index]);
-		data_q = (buff[index + 1] << 16);
+		data_q = (uint32_t)buff[index + 1] << 16;
 
-		no_os_axi_io_write(address, index * 2, data_i | data_q);
+		ret = no_os_axi_io_write(address, index * 2, data_i | data_q);
+		if (ret < 0)
+			return ret;
 	}
 
 	return 0;
@@ -1072,26 +1203,39 @@ int32_t axi_dac_load_custom_data(struct axi_dac *dac,
 {
 	uint32_t index, index_mem = 0;
 	uint8_t chan;
-	uint8_t num_tx_channels = dac->num_channels / 2;
+	uint8_t num_tx_channels;
+	int32_t ret;
+
+	if (!dac || (custom_tx_count && !custom_data_iq) ||
+	    dac->num_channels == 0 || (dac->num_channels & 1))
+		return -EINVAL;
+	num_tx_channels = dac->num_channels / 2;
+	if (custom_tx_count > UINT32_MAX / num_tx_channels / sizeof(uint32_t))
+		return -EOVERFLOW;
 
 	for (index = 0; index < custom_tx_count; index++) {
 		/* Send the same data on all the channels */
 		for (chan = 0; chan < num_tx_channels; chan++) {
 
-			no_os_axi_io_write(address, index_mem * sizeof(uint32_t),
-					   custom_data_iq[index]);
+			ret = no_os_axi_io_write(address,
+					  index_mem * sizeof(uint32_t),
+					  custom_data_iq[index]);
+			if (ret < 0)
+				return ret;
 
 			index_mem++;
 		}
 	}
 
 	for (chan = 0; chan < dac->num_channels; chan++) {
-		axi_dac_write(dac, AXI_DAC_REG_DATA_SELECT((chan * 2) + 0), 0x2);
-		axi_dac_write(dac, AXI_DAC_REG_DATA_SELECT((chan * 2) + 1), 0x2);
+		ret = axi_dac_write(dac, AXI_DAC_REG_DATA_SELECT((chan * 2) + 0), 0x2);
+		if (ret < 0)
+			return ret;
+		ret = axi_dac_write(dac, AXI_DAC_REG_DATA_SELECT((chan * 2) + 1), 0x2);
+		if (ret < 0)
+			return ret;
 	}
-	axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
-
-	return 0;
+	return axi_dac_write(dac, AXI_DAC_REG_SYNC_CONTROL, AXI_DAC_SYNC);
 }
 
 /**
@@ -1105,15 +1249,23 @@ int32_t axi_dac_init_begin(struct axi_dac **dac_core,
 {
 	struct axi_dac *dac;
 
+	if (!dac_core)
+		return -EINVAL;
+	*dac_core = NULL;
+	if (!init || !init->name || init->num_channels == 0 ||
+	    init->bus_type > AXI_DAC_BUS_TYPE_QSPI)
+		return -EINVAL;
+
 	dac = (struct axi_dac *)no_os_malloc(sizeof(*dac));
 	if (!dac)
-		return -1;
+		return -ENOMEM;
 
 	dac->name = init->name;
 	dac->base = init->base;
 	dac->num_channels = init->num_channels;
 	dac->channels = init->channels;
 	dac->bus_type = init->bus_type;
+	dac->clock_hz = 0;
 
 	*dac_core = dac;
 
@@ -1130,7 +1282,12 @@ int32_t axi_dac_init_finish(struct axi_dac *dac)
 	uint32_t reg_data;
 	uint32_t freq;
 	uint32_t ratio;
+	uint64_t rate;
 	int32_t ret;
+
+	if (!dac || !dac->name)
+		return -EINVAL;
+	dac->clock_hz = 0;
 
 	ret = axi_dac_read(dac, AXI_DAC_REG_STATUS, &reg_data);
 	if (ret)
@@ -1149,8 +1306,12 @@ int32_t axi_dac_init_finish(struct axi_dac *dac)
 	ret = axi_dac_read(dac, AXI_DAC_REG_CLK_RATIO, &ratio);
 	if (ret)
 		return ret;
-	dac->clock_hz = freq * ratio;
-	dac->clock_hz = (dac->clock_hz * 390625) >> 8;
+	rate = (uint64_t)freq * ratio;
+	if (rate > UINT64_MAX / 390625)
+		return -ERANGE;
+	dac->clock_hz = (rate * 390625) >> 8;
+	if (!dac->clock_hz)
+		return -ERANGE;
 
 	printf("%s: Successfully initialized (%"PRIu64" Hz)\n",
 	       dac->name, dac->clock_hz);
@@ -1169,6 +1330,12 @@ int32_t axi_dac_init(struct axi_dac **dac_core,
 {
 	struct axi_dac *dac;
 	int32_t ret;
+
+	if (!dac_core)
+		return -EINVAL;
+	*dac_core = NULL;
+	if (!init)
+		return -EINVAL;
 
 	ret = axi_dac_init_begin(&dac, init);
 	if (ret)
@@ -1204,8 +1371,7 @@ int32_t axi_dac_init(struct axi_dac **dac_core,
 	return 0;
 error:
 	no_os_free(dac);
-
-	return -1;
+	return ret;
 }
 
 /**
@@ -1218,6 +1384,15 @@ int32_t axi_dac_data_setup(struct axi_dac *dac)
 	struct axi_dac_channel *chan;
 	int32_t ret;
 	uint32_t i;
+
+	if (!dac || dac->num_channels == 0 || !dac->clock_hz)
+		return -EINVAL;
+	if (dac->channels) {
+		for (i = 0; i < dac->num_channels; i++)
+			if (dac->channels[i].sel < AXI_DAC_DATA_SEL_DDS ||
+			    dac->channels[i].sel > AXI_DAC_DATA_SEL_PNXX)
+				return -EINVAL;
+	}
 
 	if (dac->channels) {
 		for (i = 0; i < dac->num_channels; i++) {

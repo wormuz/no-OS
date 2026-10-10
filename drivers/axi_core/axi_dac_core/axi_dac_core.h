@@ -150,8 +150,8 @@ int32_t axi_dac_set_buff(struct axi_dac *dac,
 			 uint16_t *buff,
 			 uint32_t buff_size);
 /** AXI DAC Set Sine Lookup Table */
-uint32_t axi_dac_set_sine_lut(struct axi_dac *dac,
-			      uint32_t address);
+int32_t axi_dac_set_sine_lut(struct axi_dac *dac, uint32_t address,
+			     uint32_t *length);
 /** Get the scale calibration values for AXI DAC channel */
 int32_t axi_dac_dds_get_calib_scale(struct axi_dac *dac,
 				    uint32_t chan,

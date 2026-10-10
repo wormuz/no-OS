@@ -770,10 +770,12 @@ int32_t axi_adc_init_finish(struct axi_adc *adc)
 	uint32_t reg_data;
 	uint32_t freq;
 	uint32_t ratio;
+	uint64_t rate;
 	int32_t ret;
 
 	if (!adc || !adc->name)
 		return -EINVAL;
+	adc->clock_hz = 0;
 
 	ret = axi_adc_read(adc, AXI_ADC_REG_STATUS, &reg_data);
 	if (ret)
@@ -789,8 +791,12 @@ int32_t axi_adc_init_finish(struct axi_adc *adc)
 	ret = axi_adc_read(adc, AXI_ADC_REG_CLK_RATIO, &ratio);
 	if (ret)
 		return ret;
-	adc->clock_hz = freq * ratio;
-	adc->clock_hz = (adc->clock_hz * 390625) >> 8;
+	rate = (uint64_t)freq * ratio;
+	if (rate > UINT64_MAX / 390625)
+		return -ERANGE;
+	adc->clock_hz = (rate * 390625) >> 8;
+	if (!adc->clock_hz)
+		return -ERANGE;
 
 	printf("%s: Successfully initialized (%"PRIu64" Hz)\n",
 	       adc->name, adc->clock_hz);
@@ -859,7 +865,7 @@ int32_t axi_adc_init(struct axi_adc **adc_core,
 error:
 	no_os_free(adc);
 
-	return -1;
+	return ret;
 }
 
 /**
