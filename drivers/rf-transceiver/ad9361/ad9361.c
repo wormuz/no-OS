@@ -7307,6 +7307,16 @@ int32_t ad9361_do_calib_run(struct ad9361_rf_phy *phy, uint32_t cal,
 {
 	int32_t ret, ret2, restore_ret;
 
+	/* Reject incomplete RFDC state before disabling tracking or changing
+	 * ENSM. The bounded RFDC entry point applies the same clock preflight;
+	 * keep this public/full-calibration path from dereferencing a missing
+	 * RX RFPLL during argument evaluation below. */
+	if (!phy || !phy->spi || !phy->pdata ||
+	    (cal != TX_QUAD_CAL && cal != RFDC_CAL) ||
+	    (cal == RFDC_CAL &&
+	     (!phy->clks[RX_RFPLL] || phy->clks[RX_RFPLL]->rate == 0)))
+		return -EINVAL;
+
 	dev_dbg(&phy->spi->dev, "%s: CAL %"PRIu32" ARG %"PRId32, __func__, cal, arg);
 
 	ret = ad9361_tracking_control(phy, false, false, false);
