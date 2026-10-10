@@ -1129,6 +1129,10 @@ int32_t ad9361_en_dis_tx(struct ad9361_rf_phy *phy, uint32_t tx_if,
 {
 	if (!phy || !phy->spi)
 		return -EINVAL;
+	if (!tx_if || (tx_if & ~(TX_1 | TX_2)) ||
+	    (enable & ~tx_if) ||
+	    (enable & ~(TX_1 | TX_2)))
+		return -EINVAL;
 
 	if ((tx_if & enable) > 1 && AD9364_DEVICE && enable)
 		return -EINVAL;
@@ -1148,6 +1152,10 @@ int32_t ad9361_en_dis_rx(struct ad9361_rf_phy *phy, uint32_t rx_if,
 			 uint32_t enable)
 {
 	if (!phy || !phy->spi)
+		return -EINVAL;
+	if (!rx_if || (rx_if & ~(RX_1 | RX_2)) ||
+	    (enable & ~rx_if) ||
+	    (enable & ~(RX_1 | RX_2)))
 		return -EINVAL;
 
 	if ((rx_if & enable) > 1 && AD9364_DEVICE && enable)
