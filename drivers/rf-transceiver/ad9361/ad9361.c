@@ -7962,7 +7962,7 @@ int32_t ad9361_bbpll_recalc_rate_checked(struct refclk_scale *clk_priv,
 	uint32_t fract, integer;
 	uint8_t buf[4];
 	int32_t ret;
-	if (!clk_priv || !rate_out || !parent_rate)
+	if (!clk_priv || !clk_priv->spi || !rate_out || !parent_rate)
 		return -EINVAL;
 
 	ret = ad9361_spi_readm(clk_priv->spi, REG_INTEGER_BB_FREQ_WORD, &buf[0],
@@ -8004,9 +8004,7 @@ int32_t ad9361_bbpll_round_rate(struct refclk_scale *clk_priv, uint32_t rate,
 	uint32_t fract, integer;
 	uint64_t temp;
 
-	if (clk_priv) {
-		// Unused variable - fix compiler warning
-	}
+	(void)clk_priv;
 	if (!prate || !*prate)
 		return -EINVAL;
 
@@ -8042,15 +8040,17 @@ int32_t ad9361_bbpll_round_rate(struct refclk_scale *clk_priv, uint32_t rate,
 int32_t ad9361_bbpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 			      uint32_t parent_rate)
 {
-	struct no_os_spi_desc *spi = clk_priv->spi;
+	struct no_os_spi_desc *spi;
 	uint64_t tmp;
 	uint32_t fract, integer;
 	int32_t icp_val;
 	uint8_t lf_defaults[3] = { 0x35, 0x5B, 0xE8 };
 	uint64_t temp;
 	int32_t ret;
-	if (!clk_priv || !rate || parent_rate < 128)
+	if (!clk_priv || !clk_priv->phy || !clk_priv->spi || !rate ||
+	    parent_rate < 128)
 		return -EINVAL;
+	spi = clk_priv->spi;
 
 #define AD9361_BBPLL_TRY(call) do { \
 		ret = (call); \
