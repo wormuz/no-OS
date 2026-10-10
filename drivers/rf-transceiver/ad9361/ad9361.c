@@ -7247,9 +7247,6 @@ int32_t ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
 	if (ret < 0)
 		goto restore;
 
-	phy->current_rx_bw_Hz = rf_rx_bw;
-	phy->current_tx_bw_Hz = rf_tx_bw;
-
 	if (phy->manual_tx_quad_cal_en == false) {
 		ret = ad9361_tx_quad_calib(phy, rf_rx_bw / 2, rf_tx_bw / 2, -1);
 		if (ret < 0)
@@ -7266,7 +7263,17 @@ int32_t ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
 		return ret;
 	if (tracking_ret < 0)
 		return tracking_ret;
-	return restore_ret;
+	if (restore_ret < 0)
+		return restore_ret;
+
+	/* Keep the cached request as the last completely successful setup. The
+	 * analog filters may have been programmed before TX quad calibration or
+	 * ENSM/tracking restoration fails. If the cache is advanced earlier, a
+	 * retry with the same bandwidth can be mistaken for a no-op and skip the
+	 * failed calibration/recovery work. */
+	phy->current_rx_bw_Hz = rf_rx_bw;
+	phy->current_tx_bw_Hz = rf_tx_bw;
+	return 0;
 }
 
 /**
