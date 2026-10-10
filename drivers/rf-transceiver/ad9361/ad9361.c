@@ -4309,19 +4309,23 @@ int ad9361_synth_lo_powerdown(struct ad9361_rf_phy *phy,
 			      enum synth_pd_ctrl rx,
 			      enum synth_pd_ctrl tx)
 {
+	uint8_t synth_pd[2];
+	int32_t ret;
+
 	if (!phy || !phy->spi ||
 	    (rx != LO_DONTCARE && rx != LO_OFF && rx != LO_ON) ||
 	    (tx != LO_DONTCARE && tx != LO_OFF && tx != LO_ON))
 		return -EINVAL;
 
 	dev_dbg(&phy->spi->dev, "%s : RX(%d) TX(%d)", __func__, rx, tx);
+	memcpy(synth_pd, phy->cached_synth_pd, sizeof(synth_pd));
 
 	switch (rx) {
 	case LO_OFF:
-		phy->cached_synth_pd[1] |= RX_LO_POWER_DOWN;
+		synth_pd[1] |= RX_LO_POWER_DOWN;
 		break;
 	case LO_ON:
-		phy->cached_synth_pd[1] &= ~RX_LO_POWER_DOWN;
+		synth_pd[1] &= ~RX_LO_POWER_DOWN;
 		break;
 	case LO_DONTCARE:
 		break;
@@ -4329,17 +4333,22 @@ int ad9361_synth_lo_powerdown(struct ad9361_rf_phy *phy,
 
 	switch (tx) {
 	case LO_OFF:
-		phy->cached_synth_pd[0] |= TX_LO_POWER_DOWN;
+		synth_pd[0] |= TX_LO_POWER_DOWN;
 		break;
 	case LO_ON:
-		phy->cached_synth_pd[0] &= ~TX_LO_POWER_DOWN;
+		synth_pd[0] &= ~TX_LO_POWER_DOWN;
 		break;
 	case LO_DONTCARE:
 		break;
 	}
 
-	return ad9361_spi_writem(phy->spi, REG_TX_SYNTH_POWER_DOWN_OVERRIDE,
-				 phy->cached_synth_pd, 2);
+	ret = ad9361_spi_writem(phy->spi, REG_TX_SYNTH_POWER_DOWN_OVERRIDE,
+				synth_pd, sizeof(synth_pd));
+	if (ret < 0)
+		return ret;
+
+	memcpy(phy->cached_synth_pd, synth_pd, sizeof(synth_pd));
+	return 0;
 }
 
 /**
