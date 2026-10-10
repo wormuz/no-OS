@@ -1927,27 +1927,40 @@ int32_t ad9361_tx_mute(struct ad9361_rf_phy *phy, uint32_t state)
 		return -EINVAL;
 
 	if (state) {
+		/* Never restore an older attenuation snapshot if either fresh RFIC
+		 * read fails. Calibration cleanup may call unmute after this error. */
+		phy->tx_mute_restore_valid = false;
 		tx1_atten = ad9361_get_tx_atten(phy, 1);
 		if (tx1_atten < 0)
 			return tx1_atten;
 		tx2_atten = ad9361_get_tx_atten(phy, 2);
 		if (tx2_atten < 0)
 			return tx2_atten;
-		phy->tx1_atten_cached = tx1_atten;
-		phy->tx2_atten_cached = tx2_atten;
+		phy->tx_mute_restore_atten[0] = tx1_atten;
+		phy->tx_mute_restore_atten[1] = tx2_atten;
+		phy->tx_mute_restore_valid = true;
 
 		return ad9361_set_tx_atten(phy, 89750, true, true, true);
 	} else {
-		if (phy->tx1_atten_cached == phy->tx2_atten_cached)
-			return ad9361_set_tx_atten(phy, phy->tx1_atten_cached,
-						   true, true, true);
+		if (!phy->tx_mute_restore_valid)
+			return -EINVAL;
+		if (phy->tx_mute_restore_atten[0] ==
+		    phy->tx_mute_restore_atten[1]) {
+			ret = ad9361_set_tx_atten(phy, phy->tx_mute_restore_atten[0],
+					  true, true, true);
+			if (ret == 0)
+				phy->tx_mute_restore_valid = false;
+			return ret;
+		}
 
-		ret = ad9361_set_tx_atten(phy, phy->tx1_atten_cached,
+		ret = ad9361_set_tx_atten(phy, phy->tx_mute_restore_atten[0],
 					  true, false, true);
 		if (ret < 0)
 			return ret;
-		ret = ad9361_set_tx_atten(phy, phy->tx2_atten_cached,
+		ret = ad9361_set_tx_atten(phy, phy->tx_mute_restore_atten[1],
 					  false, true, true);
+		if (ret == 0)
+			phy->tx_mute_restore_valid = false;
 
 		return ret;
 	}
