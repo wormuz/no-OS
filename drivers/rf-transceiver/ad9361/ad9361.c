@@ -9636,6 +9636,9 @@ int32_t ad9361_register_clocks(struct ad9361_rf_phy *phy)
 	uint32_t flags = CLK_GET_RATE_NOCACHE;
 	int32_t ret;
 
+	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
+
 #define REGISTER_CLK(_name, _parent, _source, _parent_source) do { \
 	ret = ad9361_clk_register(phy, _name, _parent, \
 		flags | CLK_IGNORE_UNUSED, _source, _parent_source, \
@@ -9686,6 +9689,9 @@ int32_t ad9361_unregister_clocks(struct ad9361_rf_phy *phy)
 {
 	int32_t i;
 
+	if (!phy)
+		return -EINVAL;
+
 	for (i = 0; i < NUM_AD9361_CLKS; i++) {
 		no_os_free(phy->clks[i]);
 		no_os_free(phy->ref_clk_scale[i]);
@@ -9713,7 +9719,12 @@ int32_t ad9361_rssi_gain_step_calib(struct ad9361_rf_phy *phy)
 	uint8_t  i;
 	int32_t ret, cleanup_ret = 0, restore_ret;
 	bool config_touched = false;
-	struct no_os_spi_desc *spi = phy->spi;
+	struct no_os_spi_desc *spi;
+
+	if (!phy || !phy->spi || !phy->pdata ||
+	    !phy->ref_clk_scale[RX_RFPLL])
+		return -EINVAL;
+	spi = phy->spi;
 
 	{
 		uint32_t rx_lo_rate;
@@ -9857,9 +9868,13 @@ restore_state:
  */
 int32_t ad9361_rssi_program_lna_gain(struct ad9361_rf_phy *phy)
 {
-	struct no_os_spi_desc *spi = phy->spi;
+	struct no_os_spi_desc *spi;
 	uint32_t i;
 	int32_t ret;
+
+	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
+	spi = phy->spi;
 
 	ret = ad9361_spi_write(spi, REG_LNA_GAIN,
 				phy->pdata->rssi_gain_step_calib_reg_val[0]);
@@ -9913,9 +9928,13 @@ cleanup:
  */
 int32_t ad9361_rssi_write_err_tbl(struct ad9361_rf_phy *phy)
 {
-	struct no_os_spi_desc *spi = phy->spi;
+	struct no_os_spi_desc *spi;
 	uint32_t i;
 	int32_t ret;
+
+	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
+	spi = phy->spi;
 
 	ret = ad9361_spi_write(spi, REG_CONFIG,
 				CALIB_TABLE_SELECT(0x3) | START_CALIB_TABLE_CLOCK);
