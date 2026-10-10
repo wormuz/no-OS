@@ -712,6 +712,7 @@ int32_t ad9361_set_en_state_machine_mode(struct ad9361_rf_phy *phy,
 	uint8_t ensm_state;
 	bool pinctrl = false;
 	bool fdd_independent = false;
+	bool old_fdd_independent;
 
 	if (!phy || !phy->pdata || !phy->spi)
 		return -EINVAL;
@@ -747,13 +748,20 @@ int32_t ad9361_set_en_state_machine_mode(struct ad9361_rf_phy *phy,
 		return -EINVAL;
 	}
 
+	old_fdd_independent = phy->pdata->fdd_independent_mode;
+	/* ad9361_set_ensm_mode() programs FDD_EXTERNAL_CTRL_ENABLE from this
+	 * platform-data field, so stage the requested mode before writing it. */
+	phy->pdata->fdd_independent_mode = fdd_independent;
 	ret = ad9361_set_ensm_mode(phy, phy->pdata->fdd, pinctrl);
-	if (ret < 0)
+	if (ret < 0) {
+		phy->pdata->fdd_independent_mode = old_fdd_independent;
 		return ret;
+	}
 	ret = ad9361_ensm_set_state(phy, ensm_state, pinctrl);
 	if (ret < 0)
+		/* The FDD external-control bit was committed by the successful mode
+		 * write above; retain its cache so retries do not misreport hardware. */
 		return ret;
-	phy->pdata->fdd_independent_mode = fdd_independent;
 
 	return ret;
 }

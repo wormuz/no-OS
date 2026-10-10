@@ -2064,47 +2064,32 @@ static int set_ensm_mode(void *device, char *buf, uint32_t len,
 			 const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
-	uint32_t val = 0;
-	bool res = false;
+	uint32_t mode;
 	int ret;
 
-	bool old_fdd_independent = ad9361_phy->pdata->fdd_independent_mode;
-	bool fdd_independent = false;
-
 	if (!strcmp(buf, "tx")) {
-		val = ENSM_STATE_TX;
+		mode = ENSM_MODE_TX;
 	} else if (!strcmp(buf, "rx")) {
-		val = ENSM_STATE_RX;
+		mode = ENSM_MODE_RX;
 	} else if (!strcmp(buf, "alert")) {
-		val = ENSM_STATE_ALERT;
+		mode = ENSM_MODE_ALERT;
 	} else if (!strcmp(buf, "fdd")) {
-		val = ENSM_STATE_FDD;
+		mode = ENSM_MODE_FDD;
 	} else if (!strcmp(buf, "wait")) {
-		val = ENSM_STATE_SLEEP_WAIT;
+		mode = ENSM_MODE_WAIT;
 	} else if (!strcmp(buf, "sleep")) {
-		val = ENSM_STATE_SLEEP;
+		mode = ENSM_MODE_SLEEP;
 	} else if (!strcmp(buf, "pinctrl")) {
-		res = true;
-		val = ENSM_STATE_SLEEP_WAIT;
+		mode = ENSM_MODE_PINCTRL;
 	} else if (!strcmp(buf, "pinctrl_fdd_indep")) {
-		val = ENSM_STATE_FDD;
-		fdd_independent = true;
+		mode = ENSM_MODE_PINCTRL_FDD_INDEP;
 	} else {
 		return -ENOENT;
 	}
 
-	ret = ad9361_set_ensm_mode(ad9361_phy, ad9361_phy->pdata->fdd, res);
-	if (ret < 0) {
-		ad9361_phy->pdata->fdd_independent_mode = old_fdd_independent;
+	ret = ad9361_set_en_state_machine_mode(ad9361_phy, mode);
+	if (ret < 0)
 		return ret;
-	}
-
-	ret = ad9361_ensm_set_state(ad9361_phy, val, res);
-	if (ret < 0) {
-		ad9361_phy->pdata->fdd_independent_mode = old_fdd_independent;
-		return ret;
-	}
-	ad9361_phy->pdata->fdd_independent_mode = fdd_independent;
 
 	return len;
 }
