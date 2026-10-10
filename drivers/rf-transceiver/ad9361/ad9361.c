@@ -3632,8 +3632,12 @@ static int32_t __ad9361_tx_quad_calib(struct ad9361_rf_phy *phy, uint32_t phase,
 		return ret;
 
 	if (res) {
+		/* In 2x2 mode both physical TX paths are enabled, regardless of
+		 * the 1x1 fallback channel selection. Always seed the combined
+		 * convergence result with TX1, then intersect it with TX2 below. */
 		val = ad9361_spi_read(phy->spi,
-				       (phy->pdata->rx1tx1_mode_use_tx_num == 2) ?
+				       (!phy->pdata->rx2tx2 &&
+					phy->pdata->rx1tx1_mode_use_tx_num == 2) ?
 				       REG_QUAD_CAL_STATUS_TX2 : REG_QUAD_CAL_STATUS_TX1);
 		if (val < 0)
 			return val;
