@@ -1549,6 +1549,24 @@ uint32_t ad9361_gt(struct ad9361_rf_phy *phy)
 	return phy->current_table;
 }
 
+/* ad9361_gt() retains a legacy zero fallback for callers that only need a
+ * printable table index. Gain reads/writes must not use that fallback as
+ * evidence that a table was loaded: a partial SPI failure leaves the active
+ * table unknown and sets current_table to NO_GAIN_TABLE. */
+static int32_t ad9361_validate_current_gain_table(
+	struct ad9361_rf_phy *phy)
+{
+	if (!phy || !phy->gt_info)
+		return -EINVAL;
+	if (phy->current_table == NO_GAIN_TABLE ||
+	    phy->current_table >= RXGAIN_TBLS_END ||
+	    !phy->gt_info[phy->current_table].abs_gain_tbl ||
+	    !phy->gt_info[phy->current_table].max_index)
+		return -EIO;
+
+	return 0;
+}
+
 int32_t ad9361_init_gain_tables(struct ad9361_rf_phy *phy)
 {
 	if (!phy)
@@ -2393,6 +2411,9 @@ int32_t ad9361_get_rx_gain(struct ad9361_rf_phy *phy,
 
 	if (!phy || !phy->spi || !phy->pdata || !rx_gain)
 		return -EINVAL;
+	rc = ad9361_validate_current_gain_table(phy);
+	if (rc < 0)
+		return rc;
 	spi = phy->spi;
 
 	if (rx_id == 1) {
@@ -2778,6 +2799,9 @@ int32_t ad9361_set_rx_gain(struct ad9361_rf_phy *phy,
 
 	if (!phy || !phy->spi || !phy->pdata || !rx_gain)
 		return -EINVAL;
+	rc = ad9361_validate_current_gain_table(phy);
+	if (rc < 0)
+		return rc;
 	spi = phy->spi;
 
 	if (rx_id == 1) {
