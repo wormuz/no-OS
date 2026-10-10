@@ -3861,6 +3861,10 @@ static int32_t ad9361_rf_dc_offset_calib_with_timeout(
 	if (ret < 0)
 		return ret;
 
+	/* This calibration setup rewrites the tracking-enable register with
+	 * tracking bits cleared. If any later calibration step fails before the
+	 * full configured tracking image is restored, cached getters must fail. */
+	phy->tracking_config_valid = false;
 	ret = ad9361_spi_write(spi, REG_DC_OFFSET_CONFIG2,
 			       USE_WAIT_COUNTER_FOR_RF_DC_INIT_CAL |
 			       DC_OFFSET_UPDATE(3));
@@ -4341,6 +4345,9 @@ int32_t ad9361_tracking_control(struct ad9361_rf_phy *phy, bool bbdc_track,
 
 	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
+	/* A failure at any register leaves a partially applied configuration.
+	 * Revalidate only after every write succeeds and the values match cache. */
+	phy->tracking_config_valid = false;
 	spi = phy->spi;
 
 	dev_dbg(&spi->dev, "%s : bbdc_track=%d, rfdc_track=%d, rxquad_track=%d",
@@ -4377,10 +4384,16 @@ int32_t ad9361_tracking_control(struct ad9361_rf_phy *phy, bool bbdc_track,
 				 ENABLE_TRACKING_MODE_CH1 : ENABLE_TRACKING_MODE_CH2;
 	}
 
-	return ad9361_spi_write(spi, REG_CALIBRATION_CONFIG_1,
-				 ENABLE_PHASE_CORR | ENABLE_GAIN_CORR |
-				 FREE_RUN_MODE | ENABLE_CORR_WORD_DECIMATION |
-				 qtrack);
+	ret = ad9361_spi_write(spi, REG_CALIBRATION_CONFIG_1,
+			       ENABLE_PHASE_CORR | ENABLE_GAIN_CORR |
+			       FREE_RUN_MODE | ENABLE_CORR_WORD_DECIMATION |
+			       qtrack);
+	if (ret == 0 && bbdc_track == phy->bbdc_track_en &&
+	    rfdc_track == phy->rfdc_track_en &&
+	    rxquad_track == phy->quad_track_en)
+		phy->tracking_config_valid = true;
+
+	return ret;
 }
 
 /**

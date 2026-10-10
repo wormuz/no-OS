@@ -471,9 +471,15 @@ static int get_rf_dc_offset_tracking_en(void *device, char *buf, uint32_t len,
 					intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
+	uint8_t tracking;
+	int32_t ret;
 
-	if (!channel->ch_out)
-		return (int) snprintf(buf, len, "%"PRIi16"", ad9361_phy->rfdc_track_en) + 1;
+	if (!channel->ch_out) {
+		ret = ad9361_get_rx_rfdc_track_en_dis(ad9361_phy, &tracking);
+		if (ret < 0)
+			return ret;
+		return (int) snprintf(buf, len, "%"PRIi16"", tracking) + 1;
+	}
 
 	return -ENOENT;
 }
@@ -491,9 +497,15 @@ static int get_quadrature_tracking_en(void *device, char *buf, uint32_t len,
 				      intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
+	uint8_t tracking;
+	int32_t ret;
 
-	if (!channel->ch_out)
-		return (int) snprintf(buf, len, "%"PRIi16"", ad9361_phy->quad_track_en) + 1;
+	if (!channel->ch_out) {
+		ret = ad9361_get_rx_quad_track_en_dis(ad9361_phy, &tracking);
+		if (ret < 0)
+			return ret;
+		return (int) snprintf(buf, len, "%"PRIi16"", tracking) + 1;
+	}
 
 	return -ENOENT;
 }
@@ -531,9 +543,15 @@ static int get_bb_dc_offset_tracking_en(void *device, char *buf, uint32_t len,
 					intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
+	uint8_t tracking;
+	int32_t ret;
 
-	if (!channel->ch_out)
-		return (int) snprintf(buf, len, "%"PRIi16"", ad9361_phy->bbdc_track_en) + 1;
+	if (!channel->ch_out) {
+		ret = ad9361_get_rx_bbdc_track_en_dis(ad9361_phy, &tracking);
+		if (ret < 0)
+			return ret;
+		return (int) snprintf(buf, len, "%"PRIi16"", tracking) + 1;
+	}
 
 	return -ENOENT;
 }

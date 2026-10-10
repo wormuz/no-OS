@@ -419,19 +419,22 @@ int32_t ad9361_get_rx_fir_en_dis(struct ad9361_rf_phy *phy, uint8_t *en_dis);
 /* Enable/disable the RX RFDC Tracking. */
 int32_t ad9361_set_rx_rfdc_track_en_dis(struct ad9361_rf_phy *phy,
 					uint8_t en_dis);
-/* Get the status of the RX RFDC Tracking. */
+/* Get the cached RX RFDC Tracking state. Returns -EIO if a partial SPI
+ * update left the hardware state unknown; output is unchanged on error. */
 int32_t ad9361_get_rx_rfdc_track_en_dis(struct ad9361_rf_phy *phy,
 					uint8_t *en_dis);
 /* Enable/disable the RX BasebandDC Tracking. */
 int32_t ad9361_set_rx_bbdc_track_en_dis(struct ad9361_rf_phy *phy,
 					uint8_t en_dis);
-/* Get the status of the RX BasebandDC Tracking. */
+/* Get the cached RX BasebandDC Tracking state. Returns -EIO if a partial SPI
+ * update left the hardware state unknown; output is unchanged on error. */
 int32_t ad9361_get_rx_bbdc_track_en_dis(struct ad9361_rf_phy *phy,
 					uint8_t *en_dis);
 /* Enable/disable the RX Quadrature Tracking. */
 int32_t ad9361_set_rx_quad_track_en_dis(struct ad9361_rf_phy *phy,
 					uint8_t en_dis);
-/* Get the status of the RX Quadrature Tracking. */
+/* Get the cached RX Quadrature Tracking state. Returns -EIO if a partial SPI
+ * update left the hardware state unknown; output is unchanged on error. */
 int32_t ad9361_get_rx_quad_track_en_dis(struct ad9361_rf_phy *phy,
 					uint8_t *en_dis);
 /* Set the RX RF input port. */

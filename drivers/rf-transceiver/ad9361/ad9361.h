@@ -3426,6 +3426,9 @@ struct ad9361_rf_phy {
 	bool			rfdc_track_en;
 	bool			bbdc_track_en;
 	bool			quad_track_en;
+	/* Cached tracking bits are authoritative only after the full register
+	 * set has been applied successfully. */
+	bool			tracking_config_valid;
 	bool			txmon_tdd_en;
 	uint16_t 			auxdac1_value;
 	uint16_t 			auxdac2_value;

@@ -146,11 +146,15 @@ Gain and RSSI:
 Tracking and calibration:
 
 * **ad9361_set_rx_rfdc_track_en_dis** / **ad9361_get_rx_rfdc_track_en_dis** -
-  enable/disable RX RF DC offset tracking.
+  enable/disable RX RF DC offset tracking. The getter returns an error if a
+  partial SPI update left tracking state unknown, and leaves its output
+  unchanged until a complete register-set write succeeds.
 * **ad9361_set_rx_bbdc_track_en_dis** / **ad9361_get_rx_bbdc_track_en_dis** -
-  enable/disable RX baseband DC offset tracking.
+  enable/disable RX baseband DC offset tracking; the getter follows the same
+  unknown-state error behavior.
 * **ad9361_set_rx_quad_track_en_dis** / **ad9361_get_rx_quad_track_en_dis** -
-  enable/disable RX quadrature tracking.
+  enable/disable RX quadrature tracking; the getter follows the same
+  unknown-state error behavior.
 
 FIR filter:
 

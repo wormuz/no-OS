@@ -1404,6 +1404,8 @@ int32_t ad9361_get_rx_rfdc_track_en_dis(struct ad9361_rf_phy *phy,
 {
 	if (!phy || !en_dis)
 		return -EINVAL;
+	if (!phy->tracking_config_valid)
+		return -EIO;
 
 	*en_dis = phy->rfdc_track_en;
 
@@ -1464,6 +1466,8 @@ int32_t ad9361_get_rx_bbdc_track_en_dis(struct ad9361_rf_phy *phy,
 {
 	if (!phy || !en_dis)
 		return -EINVAL;
+	if (!phy->tracking_config_valid)
+		return -EIO;
 
 	*en_dis = phy->bbdc_track_en;
 
@@ -1524,6 +1528,8 @@ int32_t ad9361_get_rx_quad_track_en_dis(struct ad9361_rf_phy *phy,
 {
 	if (!phy || !en_dis)
 		return -EINVAL;
+	if (!phy->tracking_config_valid)
+		return -EIO;
 
 	*en_dis = phy->quad_track_en;
 
