@@ -4161,6 +4161,8 @@ static int32_t ad9361_set_ref_clk_cycles(struct ad9361_rf_phy *phy,
 {
 	dev_dbg(&phy->spi->dev, "%s : ref_clk_hz %"PRIu32,
 		__func__, ref_clk_hz);
+	if (ref_clk_hz < 1000000UL)
+		return -EINVAL;
 
 	return ad9361_spi_write(phy->spi, REG_REFERENCE_CLOCK_CYCLES,
 				REFERENCE_CLOCK_CYCLES_PER_US((ref_clk_hz / 1000000UL) - 1));
@@ -4215,6 +4217,8 @@ static int32_t ad9361_txmon_setup(struct ad9361_rf_phy *phy,
 	} while (0)
 
 	dev_dbg(&phy->spi->dev, "%s", __func__);
+	if (ctrl->tx_mon_duration < 16)
+		return -EINVAL;
 
 	AD9361_SETUP_TRY(ad9361_spi_write(spi, REG_TPM_MODE_ENABLE,
 			 (ctrl->one_shot_mode_en ? ONE_SHOT_MODE : 0) |
@@ -4443,6 +4447,8 @@ static int32_t ad9361_gc_setup(struct ad9361_rf_phy *phy,
 	     ctrl->rx2_mode == RF_GAIN_FASTATTACK_AGC)
 	    ? ctrl->f_agc_dec_pow_measuremnt_duration < 16
 	    : ctrl->dec_pow_measuremnt_duration < 16)
+		return -EINVAL;
+	if (ctrl->f_agc_power_measurement_duration_in_state5 < 16)
 		return -EINVAL;
 
 	reg = DEC_PWR_FOR_GAIN_LOCK_EXIT | DEC_PWR_FOR_LOCK_LEVEL |
