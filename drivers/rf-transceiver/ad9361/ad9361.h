@@ -3602,6 +3602,12 @@ int32_t ad9361_rx_fastlock_get_freq(struct ad9361_rf_phy *phy,
 				    uint32_t profile, uint64_t *freq_hz);
 int32_t ad9361_tx_fastlock_get_freq(struct ad9361_rf_phy *phy,
 				    uint32_t profile, uint64_t *freq_hz);
+/* Update current LO/divider caches from a successfully applied profile. The
+ * expected frequency is checked within 1 kHz when nonzero. */
+int32_t ad9361_fastlock_sync_current_lo(struct ad9361_rf_phy *phy, bool tx,
+					uint32_t profile,
+					uint64_t expected_freq_hz,
+					uint64_t *freq_hz);
 /* Invalidate cached profile bytes after an out-of-band fastlock-bank write. */
 void ad9361_fastlock_invalidate_cache(struct ad9361_rf_phy *phy, bool tx);
 void ad9361_ensm_force_state(struct ad9361_rf_phy *phy, uint8_t ensm_state);

@@ -6910,7 +6910,7 @@ int32_t ad9361_fastlock_recall(struct ad9361_rf_phy *phy, bool tx,
 
 	phy->fastlock.entry[tx][profile].alc_written = new_alc_written;
 	phy->fastlock.current_profile[tx] = profile + 1;
-	return 0;
+	return ad9361_fastlock_sync_current_lo(phy, tx, profile, 0, NULL);
 }
 
 /**
@@ -8844,7 +8844,8 @@ static uint64_t ad9361_calc_rfpll_int_freq(uint64_t parent_rate,
  * clock-tree cache, so ad9361_get_rx_lo_freq() can report the previous tune.
  * Read the profile bank itself; the caller separately verifies PLL lock. */
 static int32_t ad9361_fastlock_get_freq(struct ad9361_rf_phy *phy, bool tx,
-					uint32_t profile, uint64_t *freq_hz)
+					uint32_t profile, uint64_t *freq_hz,
+					uint8_t *vco_div_out)
 {
 	uint32_t fract, integer, vco_div;
 	uint64_t parent_rate;
@@ -8910,19 +8911,81 @@ calculate:
 
 	*freq_hz = ad9361_calc_rfpll_int_freq(parent_rate, integer,
 					      fract, vco_div);
+	if (vco_div_out != NULL)
+		*vco_div_out = vco_div;
 	return 0;
 }
 
 int32_t ad9361_rx_fastlock_get_freq(struct ad9361_rf_phy *phy,
 				    uint32_t profile, uint64_t *freq_hz)
 {
-	return ad9361_fastlock_get_freq(phy, false, profile, freq_hz);
+	return ad9361_fastlock_get_freq(phy, false, profile, freq_hz, NULL);
 }
 
 int32_t ad9361_tx_fastlock_get_freq(struct ad9361_rf_phy *phy,
 				    uint32_t profile, uint64_t *freq_hz)
 {
-	return ad9361_fastlock_get_freq(phy, true, profile, freq_hz);
+	return ad9361_fastlock_get_freq(phy, true, profile, freq_hz, NULL);
+}
+
+/* Synchronize the host's RFPLL model after a profile recall was confirmed by
+ * its caller. NIOS recalls the profile outside the ADI clock driver, so the
+ * synthesizer frequency and divider caches otherwise continue to describe
+ * the previous host-programmed profile. */
+int32_t ad9361_fastlock_sync_current_lo(struct ad9361_rf_phy *phy, bool tx,
+					uint32_t profile,
+					uint64_t expected_freq_hz,
+					uint64_t *freq_hz)
+{
+	uint64_t actual_freq_hz;
+	uint8_t vco_div;
+	int32_t ret;
+
+	if (phy == NULL)
+		return -EINVAL;
+
+	ret = ad9361_fastlock_get_freq(phy, tx, profile, &actual_freq_hz,
+				       &vco_div);
+	if (ret < 0)
+		goto invalidate;
+
+	/* The NIOS completion record and ADI profile decoder must agree. */
+	if (expected_freq_hz != 0 &&
+	    (actual_freq_hz > expected_freq_hz
+	     ? actual_freq_hz - expected_freq_hz > 1000
+	     : expected_freq_hz - actual_freq_hz > 1000)) {
+		ret = -EIO;
+		goto invalidate;
+	}
+
+	if (tx) {
+		phy->current_tx_lo_freq = ad9361_to_clk(actual_freq_hz);
+		phy->cached_tx_rfpll_div = vco_div;
+		phy->rfpll_requested_valid[1] = false;
+		if (phy->clks[TX_RFPLL] != NULL)
+			phy->clks[TX_RFPLL]->rate = ad9361_to_clk(actual_freq_hz);
+	} else {
+		phy->current_rx_lo_freq = ad9361_to_clk(actual_freq_hz);
+		phy->cached_rx_rfpll_div = vco_div;
+		phy->rfpll_requested_valid[0] = false;
+		if (phy->clks[RX_RFPLL] != NULL)
+			phy->clks[RX_RFPLL]->rate = ad9361_to_clk(actual_freq_hz);
+	}
+	if (freq_hz != NULL)
+		*freq_hz = actual_freq_hz;
+	return 0;
+
+invalidate:
+	/* A failed profile readback must never preserve an older frequency as if
+	 * it described the newly selected RFIC profile. */
+	if (tx) {
+		phy->current_tx_lo_freq = 0;
+		phy->rfpll_requested_valid[1] = false;
+	} else {
+		phy->current_rx_lo_freq = 0;
+		phy->rfpll_requested_valid[0] = false;
+	}
+	return ret;
 }
 
 void ad9361_fastlock_invalidate_cache(struct ad9361_rf_phy *phy, bool tx)
