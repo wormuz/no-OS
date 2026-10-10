@@ -1842,8 +1842,10 @@ int32_t ad9361_set_tx_atten(struct ad9361_rf_phy *phy, uint32_t atten_mdb,
 			    bool tx1, bool tx2, bool immed)
 {
 	uint8_t buf[2];
-	int32_t ret = 0, cleanup_ret;
+	uint32_t old_tx1_atten = 0, old_tx2_atten = 0;
+	int32_t ret = 0, cleanup_ret, restore_ret;
 	bool immediate_update_touched = false;
+	bool attenuation_write_started = false;
 
 	if (!phy || !phy->spi || (!tx1 && !tx2))
 		return -EINVAL;
@@ -1853,6 +1855,22 @@ int32_t ad9361_set_tx_atten(struct ad9361_rf_phy *phy, uint32_t atten_mdb,
 
 	if (atten_mdb > MAX_TX_ATTENUATION_DB) /* 89.75 dB */
 		return -EINVAL;
+
+	/* Snapshot every selected channel before the first write. A failed
+	 * multi-channel update must not leave TX1 and TX2 at different requested
+	 * attenuation values. */
+	if (tx1) {
+		ret = ad9361_get_tx_atten(phy, 1);
+		if (ret < 0)
+			return ret;
+		old_tx1_atten = (uint32_t)ret;
+	}
+	if (tx2) {
+		ret = ad9361_get_tx_atten(phy, 2);
+		if (ret < 0)
+			return ret;
+		old_tx2_atten = (uint32_t)ret;
+	}
 
 	atten_mdb /= 250; /* Scale to 0.25dB / LSB */
 
@@ -1868,12 +1886,14 @@ int32_t ad9361_set_tx_atten(struct ad9361_rf_phy *phy, uint32_t atten_mdb,
 		goto cleanup;
 
 	if (tx1) {
+		attenuation_write_started = true;
 		ret = ad9361_spi_writem(phy->spi, REG_TX1_ATTEN_1, buf, 2);
 		if (ret < 0)
 			goto cleanup;
 	}
 
 	if (tx2) {
+		attenuation_write_started = true;
 		ret = ad9361_spi_writem(phy->spi, REG_TX2_ATTEN_1, buf, 2);
 		if (ret < 0)
 			goto cleanup;
@@ -1890,6 +1910,35 @@ int32_t ad9361_set_tx_atten(struct ad9361_rf_phy *phy, uint32_t atten_mdb,
 	return ret;
 
 cleanup:
+	/* SPI write errors can be ambiguous. Restore every selected channel while
+	 * immediate application is still disabled, then re-enable it below so the
+	 * previous attenuation is applied together. */
+	if (attenuation_write_started) {
+		if (tx1) {
+			uint8_t old_buf[2] = {
+				(uint8_t)(old_tx1_atten / 250U >> 8),
+				(uint8_t)(old_tx1_atten / 250U)
+			};
+			restore_ret = ad9361_spi_writem(
+				phy->spi, REG_TX1_ATTEN_1, old_buf, 2);
+			if (restore_ret < 0)
+				dev_err(&phy->spi->dev,
+					"Unable to restore TX1 attenuation after update failure: %"PRId32,
+					restore_ret);
+		}
+		if (tx2) {
+			uint8_t old_buf[2] = {
+				(uint8_t)(old_tx2_atten / 250U >> 8),
+				(uint8_t)(old_tx2_atten / 250U)
+			};
+			restore_ret = ad9361_spi_writem(
+				phy->spi, REG_TX2_ATTEN_1, old_buf, 2);
+			if (restore_ret < 0)
+				dev_err(&phy->spi->dev,
+					"Unable to restore TX2 attenuation after update failure: %"PRId32,
+					restore_ret);
+		}
+	}
 	if (immediate_update_touched) {
 		cleanup_ret = ad9361_spi_writef(phy->spi, REG_TX2_DIG_ATTEN,
 						IMMEDIATELY_UPDATE_TPC_ATTEN, 1);
