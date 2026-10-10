@@ -2295,6 +2295,9 @@ int32_t ad9361_set_trx_path_clks(struct ad9361_rf_phy *phy,
 {
 	int32_t ret;
 
+	if (!phy || !rx_path_clks || !tx_path_clks)
+		return -EINVAL;
+
 	ret = ad9361_set_trx_clock_chain(phy, rx_path_clks, tx_path_clks);
 	if (ret < 0)
 		return ret;
@@ -2316,6 +2319,9 @@ int32_t ad9361_get_trx_path_clks(struct ad9361_rf_phy *phy,
 				 uint32_t *rx_path_clks,
 				 uint32_t *tx_path_clks)
 {
+	if (!phy || !rx_path_clks || !tx_path_clks)
+		return -EINVAL;
+
 	return ad9361_get_trx_clock_chain(phy, rx_path_clks, tx_path_clks);
 }
 
@@ -2334,6 +2340,10 @@ int32_t ad9361_set_no_ch_mode(struct ad9361_rf_phy *phy, uint8_t no_ch_mode)
 {
 	int32_t ret;
 	uint32_t rates[NUM_AD9361_CLKS];
+
+	if (!phy || !phy->pdata || !phy->spi)
+		return -EINVAL;
+
 	switch (no_ch_mode) {
 	case 1:
 		phy->pdata->rx2tx2 = 0;
@@ -2454,6 +2464,9 @@ int32_t ad9361_do_mcs(struct ad9361_rf_phy *phy_master,
 	int32_t reg;
 	int32_t ret;
 
+	if (!phy_master || !phy_slave || !phy_master->spi || !phy_slave->spi)
+		return -EINVAL;
+
 	if ((phy_master->dev_sel == ID_AD9363A) ||
 	    (phy_slave->dev_sel == ID_AD9363A)) {
 		printf("%s : MCS is not supported by AD9363!\n", __func__);
@@ -2536,8 +2549,14 @@ int32_t ad9361_set_trx_fir_en_dis(struct ad9361_rf_phy *phy,
 				  uint8_t en_dis)
 {
 	int32_t ret = 0;
-	bool old_rx_bypass = phy->bypass_rx_fir;
-	bool old_tx_bypass = phy->bypass_tx_fir;
+	bool old_rx_bypass;
+	bool old_tx_bypass;
+
+	if (!phy)
+		return -EINVAL;
+
+	old_rx_bypass = phy->bypass_rx_fir;
+	old_tx_bypass = phy->bypass_tx_fir;
 
 	if (en_dis > 1)
 		return -EINVAL;
@@ -2568,6 +2587,9 @@ int32_t ad9361_set_trx_fir_en_dis(struct ad9361_rf_phy *phy,
  */
 int32_t ad9361_set_trx_rate_gov(struct ad9361_rf_phy *phy, uint32_t rate_gov)
 {
+	if (!phy)
+		return -EINVAL;
+
 	if (rate_gov == 0)
 		phy->rate_governor = 0;
 	else
@@ -2584,6 +2606,9 @@ int32_t ad9361_set_trx_rate_gov(struct ad9361_rf_phy *phy, uint32_t rate_gov)
  */
 int32_t ad9361_get_trx_rate_gov(struct ad9361_rf_phy *phy, uint32_t *rate_gov)
 {
+	if (!phy || !rate_gov)
+		return -EINVAL;
+
 	*rate_gov = phy->rate_governor;
 
 	return 0;
@@ -2603,6 +2628,9 @@ int32_t ad9361_get_trx_rate_gov(struct ad9361_rf_phy *phy, uint32_t *rate_gov)
  */
 int32_t ad9361_do_calib(struct ad9361_rf_phy *phy, uint32_t cal, int32_t arg)
 {
+	if (!phy)
+		return -EINVAL;
+
 	return ad9361_do_calib_run(phy, cal, arg);
 }
 
@@ -2620,6 +2648,9 @@ int32_t ad9361_trx_load_enable_fir(struct ad9361_rf_phy *phy,
 				   AD9361_TXFIRConfig tx_fir_cfg)
 {
 	int32_t rtx = -1, rrx = -1, ret;
+
+	if (!phy)
+		return -EINVAL;
 
 	phy->filt_rx_bw_Hz = 0;
 	phy->filt_tx_bw_Hz = 0;
@@ -2672,7 +2703,12 @@ int32_t ad9361_trx_load_enable_fir(struct ad9361_rf_phy *phy,
 int32_t ad9361_do_dcxo_tune_coarse(struct ad9361_rf_phy *phy,
 				   uint32_t coarse)
 {
-	int32_t ret = ad9361_set_dcxo_tune(phy, coarse, phy->pdata->dcxo_fine);
+	int32_t ret;
+
+	if (!phy || !phy->pdata)
+		return -EINVAL;
+
+	ret = ad9361_set_dcxo_tune(phy, coarse, phy->pdata->dcxo_fine);
 	if (ret >= 0)
 		phy->pdata->dcxo_coarse = coarse;
 	return ret;
@@ -2687,7 +2723,12 @@ int32_t ad9361_do_dcxo_tune_coarse(struct ad9361_rf_phy *phy,
 int32_t ad9361_do_dcxo_tune_fine(struct ad9361_rf_phy *phy,
 				 uint32_t fine)
 {
-	int32_t ret = ad9361_set_dcxo_tune(phy, phy->pdata->dcxo_coarse, fine);
+	int32_t ret;
+
+	if (!phy || !phy->pdata)
+		return -EINVAL;
+
+	ret = ad9361_set_dcxo_tune(phy, phy->pdata->dcxo_coarse, fine);
 	if (ret >= 0)
 		phy->pdata->dcxo_fine = fine;
 	return ret;
@@ -2702,7 +2743,12 @@ int32_t ad9361_do_dcxo_tune_fine(struct ad9361_rf_phy *phy,
 int32_t ad9361_get_temperature(struct ad9361_rf_phy *phy,
 			       int32_t *temp)
 {
-	int32_t ret = ad9361_get_temp(phy);
+	int32_t ret;
+
+	if (!phy || !temp)
+		return -EINVAL;
+
+	ret = ad9361_get_temp(phy);
 	if (ret < 0)
 		return ret;
 	*temp = ret;
