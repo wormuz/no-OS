@@ -8375,13 +8375,24 @@ int32_t ad9361_rfpll_int_round_rate(struct refclk_scale *clk_priv,
 int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 				  uint32_t parent_rate)
 {
-	struct ad9361_rf_phy *phy = clk_priv->phy;
+	struct ad9361_rf_phy *phy;
 	uint64_t vco = 0;
 	uint8_t buf[5];
 	uint32_t reg, div_mask, lock_reg, fract = 0, integer = 0;
-	int32_t vco_div = 0, ret, fixup_other, lock_error = 0;
-	if (!clk_priv || !rate || !parent_rate)
+	uint64_t tx_lo_freq, rx_lo_freq;
+	int32_t vco_div = 0, target_vco_div = 0, ret, fixup_other;
+	int32_t lock_error = 0;
+	bool tx;
+
+	if (!clk_priv || !clk_priv->phy || !clk_priv->spi || !rate ||
+	    !parent_rate)
 		return -EINVAL;
+	phy = clk_priv->phy;
+	if (!phy->pdata)
+		return -EINVAL;
+	tx = clk_priv->source == TX_RFPLL_INT;
+	rx_lo_freq = tx ? phy->current_rx_lo_freq : rate;
+	tx_lo_freq = tx ? rate : phy->current_tx_lo_freq;
 
 	dev_dbg(&clk_priv->spi->dev,
 		"%s: %s Rate %"PRIu32" Hz Parent Rate %"PRIu32" Hz",
@@ -8397,21 +8408,18 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 					   &integer, &fract, &vco_div, &vco);
 	if (ret < 0)
 		return ret;
+	target_vco_div = vco_div;
 
 	switch (clk_priv->source) {
 	case RX_RFPLL_INT:
 		reg = REG_RX_FRACT_BYTE_2;
 		lock_reg = REG_RX_CP_OVERRANGE_VCO_LOCK;
 		div_mask = RX_VCO_DIVIDER(~0);
-		phy->cached_rx_rfpll_div = vco_div;
-		phy->current_rx_lo_freq = rate;
 		break;
 	case TX_RFPLL_INT:
 		reg = REG_TX_FRACT_BYTE_2;
 		lock_reg = REG_TX_CP_OVERRANGE_VCO_LOCK;
 		div_mask = TX_VCO_DIVIDER(~0);
-		phy->cached_tx_rfpll_div = vco_div;
-		phy->current_tx_lo_freq = rate;
 		break;
 	default:
 		return -EINVAL;
@@ -8462,10 +8470,10 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 		 */
 
 		if (((phy->pdata->fdd && !phy->pdata->fdd_independent_mode)  &&
-		     (phy->current_tx_lo_freq == phy->current_rx_lo_freq) &&
+		     (tx_lo_freq == rx_lo_freq) &&
 		     (phy->current_tx_use_tdd_table != phy->current_rx_use_tdd_table)) ||
 		    ((phy->pdata->fdd && !phy->pdata->fdd_independent_mode)  &&
-		     (phy->current_tx_lo_freq != phy->current_rx_lo_freq) &&
+		     (tx_lo_freq != rx_lo_freq) &&
 		     (phy->current_tx_use_tdd_table || phy->current_rx_use_tdd_table))) {
 			unsigned long _rate;
 
@@ -8474,20 +8482,20 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 				reg = REG_TX_FRACT_BYTE_2;
 				lock_reg = REG_TX_CP_OVERRANGE_VCO_LOCK;
 				div_mask = TX_VCO_DIVIDER(~0);
-				_rate = phy->current_tx_lo_freq;
+				_rate = tx_lo_freq;
 				break;
 			case TX_RFPLL_INT:
 				reg = REG_RX_FRACT_BYTE_2;
 				lock_reg = REG_RX_CP_OVERRANGE_VCO_LOCK;
 				div_mask = RX_VCO_DIVIDER(~0);
-				_rate = phy->current_rx_lo_freq;
+				_rate = rx_lo_freq;
 				break;
 			default:
 				return -EINVAL;
 
 			}
 
-			if (phy->current_tx_lo_freq != phy->current_rx_lo_freq) {
+			if (tx_lo_freq != rx_lo_freq) {
 				ret = ad9361_calc_rfpll_int_divder(phy, clk_priv,
 								   ad9361_from_clk(_rate),
 								   parent_rate, &integer,
@@ -8515,7 +8523,22 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 			return ret;
 	}
 
-	return lock_error < 0 ? lock_error : ret;
+	if (lock_error < 0)
+		return lock_error;
+
+	/* Publish the new synthesizer cache only after register programming,
+	 * required VCO lock, counterpart fixup, and calibration-mode restore all
+	 * succeeded. A failed SPI/lock operation must leave the old RF state in
+	 * software so later TDD/VCO decisions cannot trust an unprogrammed LO. */
+	if (tx) {
+		phy->cached_tx_rfpll_div = target_vco_div;
+		phy->current_tx_lo_freq = rate;
+	} else {
+		phy->cached_rx_rfpll_div = target_vco_div;
+		phy->current_rx_lo_freq = rate;
+	}
+
+	return ret;
 }
 
 /**
