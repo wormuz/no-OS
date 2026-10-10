@@ -1289,7 +1289,6 @@ int32_t ad9361_bist_prbs(struct ad9361_rf_phy *phy, enum ad9361_bist_mode mode)
 	int32_t ret;
 	if (!phy || !phy->spi)
 		return -EINVAL;
-
 	dev_dbg(&phy->spi->dev, "%s: mode %d", __func__, mode);
 
 	switch (mode) {
@@ -1350,6 +1349,9 @@ int32_t ad9361_bist_tone(struct ad9361_rf_phy *phy,
 	uint64_t tone_freq;
 	int32_t ret;
 	if (!phy || !phy->spi)
+		return -EINVAL;
+	if (level_dB > 18 || (level_dB % 6) != 0 ||
+	    (mask & ~UINT32_C(0x0f)))
 		return -EINVAL;
 
 	dev_dbg(&phy->spi->dev, "%s: mode %d", __func__, mode);
