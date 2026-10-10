@@ -2392,7 +2392,16 @@ int32_t ad9361_do_mcs(struct ad9361_rf_phy *phy_master,
 		return ret;
 	ret = ad9361_set_en_state_machine_mode(phy_slave, ENSM_MODE_ALERT);
 	if (ret < 0) {
-		ad9361_set_en_state_machine_mode(phy_master, ensm_mode);
+		int32_t restore_master = ad9361_set_en_state_machine_mode(
+				phy_master, ensm_mode);
+		int32_t restore_slave = ad9361_set_en_state_machine_mode(
+				phy_slave, ensm_mode);
+		if (restore_master < 0)
+			printf("%s: failed to restore master ENSM after slave setup error: %d\n",
+			       __func__, restore_master);
+		if (restore_slave < 0)
+			printf("%s: failed to restore slave ENSM after setup error: %d\n",
+			       __func__, restore_slave);
 		return ret;
 	}
 
