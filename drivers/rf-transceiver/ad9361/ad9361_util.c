@@ -206,6 +206,10 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 			    phy->rfpll_requested[source == TX_RFPLL] ==
 			    (uint32_t)round_rate)
 				break;
+			/* The RFIC can be partially reprogrammed even when set_rate()
+			 * or the following divider readback fails. Do not let a later
+			 * request match the old cache and skip recovery programming. */
+			phy->rfpll_requested_valid[source == TX_RFPLL] = false;
 			ret = ad9361_rfpll_set_rate(clk_priv, round_rate);
 			if (ret < 0)
 				return ret;
