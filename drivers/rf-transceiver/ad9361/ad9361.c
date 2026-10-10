@@ -958,6 +958,9 @@ static int32_t ad9361_spi_writem(struct no_os_spi_desc *spi,
  */
 uint32_t ad9361_validate_rf_bw(struct ad9361_rf_phy *phy, uint32_t bw)
 {
+	if (!phy)
+		return 0;
+
 	switch (phy->dev_sel) {
 	case ID_AD9363A:
 		return no_os_clamp_t(uint32_t, bw, 200000UL, 20000000UL);
@@ -973,9 +976,12 @@ uint32_t ad9361_validate_rf_bw(struct ad9361_rf_phy *phy, uint32_t bw)
  * @param freq The RF PLL frequency.
  * @return 0 in case of success, negative error code otherwise.
  */
-int32_t ad9361_validate_rfpll(struct ad9361_rf_phy *phy, bool is_tx,
-			      uint64_t freq)
+static int32_t ad9361_validate_rfpll(struct ad9361_rf_phy *phy, bool is_tx,
+				     uint64_t freq)
 {
+	if (!phy)
+		return -EINVAL;
+
 	switch (phy->dev_sel) {
 	case ID_AD9363A:
 		if (freq > AD9363A_MAX_CARRIER_FREQ_HZ ||
