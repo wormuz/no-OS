@@ -7793,6 +7793,8 @@ int32_t ad9361_clk_factor_recalc_rate_checked(struct refclk_scale *clk_priv,
 {
 	uint64_t result;
 	int32_t ret;
+	if (!clk_priv || !rate || !parent_rate)
+		return -EINVAL;
 
 	ret = ad9361_get_clk_scaler(clk_priv);
 	if (ret < 0)
@@ -7826,6 +7828,8 @@ int32_t ad9361_clk_factor_round_rate(struct refclk_scale *clk_priv,
 				     uint32_t *prate)
 {
 	int32_t ret;
+	if (!clk_priv || !prate || !*prate || !rate)
+		return -EINVAL;
 
 	if (rate >= *prate) {
 		clk_priv->mult = NO_OS_DIV_ROUND_CLOSEST(rate, *prate);
@@ -7858,6 +7862,9 @@ int32_t ad9361_clk_factor_round_rate(struct refclk_scale *clk_priv,
 int32_t ad9361_clk_factor_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 				   uint32_t parent_rate)
 {
+	if (!clk_priv || !rate || !parent_rate)
+		return -EINVAL;
+
 	dev_dbg(&clk_priv->spi->dev, "%s: Rate %"PRIu32" Hz Parent Rate %"PRIu32" Hz",
 		__func__, rate, parent_rate);
 
@@ -7894,6 +7901,8 @@ int32_t ad9361_bbpll_recalc_rate_checked(struct refclk_scale *clk_priv,
 	uint32_t fract, integer;
 	uint8_t buf[4];
 	int32_t ret;
+	if (!clk_priv || !rate_out || !parent_rate)
+		return -EINVAL;
 
 	ret = ad9361_spi_readm(clk_priv->spi, REG_INTEGER_BB_FREQ_WORD, &buf[0],
 			       REG_INTEGER_BB_FREQ_WORD - REG_FRACT_BB_FREQ_WORD_1 + 1);
@@ -7937,6 +7946,8 @@ int32_t ad9361_bbpll_round_rate(struct refclk_scale *clk_priv, uint32_t rate,
 	if (clk_priv) {
 		// Unused variable - fix compiler warning
 	}
+	if (!prate || !*prate)
+		return -EINVAL;
 
 	if (rate > MAX_BBPLL_FREQ)
 		return MAX_BBPLL_FREQ;
@@ -7977,6 +7988,8 @@ int32_t ad9361_bbpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 	uint8_t lf_defaults[3] = { 0x35, 0x5B, 0xE8 };
 	uint64_t temp;
 	int32_t ret;
+	if (!clk_priv || !rate || parent_rate < 128)
+		return -EINVAL;
 
 #define AD9361_BBPLL_TRY(call) do { \
 		ret = (call); \
@@ -8078,6 +8091,7 @@ int32_t ad9361_rx_fastlock_get_freq(struct ad9361_rf_phy *phy,
 	uint64_t parent_rate;
 	uint8_t b0, b1, b2, b3, b4, div_word;
 	const uint8_t *data;
+	int32_t ret;
 
 	if (phy == NULL || freq_hz == NULL || profile >= 8)
 		return -EINVAL;
@@ -8090,12 +8104,30 @@ int32_t ad9361_rx_fastlock_get_freq(struct ad9361_rf_phy *phy,
 	if (phy->fastlock.entry[0][profile].flags & FASTLOOK_INIT) {
 		data = phy->fastlock.entry[0][profile].profile_data;
 	} else {
-		b0 = ad9361_fastlock_readval(phy->spi, false, profile, 4);
-		b1 = ad9361_fastlock_readval(phy->spi, false, profile, 3);
-		b2 = ad9361_fastlock_readval(phy->spi, false, profile, 2);
-		b3 = ad9361_fastlock_readval(phy->spi, false, profile, 1);
-		b4 = ad9361_fastlock_readval(phy->spi, false, profile, 0);
-		div_word = ad9361_fastlock_readval(phy->spi, false, profile, 12);
+		ret = ad9361_fastlock_readval(phy->spi, false, profile, 4);
+		if (ret < 0)
+			return ret;
+		b0 = ret;
+		ret = ad9361_fastlock_readval(phy->spi, false, profile, 3);
+		if (ret < 0)
+			return ret;
+		b1 = ret;
+		ret = ad9361_fastlock_readval(phy->spi, false, profile, 2);
+		if (ret < 0)
+			return ret;
+		b2 = ret;
+		ret = ad9361_fastlock_readval(phy->spi, false, profile, 1);
+		if (ret < 0)
+			return ret;
+		b3 = ret;
+		ret = ad9361_fastlock_readval(phy->spi, false, profile, 0);
+		if (ret < 0)
+			return ret;
+		b4 = ret;
+		ret = ad9361_fastlock_readval(phy->spi, false, profile, 12);
+		if (ret < 0)
+			return ret;
+		div_word = ret;
 		goto calculate;
 	}
 	b0 = data[4];
@@ -8141,6 +8173,8 @@ static int32_t ad9361_calc_rfpll_int_divder(struct ad9361_rf_phy *phy,
 {
 	uint64_t tmp;
 	int32_t div, ret;
+	if (!parent_rate)
+		return -EINVAL;
 
 	ret = ad9361_validate_rfpll(phy, clk_priv->source == TX_RFPLL_INT, freq);
 	if (ret)
@@ -8179,6 +8213,8 @@ int32_t ad9361_rfpll_int_recalc_rate_checked(struct refclk_scale *clk_priv,
 	uint8_t buf[5];
 	uint32_t reg, div_mask, vco_div, profile;
 	int32_t ret;
+	if (!clk_priv || !rate || !parent_rate)
+		return -EINVAL;
 
 	dev_dbg(&clk_priv->spi->dev, "%s: Parent Rate %"PRIu32" Hz",
 		__func__, parent_rate);
@@ -8299,6 +8335,8 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 	uint8_t buf[5];
 	uint32_t reg, div_mask, lock_reg, fract = 0, integer = 0;
 	int32_t vco_div = 0, ret, fixup_other, lock_error = 0;
+	if (!clk_priv || !rate || !parent_rate)
+		return -EINVAL;
 
 	dev_dbg(&clk_priv->spi->dev,
 		"%s: %s Rate %"PRIu32" Hz Parent Rate %"PRIu32" Hz",
