@@ -3848,11 +3848,14 @@ static int ad9361_tx_quad_calib(struct ad9361_rf_phy *phy,
 			     (phy->pdata->port_ctrl.pp_conf[1] & INVERT_RX2);
 
 	if (phase_inversion_en) {
+		/* A failed SPI response does not prove the write had no effect.
+		 * Arm cleanup before attempting the temporary override so it also
+		 * restores the configured inversion after an ambiguous write error. */
+		phase_inversion_touched = true;
 		ret = ad9361_spi_writef(spi, REG_PARALLEL_PORT_CONF_2,
 					INVERT_RX2, 0);
 		if (ret < 0)
 			goto tx_quad_cleanup;
-		phase_inversion_touched = true;
 
 		ret = ad9361_spi_read(spi, REG_INVERT_BITS);
 		if (ret < 0)
