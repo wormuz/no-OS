@@ -3175,7 +3175,7 @@ static int32_t ad9361_rx_bb_analog_filter_calib(struct ad9361_rf_phy *phy,
 	/* Enable the RX BBF tune circuit by writing 0x1E2=0x02 and 0x1E3=0x02 */
 	ret = ad9361_spi_write(phy->spi, REG_RX1_TUNE_CTRL, RX1_TUNE_RESAMPLE);
 	if (ret < 0)
-		return ret;
+		goto disable_tune;
 	ret = ad9361_spi_write(phy->spi, REG_RX2_TUNE_CTRL, RX2_TUNE_RESAMPLE);
 	if (ret < 0)
 		goto disable_tune;
@@ -3235,12 +3235,13 @@ static int32_t ad9361_tx_bb_analog_filter_calib(struct ad9361_rf_phy *phy,
 	ret = ad9361_spi_write(phy->spi, REG_TX_TUNE_CTRL,
 				TUNER_RESAMPLE | TUNE_CTRL(1));
 	if (ret < 0)
-		return ret;
+		goto disable_tune;
 
 	/* Start the TX Baseband Filter calibration in register 0x016[6] */
 	/* Calibration is complete when register 0x016[] self clears */
 	ret = ad9361_run_calibration(phy, TX_BB_TUNE_CAL);
 
+	disable_tune:
 	/* Disable the TX baseband filter tune circuit by writing 0x0CA=0x26. */
 	disable_ret = ad9361_spi_write(phy->spi, REG_TX_TUNE_CTRL,
 				       TUNER_RESAMPLE | TUNE_CTRL(1) | PD_TUNE);
@@ -3841,10 +3842,13 @@ static int ad9361_tx_quad_calib(struct ad9361_rf_phy *phy,
 
 	if (txnco_freq > (int64_t)(bw_rx / 4) || txnco_freq > (int64_t)(bw_tx / 4)) {
 		/* Make sure the BW during calibration is wide enough */
+		/* A failed SPI response can follow a partially applied bandwidth
+		 * update, so arm restoration before entering the multi-register
+		 * operation and route its errors through the same cleanup path. */
+		bandwidth_changed = true;
 		ret = __ad9361_update_rf_bandwidth(phy, txnco_freq * 8, txnco_freq * 8);
 		if (ret < 0)
-			goto out_restore;
-		bandwidth_changed = true;
+			goto tx_quad_cleanup;
 	}
 
 	phase_inversion_en = phy->pdata->rx1rx2_phase_inversion_en ||
