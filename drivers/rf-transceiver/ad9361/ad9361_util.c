@@ -117,6 +117,57 @@ uint32_t clk_get_rate(struct ad9361_rf_phy *phy,
 	return rate;
 }
 
+/* A failed clock write or divider readback leaves that clock's hardware
+ * state uncertain. Invalidate its derived clocks too: otherwise a later
+ * request matching an old child rate can skip programming even though its
+ * parent was partially changed. */
+static void ad9361_invalidate_clock_rate_subtree(
+	struct ad9361_rf_phy *phy, uint32_t root)
+{
+	bool invalid[NUM_AD9361_CLKS] = { false };
+	bool changed;
+	int32_t i;
+
+	if (!phy || root >= NUM_AD9361_CLKS)
+		return;
+
+	invalid[root] = true;
+	do {
+		changed = false;
+		for (i = 0; i < NUM_AD9361_CLKS; i++) {
+			uint32_t parent;
+
+			if (invalid[i] || !phy->ref_clk_scale[i])
+				continue;
+			parent = phy->ref_clk_scale[i]->parent_source;
+			if (parent < NUM_AD9361_CLKS && invalid[parent]) {
+				invalid[i] = true;
+				changed = true;
+			}
+		}
+	} while (changed);
+
+	for (i = 0; i < NUM_AD9361_CLKS; i++) {
+		if (!invalid[i])
+			continue;
+		if (phy->clks[i])
+			phy->clks[i]->rate = 0;
+		if (i == BBPLL_CLK)
+			phy->bbpll_initialized = false;
+		if (i == RX_RFPLL)
+			phy->rfpll_requested_valid[0] = false;
+		if (i == TX_RFPLL)
+			phy->rfpll_requested_valid[1] = false;
+	}
+}
+
+static int32_t ad9361_clock_rate_update_failed(
+	struct ad9361_rf_phy *phy, uint32_t source, int32_t status)
+{
+	ad9361_invalidate_clock_rate_subtree(phy, source);
+	return status;
+}
+
 /***************************************************************************//**
  * @brief clk_set_rate
 *******************************************************************************/
@@ -157,12 +208,12 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 			ret = ad9361_clk_factor_set_rate(clk_priv, round_rate,
 							 phy->clk_refin->rate);
 			if (ret < 0)
-				return ret;
+				return ad9361_clock_rate_update_failed(phy, source, ret);
 			ret = ad9361_clk_factor_recalc_rate_checked(
 				clk_priv, phy->clk_refin->rate,
 				&phy->clks[source]->rate);
 			if (ret < 0)
-				return ret;
+				return ad9361_clock_rate_update_failed(phy, source, ret);
 			break;
 		case TX_RFPLL_INT:
 		case RX_RFPLL_INT:
@@ -174,12 +225,12 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 			ret = ad9361_rfpll_int_set_rate(clk_priv, round_rate,
 							phy->clks[clk_priv->parent_source]->rate);
 			if (ret < 0)
-				return ret;
+				return ad9361_clock_rate_update_failed(phy, source, ret);
 			ret = ad9361_rfpll_int_recalc_rate_checked(
 				clk_priv, phy->clks[clk_priv->parent_source]->rate,
 				&phy->clks[source]->rate);
 			if (ret < 0)
-				return ret;
+				return ad9361_clock_rate_update_failed(phy, source, ret);
 			break;
 		case RX_RFPLL_DUMMY:
 		case TX_RFPLL_DUMMY:
@@ -212,11 +263,11 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 			phy->rfpll_requested_valid[source == TX_RFPLL] = false;
 			ret = ad9361_rfpll_set_rate(clk_priv, round_rate);
 			if (ret < 0)
-				return ret;
+				return ad9361_clock_rate_update_failed(phy, source, ret);
 			ret = ad9361_rfpll_recalc_rate_checked(clk_priv,
 							&phy->clks[source]->rate);
 			if (ret < 0)
-				return ret;
+				return ad9361_clock_rate_update_failed(phy, source, ret);
 			phy->rfpll_requested[source == TX_RFPLL] =
 				(uint32_t)round_rate;
 			phy->rfpll_requested_valid[source == TX_RFPLL] = true;
@@ -232,12 +283,12 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 			ret = ad9361_bbpll_set_rate(clk_priv, round_rate,
 						     phy->clks[clk_priv->parent_source]->rate);
 			if (ret < 0)
-				return ret;
+				return ad9361_clock_rate_update_failed(phy, source, ret);
 			ret = ad9361_bbpll_recalc_rate_checked(
 				clk_priv, phy->clks[clk_priv->parent_source]->rate,
 				&phy->clks[source]->rate);
 			if (ret < 0)
-				return ret;
+				return ad9361_clock_rate_update_failed(phy, source, ret);
 			phy->bbpll_initialized = true;
 			break;
 		case ADC_CLK:
@@ -260,12 +311,12 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 			ret = ad9361_clk_factor_set_rate(clk_priv, round_rate,
 							 phy->clks[clk_priv->parent_source]->rate);
 			if (ret < 0)
-				return ret;
+				return ad9361_clock_rate_update_failed(phy, source, ret);
 			ret = ad9361_clk_factor_recalc_rate_checked(
 				clk_priv, phy->clks[clk_priv->parent_source]->rate,
 				&phy->clks[source]->rate);
 			if (ret < 0)
-				return ret;
+				return ad9361_clock_rate_update_failed(phy, source, ret);
 			break;
 		default:
 			return -EINVAL;
@@ -275,21 +326,21 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 				phy->ref_clk_scale[i], phy->clk_refin->rate,
 				&phy->clks[i]->rate);
 			if (ret < 0)
-				return ret;
+				return ad9361_clock_rate_update_failed(phy, i, ret);
 		}
 		ret = ad9361_bbpll_recalc_rate_checked(
 			phy->ref_clk_scale[BBPLL_CLK],
 			phy->clks[phy->ref_clk_scale[BBPLL_CLK]->parent_source]->rate,
 			&phy->clks[BBPLL_CLK]->rate);
 		if (ret < 0)
-			return ret;
+			return ad9361_clock_rate_update_failed(phy, BBPLL_CLK, ret);
 		for (i = ADC_CLK; i < RX_RFPLL_INT; i++) {
 			ret = ad9361_clk_factor_recalc_rate_checked(
 				phy->ref_clk_scale[i],
 				phy->clks[phy->ref_clk_scale[i]->parent_source]->rate,
 				&phy->clks[i]->rate);
 			if (ret < 0)
-				return ret;
+				return ad9361_clock_rate_update_failed(phy, i, ret);
 		}
 		for (i = RX_RFPLL_INT; i < RX_RFPLL_DUMMY; i++) {
 			ret = ad9361_rfpll_int_recalc_rate_checked(
@@ -297,7 +348,7 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 				phy->clks[phy->ref_clk_scale[i]->parent_source]->rate,
 				&phy->clks[i]->rate);
 			if (ret < 0)
-				return ret;
+				return ad9361_clock_rate_update_failed(phy, i, ret);
 		}
 		for (i = RX_RFPLL_DUMMY; i < RX_RFPLL; i++) {
 			phy->clks[i]->rate = ad9361_rfpll_dummy_recalc_rate(phy->ref_clk_scale[i]);
@@ -306,7 +357,7 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 			ret = ad9361_rfpll_recalc_rate_checked(
 				phy->ref_clk_scale[i], &phy->clks[i]->rate);
 			if (ret < 0)
-				return ret;
+				return ad9361_clock_rate_update_failed(phy, i, ret);
 		}
 	} else {
 		if ((source == BBPLL_CLK) && !phy->bbpll_initialized) {
@@ -317,12 +368,12 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 			ret = ad9361_bbpll_set_rate(clk_priv, round_rate,
 							     phy->clks[clk_priv->parent_source]->rate);
 			if (ret < 0)
-				return ret;
+				return ad9361_clock_rate_update_failed(phy, source, ret);
 			ret = ad9361_bbpll_recalc_rate_checked(
 				clk_priv, phy->clks[clk_priv->parent_source]->rate,
 				&phy->clks[source]->rate);
 			if (ret < 0)
-				return ret;
+				return ad9361_clock_rate_update_failed(phy, source, ret);
 			phy->bbpll_initialized = true;
 		}
 	}
