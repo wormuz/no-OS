@@ -801,6 +801,15 @@ int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 	return ret;
 }
 
+static int32_t ad9361_post_setup_validate(struct ad9361_rf_phy *phy)
+{
+	if (!phy || !phy->adc_conv || !phy->adc_conv->chip_info || !phy->rx_adc ||
+	    !phy->pdata)
+		return -EINVAL;
+
+	return 0;
+}
+
 /**
 * Setup the AD9361 device.
 * @param phy The AD9361 state structure.
@@ -808,12 +817,21 @@ int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 */
 int32_t ad9361_post_setup(struct ad9361_rf_phy *phy)
 {
-	struct axiadc_converter *conv = phy->adc_conv;
-	struct axi_adc *rx_adc = phy->rx_adc;
-	int32_t rx2tx2 = phy->pdata->rx2tx2;
+	struct axiadc_converter *conv;
+	struct axi_adc *rx_adc;
+	int32_t rx2tx2;
 	uint32_t tmp, num_chan, flags, id, i;
-	uint8_t saved_skipmode = phy->pdata->dig_interface_tune_skipmode;
+	uint8_t saved_skipmode;
 	int32_t ret;
+
+	ret = ad9361_post_setup_validate(phy);
+	if (ret < 0)
+		return ret;
+
+	conv = phy->adc_conv;
+	rx_adc = phy->rx_adc;
+	rx2tx2 = phy->pdata->rx2tx2;
+	saved_skipmode = phy->pdata->dig_interface_tune_skipmode;
 
 #define POST_SETUP_TRY(call) do { \
 	ret = (call); \
