@@ -56,17 +56,23 @@ int32_t clk_get_rate_checked(struct ad9361_rf_phy *phy,
 			     struct refclk_scale *clk_priv,
 			     uint32_t *rate)
 {
-	if (!phy || !clk_priv || !rate)
+	if (!phy || !clk_priv || clk_priv->phy != phy || !rate ||
+	    (uint32_t)clk_priv->source >= NUM_AD9361_CLKS)
 		return -EINVAL;
 
 	switch (clk_priv->source) {
 	case TX_REFCLK:
 	case RX_REFCLK:
 	case BB_REFCLK:
+		if (!phy->clk_refin)
+			return -EINVAL;
 		return ad9361_clk_factor_recalc_rate_checked(
 			clk_priv, phy->clk_refin->rate, rate);
 	case TX_RFPLL_INT:
 	case RX_RFPLL_INT:
+		if ((uint32_t)clk_priv->parent_source >= NUM_AD9361_CLKS ||
+		    !phy->clks[clk_priv->parent_source])
+			return -EINVAL;
 		return ad9361_rfpll_int_recalc_rate_checked(
 			clk_priv, phy->clks[clk_priv->parent_source]->rate, rate);
 	case RX_RFPLL_DUMMY:
@@ -77,6 +83,9 @@ int32_t clk_get_rate_checked(struct ad9361_rf_phy *phy,
 	case RX_RFPLL:
 		return ad9361_rfpll_recalc_rate_checked(clk_priv, rate);
 	case BBPLL_CLK:
+		if ((uint32_t)clk_priv->parent_source >= NUM_AD9361_CLKS ||
+		    !phy->clks[clk_priv->parent_source])
+			return -EINVAL;
 		return ad9361_bbpll_recalc_rate_checked(
 			clk_priv, phy->clks[clk_priv->parent_source]->rate, rate);
 	case ADC_CLK:
@@ -89,6 +98,9 @@ int32_t clk_get_rate_checked(struct ad9361_rf_phy *phy,
 	case T1_CLK:
 	case CLKTF_CLK:
 	case TX_SAMPL_CLK:
+		if ((uint32_t)clk_priv->parent_source >= NUM_AD9361_CLKS ||
+		    !phy->clks[clk_priv->parent_source])
+			return -EINVAL;
 		return ad9361_clk_factor_recalc_rate_checked(
 			clk_priv, phy->clks[clk_priv->parent_source]->rate, rate);
 	default:
@@ -116,12 +128,24 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 	int32_t i, ret;
 	uint32_t round_rate;
 
+	if (!phy || !clk_priv || clk_priv->phy != phy || !rate ||
+	    (uint32_t)clk_priv->source >= NUM_AD9361_CLKS ||
+	    !phy->clks[clk_priv->source])
+		return -EINVAL;
+	if (!phy->clk_refin)
+		return -EINVAL;
+	for (i = BB_REFCLK; i < NUM_AD9361_CLKS; i++) {
+		if (!phy->clks[i] || !phy->ref_clk_scale[i])
+			return -EINVAL;
+	}
 	source = clk_priv->source;
 	if (phy->clks[source]->rate != rate) {
 		switch (source) {
 		case TX_REFCLK:
 		case RX_REFCLK:
 		case BB_REFCLK:
+			if (!phy->clk_refin)
+				return -EINVAL;
 			round_rate = ad9361_clk_factor_round_rate(clk_priv, rate,
 					&phy->clk_refin->rate);
 			if ((int32_t)round_rate < 0)
@@ -138,6 +162,9 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 			break;
 		case TX_RFPLL_INT:
 		case RX_RFPLL_INT:
+			if ((uint32_t)clk_priv->parent_source >= NUM_AD9361_CLKS ||
+			    !phy->clks[clk_priv->parent_source])
+				return -EINVAL;
 			round_rate = ad9361_rfpll_int_round_rate(clk_priv, rate,
 					&phy->clks[clk_priv->parent_source]->rate);
 			ret = ad9361_rfpll_int_set_rate(clk_priv, round_rate,
@@ -187,6 +214,9 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 			phy->rfpll_requested_valid[source == TX_RFPLL] = true;
 			break;
 		case BBPLL_CLK:
+			if ((uint32_t)clk_priv->parent_source >= NUM_AD9361_CLKS ||
+			    !phy->clks[clk_priv->parent_source])
+				return -EINVAL;
 			round_rate = ad9361_bbpll_round_rate(clk_priv, rate,
 							     &phy->clks[clk_priv->parent_source]->rate);
 			if ((int32_t)round_rate < 0)
@@ -212,6 +242,9 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 		case T1_CLK:
 		case CLKTF_CLK:
 		case TX_SAMPL_CLK:
+			if ((uint32_t)clk_priv->parent_source >= NUM_AD9361_CLKS ||
+			    !phy->clks[clk_priv->parent_source])
+				return -EINVAL;
 			round_rate = ad9361_clk_factor_round_rate(clk_priv, rate,
 					&phy->clks[clk_priv->parent_source]->rate);
 			if ((int32_t)round_rate < 0)
@@ -227,7 +260,7 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 				return ret;
 			break;
 		default:
-			break;
+			return -EINVAL;
 		}
 		for (i = BB_REFCLK; i < BBPLL_CLK; i++) {
 			ret = ad9361_clk_factor_recalc_rate_checked(
