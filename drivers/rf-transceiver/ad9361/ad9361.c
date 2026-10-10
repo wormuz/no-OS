@@ -8366,6 +8366,18 @@ int32_t ad9361_tx_fastlock_get_freq(struct ad9361_rf_phy *phy,
 	return ad9361_fastlock_get_freq(phy, true, profile, freq_hz);
 }
 
+void ad9361_fastlock_invalidate_cache(struct ad9361_rf_phy *phy, bool tx)
+{
+	unsigned int profile;
+
+	if (!phy)
+		return;
+
+	for (profile = 0; profile < NO_OS_ARRAY_SIZE(phy->fastlock.entry[0]);
+	     profile++)
+		phy->fastlock.entry[tx ? 1 : 0][profile].flags = 0;
+}
+
 /**
  * Calculate the RFPLL dividers.
  * @param phy The AD9361 state structure.

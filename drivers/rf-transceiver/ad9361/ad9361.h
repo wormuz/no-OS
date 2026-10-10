@@ -3583,6 +3583,8 @@ int32_t ad9361_rx_fastlock_get_freq(struct ad9361_rf_phy *phy,
 				    uint32_t profile, uint64_t *freq_hz);
 int32_t ad9361_tx_fastlock_get_freq(struct ad9361_rf_phy *phy,
 				    uint32_t profile, uint64_t *freq_hz);
+/* Invalidate cached profile bytes after an out-of-band fastlock-bank write. */
+void ad9361_fastlock_invalidate_cache(struct ad9361_rf_phy *phy, bool tx);
 void ad9361_ensm_force_state(struct ad9361_rf_phy *phy, uint8_t ensm_state);
 int32_t ad9361_ensm_force_state_checked(struct ad9361_rf_phy *phy,
 		uint8_t ensm_state);
