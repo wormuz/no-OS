@@ -5933,7 +5933,7 @@ static int32_t ad9361_fastlock_writeval(struct no_os_spi_desc *spi, bool tx,
 					uint32_t profile, uint32_t word, uint8_t val, bool last)
 {
 	uint32_t offs = 0;
-	int32_t ret;
+	int32_t ret, stop_ret;
 
 	if (tx)
 		offs = REG_TX_FAST_LOCK_SETUP - REG_RX_FAST_LOCK_SETUP;
@@ -5942,19 +5942,29 @@ static int32_t ad9361_fastlock_writeval(struct no_os_spi_desc *spi, bool tx,
 			       RX_FAST_LOCK_PROFILE_ADDR(profile) |
 			       RX_FAST_LOCK_PROFILE_WORD(word));
 	if (ret < 0)
-		return ret;
+		goto cleanup;
 	ret = ad9361_spi_write(spi, REG_RX_FAST_LOCK_PROGRAM_DATA + offs, val);
 	if (ret < 0)
-		return ret;
+		goto cleanup;
 	ret = ad9361_spi_write(spi, REG_RX_FAST_LOCK_PROGRAM_CTRL + offs,
 				RX_FAST_LOCK_PROGRAM_WRITE |
 				RX_FAST_LOCK_PROGRAM_CLOCK_ENABLE);
 	if (ret < 0)
-		return ret;
+		goto cleanup;
 
-	if (last) /* Stop Clocks */
-		ret = ad9361_spi_write(spi,
-					REG_RX_FAST_LOCK_PROGRAM_CTRL + offs, 0);
+	if (last)
+		goto cleanup;
+	return 0;
+
+cleanup:
+	if (last || ret < 0) {
+		/* Stop the programming clock on both success and every partial
+		 * failure. Keep the first SPI error as the operation result. */
+		stop_ret = ad9361_spi_write(spi,
+					    REG_RX_FAST_LOCK_PROGRAM_CTRL + offs, 0);
+		if (ret >= 0 && stop_ret < 0)
+			ret = stop_ret;
+	}
 
 	return ret;
 }
@@ -6283,7 +6293,13 @@ int32_t ad9361_fastlock_recall(struct ad9361_rf_phy *phy, bool tx,
 			       uint32_t profile)
 {
 	uint32_t offs = 0;
-	uint8_t curr, _new, orig, current_profile;
+	int32_t curr, ret;
+	uint8_t new_alc_written, orig, current_profile;
+
+	if (!phy || !phy->spi || !phy->pdata || profile >= 8)
+		return -EINVAL;
+	if (phy->fastlock.current_profile[tx] > 8)
+		return -EINVAL;
 
 	dev_dbg(&phy->spi->dev, "%s: %s Profile %"PRIu32":",
 		__func__, tx ? "TX" : "RX", profile);
@@ -6297,34 +6313,63 @@ int32_t ad9361_fastlock_recall(struct ad9361_rf_phy *phy, bool tx,
 	/* Workaround: Lock problem with same ALC word */
 
 	current_profile = phy->fastlock.current_profile[tx];
-	_new = phy->fastlock.entry[tx][profile].alc_written;
+	new_alc_written = phy->fastlock.entry[tx][profile].alc_written;
 
-	if (current_profile == 0)
+	if (current_profile == 0) {
 		curr = ad9361_spi_readf(phy->spi, REG_RX_FORCE_ALC + offs,
-					FORCE_ALC_WORD(~0)) << 1;
-	else
+					FORCE_ALC_WORD(~0));
+		if (curr < 0)
+			return curr;
+		curr <<= 1;
+	} else {
 		curr = phy->fastlock.entry[tx][current_profile - 1].alc_written;
-
-	if ((curr >> 1) == (_new >> 1)) {
-		orig = phy->fastlock.entry[tx][profile].alc_orig;
-
-		if ((orig >> 1) == (_new >> 1))
-			phy->fastlock.entry[tx][profile].alc_written += 2;
-		else
-			phy->fastlock.entry[tx][profile].alc_written = orig;
-
-		ad9361_fastlock_writeval(phy->spi, tx, profile, 0xF,
-					 phy->fastlock.entry[tx][profile].alc_written, true);
 	}
 
-	ad9361_fastlock_prepare(phy, tx, profile, true);
-	phy->fastlock.current_profile[tx] = profile + 1;
+	if ((curr >> 1) == (new_alc_written >> 1)) {
+		orig = phy->fastlock.entry[tx][profile].alc_orig;
 
-	return ad9361_spi_write(phy->spi, REG_RX_FAST_LOCK_SETUP + offs,
-				RX_FAST_LOCK_PROFILE(profile) |
-				(phy->pdata->trx_fastlock_pinctrl_en[tx] ?
-				 RX_FAST_LOCK_PROFILE_PIN_SELECT : 0) |
-				RX_FAST_LOCK_MODE_ENABLE);
+		if ((orig >> 1) == (new_alc_written >> 1))
+			new_alc_written += 2;
+		else
+			new_alc_written = orig;
+
+		ret = ad9361_fastlock_writeval(phy->spi, tx, profile, 0xF,
+						new_alc_written, true);
+		if (ret < 0) {
+			/* The profile memory write may have partially committed. Do not
+			 * allow later recalls to trust its cached ALC word. */
+			phy->fastlock.entry[tx][profile].flags = 0;
+			return ret;
+		}
+	}
+
+	ret = ad9361_fastlock_prepare(phy, tx, profile, true);
+	if (ret < 0) {
+		int32_t cleanup_ret = ad9361_fastlock_exit_foreign(phy, tx);
+		if (cleanup_ret < 0)
+			dev_err(&phy->spi->dev,
+				"Unable to clean up failed fastlock preparation: %"PRId32,
+				cleanup_ret);
+		return ret;
+	}
+
+	ret = ad9361_spi_write(phy->spi, REG_RX_FAST_LOCK_SETUP + offs,
+			       RX_FAST_LOCK_PROFILE(profile) |
+			       (phy->pdata->trx_fastlock_pinctrl_en[tx] ?
+				RX_FAST_LOCK_PROFILE_PIN_SELECT : 0) |
+			       RX_FAST_LOCK_MODE_ENABLE);
+	if (ret < 0) {
+		int32_t cleanup_ret = ad9361_fastlock_exit_foreign(phy, tx);
+		if (cleanup_ret < 0)
+			dev_err(&phy->spi->dev,
+				"Unable to clean up failed fastlock recall: %"PRId32,
+				cleanup_ret);
+		return ret;
+	}
+
+	phy->fastlock.entry[tx][profile].alc_written = new_alc_written;
+	phy->fastlock.current_profile[tx] = profile + 1;
+	return 0;
 }
 
 /**
