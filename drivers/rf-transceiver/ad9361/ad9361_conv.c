@@ -411,8 +411,17 @@ static int32_t ad9361_set_intf_delay(struct ad9361_rf_phy *phy, bool tx,
 		if (ret < 0)
 			return ret;
 		ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
-		if (ret < 0)
+		if (ret < 0) {
+			/* A failed force operation may have changed ENSM before its
+			 * completion/readback failed. Attempt to restore the state that
+			 * was observed before the operation, while preserving its error. */
+			restore_ret = ad9361_ensm_restore_state_checked(phy, old_state);
+			if (restore_ret < 0)
+				dev_err(&phy->spi->dev,
+					"Failed to restore ENSM after ALERT transition error (%"PRId32")\n",
+					restore_ret);
 			return ret;
+		}
 	}
 	ret = ad9361_spi_write(phy->spi,
 			       REG_RX_CLOCK_DATA_DELAY + (tx ? 1 : 0),
@@ -828,9 +837,12 @@ int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 
 		/* Mute TX, we don't want to transmit the PRBS */
 		ret = ad9361_tx_mute(phy, 1);
+		/* The attenuation write can reach the RFIC and then lose its
+		 * completion response. The saved values are valid in that case, so
+		 * cleanup must still attempt to unmute even though this call failed. */
+		tx_muted = phy->tx_mute_restore_valid;
 		if (ret < 0)
 			goto tune_cleanup;
-		tx_muted = true;
 
 		if (!phy->pdata->fdd) {
 			ret = ad9361_set_ensm_mode(phy, true, false);
