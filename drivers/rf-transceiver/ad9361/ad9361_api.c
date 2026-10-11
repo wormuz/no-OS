@@ -714,15 +714,32 @@ out:
  */
 int32_t ad9361_remove(struct ad9361_rf_phy *phy)
 {
+	int32_t ret = 0;
+	int32_t cleanup_ret;
+
 	if (!phy)
 		return -EINVAL;
 
-	ad9361_unregister_clocks(phy);
-	no_os_spi_remove(phy->spi);
-	no_os_gpio_remove(phy->gpio_desc_resetb);
-	no_os_gpio_remove(phy->gpio_desc_sync);
-	no_os_gpio_remove(phy->gpio_desc_cal_sw1);
-	no_os_gpio_remove(phy->gpio_desc_cal_sw2);
+	cleanup_ret = ad9361_unregister_clocks(phy);
+	if (cleanup_ret < 0 && ret == 0)
+		ret = cleanup_ret;
+	if (phy->spi) {
+		cleanup_ret = no_os_spi_remove(phy->spi);
+		if (cleanup_ret < 0 && ret == 0)
+			ret = cleanup_ret;
+	}
+	cleanup_ret = no_os_gpio_remove(phy->gpio_desc_resetb);
+	if (cleanup_ret < 0 && ret == 0)
+		ret = cleanup_ret;
+	cleanup_ret = no_os_gpio_remove(phy->gpio_desc_sync);
+	if (cleanup_ret < 0 && ret == 0)
+		ret = cleanup_ret;
+	cleanup_ret = no_os_gpio_remove(phy->gpio_desc_cal_sw1);
+	if (cleanup_ret < 0 && ret == 0)
+		ret = cleanup_ret;
+	cleanup_ret = no_os_gpio_remove(phy->gpio_desc_cal_sw2);
+	if (cleanup_ret < 0 && ret == 0)
+		ret = cleanup_ret;
 #ifndef AXI_ADC_NOT_PRESENT
 	if (phy->rx_adc)
 		axi_adc_remove(phy->rx_adc);
@@ -735,7 +752,7 @@ int32_t ad9361_remove(struct ad9361_rf_phy *phy)
 	no_os_free(phy->pdata);
 	no_os_free(phy);
 
-	return 0;
+	return ret;
 }
 
 /**
