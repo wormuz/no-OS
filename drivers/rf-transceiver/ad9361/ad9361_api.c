@@ -1158,7 +1158,10 @@ int32_t ad9361_set_rx_lo_int_ext(struct ad9361_rf_phy *phy, uint8_t int_ext)
 
 	phy->pdata->use_ext_rx_lo = int_ext;
 	ret = ad9361_clk_mux_set_parent(phy->ref_clk_scale[RX_RFPLL], int_ext);
-	if (ret < 0)
+	/* clk_mux_set_parent commits mult as soon as the source switch succeeds;
+	 * it can still report an ENSM-restore or internal-PLL relock error after
+	 * that point. Keep pdata aligned with the committed mux source. */
+	if (ret < 0 && phy->ref_clk_scale[RX_RFPLL]->mult != int_ext)
 		phy->pdata->use_ext_rx_lo = old_use_ext;
 	return ret;
 }
@@ -2020,7 +2023,8 @@ int32_t ad9361_set_tx_lo_int_ext(struct ad9361_rf_phy *phy, uint8_t int_ext)
 
 	phy->pdata->use_ext_tx_lo = int_ext;
 	ret = ad9361_clk_mux_set_parent(phy->ref_clk_scale[TX_RFPLL], int_ext);
-	if (ret < 0)
+	/* See RX: a later cleanup error does not undo an already switched mux. */
+	if (ret < 0 && phy->ref_clk_scale[TX_RFPLL]->mult != int_ext)
 		phy->pdata->use_ext_tx_lo = old_use_ext;
 	return ret;
 }
