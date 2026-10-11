@@ -798,6 +798,7 @@ int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 	uint8_t ensm_state;
 	enum ad9361_bist_mode old_prbs_mode;
 	bool restore = false;
+	bool tx_muted = false;
 	int32_t ret = 0, cleanup_ret;
 
 	ret = ad9361_conv_phy_validate(phy, true);
@@ -829,6 +830,7 @@ int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 		ret = ad9361_tx_mute(phy, 1);
 		if (ret < 0)
 			goto tune_cleanup;
+		tx_muted = true;
 
 		if (!phy->pdata->fdd) {
 			ret = ad9361_set_ensm_mode(phy, true, false);
@@ -920,9 +922,11 @@ int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 	if (ret >= 0 && cleanup_ret < 0)
 		ret = cleanup_ret;
 
-	cleanup_ret = ad9361_tx_mute(phy, 0);
-	if (ret >= 0 && cleanup_ret < 0)
-		ret = cleanup_ret;
+	if (tx_muted) {
+		cleanup_ret = ad9361_tx_mute(phy, 0);
+		if (ret >= 0 && cleanup_ret < 0)
+			ret = cleanup_ret;
+	}
 
 	return ret;
 }

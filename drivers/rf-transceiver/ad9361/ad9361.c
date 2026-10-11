@@ -1195,7 +1195,7 @@ int32_t ad9361_bist_loopback(struct ad9361_rf_phy *phy, int32_t mode)
 	uint32_t sp_hd, reg;
 	int32_t ret;
 
-	if (!phy || !phy->spi)
+	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 
 	dev_dbg(&phy->spi->dev, "%s: mode %"PRId32, __func__, mode);
@@ -5470,7 +5470,8 @@ static int32_t ad9361_auxadc_setup(struct ad9361_rf_phy *phy,
 	val = (uint32_t)interval_count;
 
 	reg[0] = REG_TEMP_OFFSET;
-	value[0] = ctrl->offset;
+	/* Preserve the signed offset's two's-complement register byte. */
+	value[0] = (uint8_t)ctrl->offset;
 	reg[1] = REG_START_TEMP_READING;
 	value[1] = 0x00;
 	reg[2] = REG_TEMP_SENSE2;
@@ -7836,7 +7837,7 @@ int32_t ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
 		if (ret < 0)
 			goto fir_restore;
 		ret = ad9361_spi_write(spi, REG_TX_FILTER_COEF_WRITE_DATA_2 + offs,
-				       coef[val] >> 8);
+				       ((uint16_t)coef[val] >> 8) & 0xFF);
 		if (ret < 0)
 			goto fir_restore;
 		ret = ad9361_spi_write(spi, REG_TX_FILTER_CONF + offs,
@@ -8655,7 +8656,9 @@ int32_t ad9361_bbpll_recalc_rate_checked(struct refclk_scale *clk_priv,
 	if (ret < 0)
 		return ret;
 
-	fract = (buf[3] << 16) | (buf[2] << 8) | buf[1];
+	/* Burst reads walk AD9361 register addresses downward. Starting at the
+	 * integer word returns fractional words 3, 2, 1 in buf[1..3]. */
+	fract = (buf[1] << 16) | (buf[2] << 8) | buf[3];
 	integer = buf[0];
 
 	rate = ((uint64_t)parent_rate * fract);
