@@ -435,6 +435,10 @@ static int get_rf_bandwidth(void *device, char *buf, uint32_t len,
 			    intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
+	if (!ad9361_phy || !channel)
+		return -EINVAL;
+	if (!ad9361_phy->current_bw_valid)
+		return -EIO;
 	if (channel->ch_out)
 		return snprintf(buf, len, "%"PRIu32"", ad9361_phy->current_tx_bw_Hz);
 	else
@@ -973,11 +977,13 @@ static int set_rf_bandwidth(void *device, char *buf, uint32_t len,
 
 	rf_bandwidth = ad9361_validate_rf_bw(ad9361_phy, rf_bandwidth);
 	if (channel->ch_out) {
-		if (ad9361_phy->current_tx_bw_Hz != rf_bandwidth)
+		if (!ad9361_phy->current_bw_valid ||
+		    ad9361_phy->current_tx_bw_Hz != rf_bandwidth)
 			ret = ad9361_update_rf_bandwidth(ad9361_phy, ad9361_phy->current_rx_bw_Hz,
 							 rf_bandwidth);
 	} else {
-		if (ad9361_phy->current_rx_bw_Hz != rf_bandwidth)
+		if (!ad9361_phy->current_bw_valid ||
+		    ad9361_phy->current_rx_bw_Hz != rf_bandwidth)
 			ret = ad9361_update_rf_bandwidth(ad9361_phy, rf_bandwidth,
 							 ad9361_phy->current_tx_bw_Hz);
 	}

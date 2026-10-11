@@ -6121,6 +6121,10 @@ int32_t ad9361_set_trx_clock_chain(struct ad9361_rf_phy *phy,
 	ret = ad9361_validate_trx_clock_chain(phy, rx_path_clks, tx_path_clks);
 	if (ret < 0)
 		return ret;
+	/* RF bandwidth calibration depends on the BBPLL/ADC clock plan. Once
+	 * clock programming starts, the prior bandwidth/calibration cache is no
+	 * longer evidence of the current RFIC state. */
+	phy->current_bw_valid = false;
 
 	ret = clk_set_rate(phy, phy->ref_clk_scale[BBPLL_CLK],
 			   rx_path_clks[BBPLL_FREQ]);
@@ -7579,6 +7583,7 @@ static int32_t ad9361_commit_rf_bandwidth_cache_if_complete(
 	int32_t bandwidth_status, int32_t tracking_status,
 	int32_t ensm_restore_status)
 {
+	phy->current_bw_valid = false;
 	if (bandwidth_status < 0)
 		return bandwidth_status;
 	if (tracking_status < 0)
@@ -7588,6 +7593,7 @@ static int32_t ad9361_commit_rf_bandwidth_cache_if_complete(
 
 	phy->current_rx_bw_Hz = rf_rx_bw;
 	phy->current_tx_bw_Hz = rf_tx_bw;
+	phy->current_bw_valid = true;
 	return 0;
 }
 
@@ -7598,6 +7604,9 @@ int32_t ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
 
 	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
+	/* Any failure below can leave analog filters or calibration state
+	 * partially updated. Do not let a later request trust the old cache. */
+	phy->current_bw_valid = false;
 
 	ret = ad9361_tracking_control(phy, false, false, false);
 	if (ret < 0) {

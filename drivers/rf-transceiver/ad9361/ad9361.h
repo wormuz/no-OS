@@ -3402,6 +3402,8 @@ struct ad9361_rf_phy {
 	uint32_t		cal_threshold_freq;
 	uint32_t			current_rx_bw_Hz;
 	uint32_t			current_tx_bw_Hz;
+	/* Cached bandwidths describe hardware only after a complete update. */
+	bool				current_bw_valid;
 	uint32_t			rxbbf_div;
 	uint32_t			rate_governor;
 	bool			bypass_rx_fir;

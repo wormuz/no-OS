@@ -974,7 +974,7 @@ int32_t ad9361_set_rx_rf_bandwidth(struct ad9361_rf_phy *phy,
 
 	bandwidth_hz = ad9361_validate_rf_bw(phy, bandwidth_hz);
 
-	if (phy->current_rx_bw_Hz != bandwidth_hz)
+	if (!phy->current_bw_valid || phy->current_rx_bw_Hz != bandwidth_hz)
 		ret = ad9361_update_rf_bandwidth(phy, bandwidth_hz,
 						 phy->current_tx_bw_Hz);
 	else
@@ -994,6 +994,8 @@ int32_t ad9361_get_rx_rf_bandwidth(struct ad9361_rf_phy *phy,
 {
 	if (!phy || !bandwidth_hz)
 		return -EINVAL;
+	if (!phy->current_bw_valid)
+		return -EIO;
 
 	*bandwidth_hz = phy->current_rx_bw_Hz;
 
@@ -1834,7 +1836,7 @@ int32_t ad9361_set_tx_rf_bandwidth(struct ad9361_rf_phy *phy,
 
 	bandwidth_hz = ad9361_validate_rf_bw(phy, bandwidth_hz);
 
-	if (phy->current_tx_bw_Hz != bandwidth_hz)
+	if (!phy->current_bw_valid || phy->current_tx_bw_Hz != bandwidth_hz)
 		ret = ad9361_update_rf_bandwidth(phy,
 						 phy->current_rx_bw_Hz, bandwidth_hz);
 	else
@@ -1854,6 +1856,8 @@ int32_t ad9361_get_tx_rf_bandwidth(struct ad9361_rf_phy *phy,
 {
 	if (!phy || !bandwidth_hz)
 		return -EINVAL;
+	if (!phy->current_bw_valid)
+		return -EIO;
 
 	*bandwidth_hz = phy->current_tx_bw_Hz;
 
