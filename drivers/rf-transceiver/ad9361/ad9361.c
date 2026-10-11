@@ -7508,6 +7508,12 @@ int32_t ad9361_do_calib_run(struct ad9361_rf_phy *phy, uint32_t cal,
 	    (cal == RFDC_CAL &&
 	     (!phy->clks[RX_RFPLL] || phy->clks[RX_RFPLL]->rate == 0)))
 		return -EINVAL;
+	if (cal == TX_QUAD_CAL &&
+	    (!phy->current_bw_valid || !phy->rfpll_source_valid[0] ||
+	     !phy->rfpll_source_valid[1]))
+		return -EIO;
+	if (cal == RFDC_CAL && !phy->rfpll_source_valid[0])
+		return -EIO;
 
 	dev_dbg(&phy->spi->dev, "%s: CAL %"PRIu32" ARG %"PRId32, __func__, cal, arg);
 
@@ -7564,6 +7570,8 @@ int32_t ad9361_do_calib_timeout(struct ad9361_rf_phy *phy, uint32_t cal,
 	    timeout_us == 0 || !phy->clks[RX_RFPLL] ||
 	    phy->clks[RX_RFPLL]->rate == 0)
 		return -EINVAL;
+	if (!phy->rfpll_source_valid[0])
+		return -EIO;
 
 	ret = ad9361_tracking_control(phy, false, false, false);
 	if (ret < 0) {
