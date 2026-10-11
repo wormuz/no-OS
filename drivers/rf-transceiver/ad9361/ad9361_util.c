@@ -220,6 +220,19 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 			if ((uint32_t)clk_priv->parent_source >= NUM_AD9361_CLKS ||
 			    !phy->clks[clk_priv->parent_source])
 				return -EINVAL;
+			/* This round-rate helper also returns a shifted RFPLL rate
+			 * through int32_t. Validate the request in its unsigned
+			 * frequency domain before retaining that legacy bit pattern. */
+			{
+				uint64_t requested_hz = ad9361_from_clk(rate);
+				uint64_t min_hz = source == RX_RFPLL_INT ?
+					MIN_RX_CARRIER_FREQ_HZ : MIN_TX_CARRIER_FREQ_HZ;
+
+				if (requested_hz < min_hz ||
+				    requested_hz > MAX_CARRIER_FREQ_HZ)
+					return ad9361_clock_rate_update_failed(
+						phy, source, -EINVAL);
+			}
 			round_rate = ad9361_rfpll_int_round_rate(clk_priv, rate,
 					&phy->clks[clk_priv->parent_source]->rate);
 			ret = ad9361_rfpll_int_set_rate(clk_priv, round_rate,
