@@ -238,7 +238,23 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 			break;
 		case TX_RFPLL:
 		case RX_RFPLL:
-			round_rate = ad9361_rfpll_round_rate(clk_priv, rate);
+			/* The historical round-rate API returns the encoded RFPLL
+			 * rate through int32_t, so valid rates above INT32_MAX appear
+			 * negative. Range-check the internal request before preserving
+			 * that bit pattern as uint32_t; otherwise an out-of-range input
+			 * can turn a negative error into an enormous hardware rate. */
+			if (!(source == RX_RFPLL ? phy->pdata->use_ext_rx_lo :
+			      phy->pdata->use_ext_tx_lo)) {
+				uint64_t requested_hz = ad9361_from_clk(rate);
+				uint64_t min_hz = source == RX_RFPLL ?
+					MIN_RX_CARRIER_FREQ_HZ : MIN_TX_CARRIER_FREQ_HZ;
+
+				if (requested_hz < min_hz ||
+				    requested_hz > MAX_CARRIER_FREQ_HZ)
+					return ad9361_clock_rate_update_failed(
+						phy, source, -EINVAL);
+			}
+			round_rate = (uint32_t)ad9361_rfpll_round_rate(clk_priv, rate);
 			/* The guard above compares the request against
 			 * phy->clks[source]->rate, which for these two sources is
 			 * read back from the synthesiser dividers rather than
