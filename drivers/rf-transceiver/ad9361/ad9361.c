@@ -9304,6 +9304,10 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 	if (!phy->pdata)
 		return -EINVAL;
 	tx = clk_priv->source == TX_RFPLL_INT;
+	if (ad9361_from_clk(rate) > MAX_CARRIER_FREQ_HZ ||
+	    ad9361_from_clk(rate) < (tx ? MIN_TX_CARRIER_FREQ_HZ :
+				       MIN_RX_CARRIER_FREQ_HZ))
+		return -EINVAL;
 	/* Once RFPLL programming starts, the prior software LO value no longer
 	 * proves what is active if any later SPI operation or lock check fails.
 	 * Leave the target-side cache unknown until the full sequence succeeds. */
@@ -9677,6 +9681,11 @@ int32_t ad9361_rfpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate)
 	     clk_priv->source != TX_RFPLL))
 		return -EINVAL;
 	phy = clk_priv->phy;
+	if (ad9361_from_clk(rate) > MAX_CARRIER_FREQ_HZ ||
+	    ad9361_from_clk(rate) <
+	    (clk_priv->source == TX_RFPLL ? MIN_TX_CARRIER_FREQ_HZ :
+					    MIN_RX_CARRIER_FREQ_HZ))
+		return -EINVAL;
 
 	switch (clk_priv->source) {
 	case RX_RFPLL:
