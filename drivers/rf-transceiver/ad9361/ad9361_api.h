@@ -365,7 +365,8 @@ enum ad9361_ensm_mode {
 /* Initialize the AD9361 part. */
 int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 		    AD9361_InitParam *init_param);
-/* Free the allocated resources. */
+/* Free the allocated resources. The PHY pointer is consumed even when a
+ * platform cleanup callback fails; callers must discard it on every return. */
 int32_t ad9361_remove(struct ad9361_rf_phy *phy);
 /* Set the Enable State Machine (ENSM) mode. */
 int32_t ad9361_set_en_state_machine_mode(struct ad9361_rf_phy *phy,
