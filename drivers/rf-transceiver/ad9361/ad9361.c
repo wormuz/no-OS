@@ -8779,9 +8779,12 @@ int32_t ad9361_bbpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 	fract = tmp;
 
 	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_INTEGER_BB_FREQ_WORD, integer));
-	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_FRACT_BB_FREQ_WORD_3, fract));
-	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_FRACT_BB_FREQ_WORD_2, fract >> 8));
-	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_FRACT_BB_FREQ_WORD_1, fract >> 16));
+	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_FRACT_BB_FREQ_WORD_3,
+					  (fract >> 16) & 0xff));
+	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_FRACT_BB_FREQ_WORD_2,
+					  (fract >> 8) & 0xff));
+	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_FRACT_BB_FREQ_WORD_1,
+					  fract & 0xff));
 
 	ret = ad9361_spi_write(spi, REG_SDM_CTRL_1,
 			       INIT_BB_FO_CAL | BBPLL_RESET_BAR);
@@ -8848,7 +8851,7 @@ static int32_t ad9361_fastlock_get_freq(struct ad9361_rf_phy *phy, bool tx,
 					uint8_t *vco_div_out)
 {
 	uint32_t fract, integer, vco_div;
-	uint64_t parent_rate;
+	uint32_t parent_rate;
 	uint8_t b0, b1, b2, b3, b4, div_word;
 	const uint8_t *data;
 	int32_t ret;
@@ -8961,12 +8964,14 @@ int32_t ad9361_fastlock_sync_current_lo(struct ad9361_rf_phy *phy, bool tx,
 	if (tx) {
 		phy->current_tx_lo_freq = ad9361_to_clk(actual_freq_hz);
 		phy->cached_tx_rfpll_div = vco_div;
+		phy->fastlock.current_profile[1] = profile + 1;
 		phy->rfpll_requested_valid[1] = false;
 		if (phy->clks[TX_RFPLL] != NULL)
 			phy->clks[TX_RFPLL]->rate = ad9361_to_clk(actual_freq_hz);
 	} else {
 		phy->current_rx_lo_freq = ad9361_to_clk(actual_freq_hz);
 		phy->cached_rx_rfpll_div = vco_div;
+		phy->fastlock.current_profile[0] = profile + 1;
 		phy->rfpll_requested_valid[0] = false;
 		if (phy->clks[RX_RFPLL] != NULL)
 			phy->clks[RX_RFPLL]->rate = ad9361_to_clk(actual_freq_hz);
@@ -8978,20 +8983,31 @@ int32_t ad9361_fastlock_sync_current_lo(struct ad9361_rf_phy *phy, bool tx,
 invalidate:
 	/* A failed profile readback must never preserve an older frequency as if
 	 * it described the newly selected RFIC profile. */
+	ad9361_fastlock_invalidate_current_lo(phy, tx);
+	return ret;
+}
+
+void ad9361_fastlock_invalidate_current_lo(struct ad9361_rf_phy *phy,
+					   bool tx)
+{
+	if (phy == NULL)
+		return;
+
 	if (tx) {
 		phy->current_tx_lo_freq = 0;
 		phy->cached_tx_rfpll_div = 0;
+		phy->fastlock.current_profile[1] = 0xffu;
 		phy->rfpll_requested_valid[1] = false;
 		if (phy->clks[TX_RFPLL] != NULL)
 			phy->clks[TX_RFPLL]->rate = 0;
 	} else {
 		phy->current_rx_lo_freq = 0;
 		phy->cached_rx_rfpll_div = 0;
+		phy->fastlock.current_profile[0] = 0xffu;
 		phy->rfpll_requested_valid[0] = false;
 		if (phy->clks[RX_RFPLL] != NULL)
 			phy->clks[RX_RFPLL]->rate = 0;
 	}
-	return ret;
 }
 
 void ad9361_fastlock_invalidate_cache(struct ad9361_rf_phy *phy, bool tx)

@@ -38,6 +38,7 @@
 #include "no_os_util.h"
 #include "no_os_alloc.h"
 #include "app_config.h"
+#include <inttypes.h>
 #include <string.h>
 #ifndef AXI_ADC_NOT_PRESENT
 #include "axi_adc_core.h"

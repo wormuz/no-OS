@@ -376,7 +376,7 @@ int32_t axi_dac_write(struct axi_dac *dac,
 		      uint32_t reg_addr,
 		      uint32_t reg_data)
 {
-	if (!dac || sleep_us == 0)
+	if (!dac)
 		return -EINVAL;
 
 	return no_os_axi_io_write(dac->base, reg_addr, reg_data);
