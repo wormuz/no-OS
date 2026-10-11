@@ -7937,14 +7937,26 @@ int32_t ad9361_parse_fir(struct ad9361_rf_phy *phy,
 	int32_t rtx = -1, rrx = -1;
 	int16_t coef_tx[128];
 	int16_t coef_rx[128];
-	char *ptr = data;
+	char *input, *ptr;
+
+	/* Match the IIO attribute transport buffer; keep malformed direct calls
+	 * from requesting an unbounded allocation. */
+	if (!phy || !data || !size || size > 4096U)
+		return -EINVAL;
+
+	input = no_os_malloc((size_t)size + 1);
+	if (!input)
+		return -ENOMEM;
+	memcpy(input, data, size);
+	input[size] = '\0';
+	ptr = input;
 
 	phy->filt_rx_bw_Hz = 0;
 	phy->filt_tx_bw_Hz = 0;
 	phy->filt_valid = false;
 
 	while ((line = strsep(&ptr, "\n"))) {
-		if (line >= data + size) {
+		if (line >= input + size) {
 			break;
 		}
 
@@ -8050,10 +8062,18 @@ int32_t ad9361_parse_fir(struct ad9361_rf_phy *phy,
 		ret = sscanf(line, "%"PRId32",%"PRId32, &txc, &rxc);
 #endif
 		if (ret == 1) {
+			if (i >= (int32_t)NO_OS_ARRAY_SIZE(coef_tx)) {
+				ret = -EINVAL;
+				goto parse_out;
+			}
 			coef_tx[i] = coef_rx[i] = (int16_t)txc;
 			i++;
 			continue;
 		} else if (ret == 2) {
+			if (i >= (int32_t)NO_OS_ARRAY_SIZE(coef_tx)) {
+				ret = -EINVAL;
+				goto parse_out;
+			}
 			coef_tx[i] = (int16_t)txc;
 			coef_rx[i] = (int16_t)rxc;
 			i++;
@@ -8071,6 +8091,8 @@ int32_t ad9361_parse_fir(struct ad9361_rf_phy *phy,
 	default:
 		ret = -EINVAL;
 	}
+	if (ret < 0)
+		goto parse_out;
 
 	switch (rx | FIR_IS_RX) {
 	case FIR_RX1:
@@ -8085,12 +8107,16 @@ int32_t ad9361_parse_fir(struct ad9361_rf_phy *phy,
 	}
 
 	if (ret < 0)
-		return ret;
+		goto parse_out;
 
 	if (!(rrx | rtx))
 		phy->filt_valid = true;
 
-	return size;
+	ret = (int32_t)size;
+
+parse_out:
+	no_os_free(input);
+	return ret;
 }
 
 /**
