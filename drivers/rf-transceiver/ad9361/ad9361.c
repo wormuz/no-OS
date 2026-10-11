@@ -7052,6 +7052,9 @@ void ad9361_clear_state(struct ad9361_rf_phy *phy)
 	phy->flags = 0;
 	phy->current_rx_bw_Hz = 0;
 	phy->current_tx_bw_Hz = 0;
+	phy->current_bw_valid = false;
+	phy->rfpll_source_valid[0] = false;
+	phy->rfpll_source_valid[1] = false;
 	phy->rxbbf_div = 0;
 	phy->tx_fir_int = 0;
 	phy->tx_fir_ntaps = 0;
