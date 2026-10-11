@@ -7796,8 +7796,16 @@ int32_t ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
 	}
 
 	ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
-	if (ret < 0)
+	if (ret < 0) {
+		/* The ALERT request may have reached the device even when its
+		 * transport reports failure. Restore the observed prior state. */
+		cleanup_ret = ad9361_ensm_restore_prev_state_checked(phy);
+		if (cleanup_ret < 0)
+			dev_err(&phy->spi->dev,
+				"Unable to restore ENSM after FIR setup failure: %d",
+				cleanup_ret);
 		return ret;
+	}
 	ensm_forced = true;
 	phy->fir_config_valid = false;
 
