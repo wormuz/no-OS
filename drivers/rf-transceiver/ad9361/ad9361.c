@@ -4449,6 +4449,7 @@ static int32_t ad9361_trx_ext_lo_control(struct ad9361_rf_phy *phy,
 
 	dev_dbg(&phy->spi->dev, "%s : %s state %d", __func__,
 		tx ? "TX" : "RX", enable);
+	phy->rfpll_source_valid[tx ? 1 : 0] = false;
 
 	if (tx) {
 		EXT_LO_TRY(ad9361_spi_writef(phy->spi, REG_ENSM_CONFIG_2,
@@ -4507,6 +4508,7 @@ static int32_t ad9361_trx_ext_lo_control(struct ad9361_rf_phy *phy,
 					     RX_LO_GEN_POWER_MODE(val)));
 		phy->cached_synth_pd[1] = synth_pd;
 	}
+	phy->rfpll_source_valid[tx ? 1 : 0] = true;
 
 	#undef EXT_LO_TRY
 	}

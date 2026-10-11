@@ -3404,6 +3404,8 @@ struct ad9361_rf_phy {
 	uint32_t			current_tx_bw_Hz;
 	/* Cached bandwidths describe hardware only after a complete update. */
 	bool				current_bw_valid;
+	/* LO source is unknown after a partial external/internal mux update. */
+	bool			rfpll_source_valid[2];
 	uint32_t			rxbbf_div;
 	uint32_t			rate_governor;
 	bool			bypass_rx_fir;

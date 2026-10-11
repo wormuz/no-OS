@@ -1100,8 +1100,10 @@ int32_t ad9361_get_rx_lo_freq(struct ad9361_rf_phy *phy,
 	struct refclk_scale *pll_scale;
 	uint32_t parent_source;
 
-	if (!phy || !phy->pdata || !lo_freq_hz)
+	if (!phy || !phy->spi || !phy->pdata || !lo_freq_hz)
 		return -EINVAL;
+	if (!phy->rfpll_source_valid[0])
+		return -EIO;
 
 	if (phy->pdata->use_ext_rx_lo) {
 		if (phy->ad9361_rfpll_ext_recalc_rate) {
@@ -1965,8 +1967,10 @@ int32_t ad9361_get_tx_lo_freq(struct ad9361_rf_phy *phy,
 	struct refclk_scale *pll_scale;
 	uint32_t parent_source;
 
-	if (!phy || !phy->pdata || !lo_freq_hz)
+	if (!phy || !phy->spi || !phy->pdata || !lo_freq_hz)
 		return -EINVAL;
+	if (!phy->rfpll_source_valid[1])
+		return -EIO;
 
 	if (phy->pdata->use_ext_tx_lo) {
 		if (phy->ad9361_rfpll_ext_recalc_rate) {
