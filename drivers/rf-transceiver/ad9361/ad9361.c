@@ -3159,7 +3159,9 @@ int32_t ad9361_set_gain_ctrl_mode(struct ad9361_rf_phy *phy,
 		goto out;
 	}
 
-	rc = ad9361_en_dis_rx(phy, gain_ctrl->ant, RX_ENABLE);
+	/* RX_ENABLE is the RX1 bit (1), not a generic boolean.  Pass the
+	 * selected antenna mask so RX2 (2) is restored as well. */
+	rc = ad9361_en_dis_rx(phy, gain_ctrl->ant, gain_ctrl->ant);
 	if (rc)
 		goto out;
 	rx_disabled = false;
@@ -3167,7 +3169,7 @@ int32_t ad9361_set_gain_ctrl_mode(struct ad9361_rf_phy *phy,
 out:
 	if (rx_disabled) {
 		int32_t restore_rc = ad9361_en_dis_rx(phy, gain_ctrl->ant,
-						      RX_ENABLE);
+						      gain_ctrl->ant);
 		if (rc >= 0 && restore_rc < 0)
 			rc = restore_rc;
 		else if (rc < 0 && restore_rc < 0)
@@ -5725,7 +5727,13 @@ static int32_t ad9361_rssi_setup(struct ad9361_rf_phy *phy,
 		}
 
 	} while (j < 4 && rssi_duration > 0);
-	if (rssi_duration > 0 || j == 0 || total_dur == 0)
+	/* The RSSI block can combine at most four power-of-two windows.  A
+	 * requested duration may have more than four set bits after converting
+	 * from microseconds to RX samples.  On a live rate change, retain the
+	 * largest four windows (a bounded round-down) instead of failing the
+	 * otherwise valid clock-chain update.  Initial configuration remains
+	 * strict so an unsupported setup is reported rather than silently altered. */
+	if ((rssi_duration > 0 && !is_update) || j == 0 || total_dur == 0)
 		return -ERANGE;
 
 	for (i = 0, total_weight = 0; i < 4; i++) {
