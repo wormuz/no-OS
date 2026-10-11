@@ -668,14 +668,11 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 	if (ret < 0)
 		goto out_clk;
 #endif
-	/* BLADERF_NIOS_BUILD excludes the AXI ADC/DAC initialization block above.
-	 * Consequently this NIOS-owned PHY has no rx_adc handle. The firmware's
-	 * later sample-rate command currently calls ad9361_dig_tune(); its
-	 * converter validation rejects that missing handle before touching AXI.
-	 * The host's separate PHY object and its AXI handles are not shared with
-	 * this firmware instance. Keep the on-board NIOS no-response incident
-	 * unresolved until the exact active image and command trace identify a
-	 * path that actually reaches the FPGA AXI core. */
+	/* BLADERF_NIOS_BUILD excludes the AXI ADC/DAC initialization block above,
+	 * so this PHY has no rx_adc handle. The NIOS sample-rate command must skip
+	 * the BIST tuner when preset-delay mode is active; an unconditional call
+	 * fails validation before touching AXI. The host's separate PHY and AXI
+	 * handles are not shared with this firmware instance. */
 
 	printf("%s : AD936x Rev %d successfully initialized\n", __func__, (int)rev);
 
