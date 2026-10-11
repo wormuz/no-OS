@@ -883,7 +883,10 @@ int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 			phy->bist_config_valid = true;
 		}
 
-		if (ret == -EIO)
+		/* A bus/timeout failure may leave only some interface-delay
+		 * registers programmed. Never read that partial state back into the
+		 * persistent tuning baseline as if the calibration had succeeded. */
+		if (ret < 0)
 			restore = true;
 	}
 
