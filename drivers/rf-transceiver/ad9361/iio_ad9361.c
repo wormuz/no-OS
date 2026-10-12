@@ -1378,10 +1378,16 @@ static int set_frequency(void *device, char *buf, uint32_t len,
 
 	switch (channel->ch_num) {
 	case 0:
+		if (lo_freq_hz < MIN_RX_CARRIER_FREQ_HZ ||
+		    lo_freq_hz > MAX_CARRIER_FREQ_HZ)
+			return -EINVAL;
 		ret = clk_set_rate(ad9361_phy, ad9361_phy->ref_clk_scale[RX_RFPLL],
 				   ad9361_to_clk(lo_freq_hz));
 		break;
 	case 1:
+		if (lo_freq_hz < MIN_TX_CARRIER_FREQ_HZ ||
+		    lo_freq_hz > MAX_CARRIER_FREQ_HZ)
+			return -EINVAL;
 		ret = clk_set_rate(ad9361_phy, ad9361_phy->ref_clk_scale[TX_RFPLL],
 				   ad9361_to_clk(lo_freq_hz));
 		break;

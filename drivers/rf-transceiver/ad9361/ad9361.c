@@ -7132,6 +7132,11 @@ int32_t ad9361_setup(struct ad9361_rf_phy *phy)
 	dev_dbg(dev, "%s", __func__);
 	if (!phy->clk_refin || !phy->clk_refin->rate)
 		return -EINVAL;
+	if (pd->rx_synth_freq < MIN_RX_CARRIER_FREQ_HZ ||
+	    pd->rx_synth_freq > MAX_CARRIER_FREQ_HZ ||
+	    pd->tx_synth_freq < MIN_TX_CARRIER_FREQ_HZ ||
+	    pd->tx_synth_freq > MAX_CARRIER_FREQ_HZ)
+		return -EINVAL;
 	refin_Hz = phy->clk_refin->rate;
 	ref_freq = ad9361_ref_div_sel(refin_Hz, MAX_BBPLL_FREF);
 	if (!ref_freq)
