@@ -1127,6 +1127,10 @@ int32_t ad9361_reset(struct ad9361_rf_phy *phy)
 int32_t ad9361_en_dis_tx(struct ad9361_rf_phy *phy, uint32_t tx_if,
 			 uint32_t enable)
 {
+	uint32_t field_enable;
+	uint32_t channel_mask;
+	uint32_t field_offset;
+
 	if (!phy || !phy->spi)
 		return -EINVAL;
 	if (!tx_if || (tx_if & ~(TX_1 | TX_2)) ||
@@ -1137,8 +1141,12 @@ int32_t ad9361_en_dis_tx(struct ad9361_rf_phy *phy, uint32_t tx_if,
 	if ((tx_if & enable) > 1 && AD9364_DEVICE && enable)
 		return -EINVAL;
 
+	channel_mask = TX_CHANNEL_ENABLE(tx_if);
+	field_offset = find_first_bit(channel_mask) - 6;
+	field_enable = enable >> field_offset;
+
 	return ad9361_spi_writef(phy->spi, REG_TX_ENABLE_FILTER_CTRL,
-				 TX_CHANNEL_ENABLE(tx_if), enable);
+				 channel_mask, field_enable);
 }
 
 /**
@@ -1151,6 +1159,10 @@ int32_t ad9361_en_dis_tx(struct ad9361_rf_phy *phy, uint32_t tx_if,
 int32_t ad9361_en_dis_rx(struct ad9361_rf_phy *phy, uint32_t rx_if,
 			 uint32_t enable)
 {
+	uint32_t field_enable;
+	uint32_t channel_mask;
+	uint32_t field_offset;
+
 	if (!phy || !phy->spi)
 		return -EINVAL;
 	if (!rx_if || (rx_if & ~(RX_1 | RX_2)) ||
@@ -1161,8 +1173,12 @@ int32_t ad9361_en_dis_rx(struct ad9361_rf_phy *phy, uint32_t rx_if,
 	if ((rx_if & enable) > 1 && AD9364_DEVICE && enable)
 		return -EINVAL;
 
+	channel_mask = RX_CHANNEL_ENABLE(rx_if);
+	field_offset = find_first_bit(channel_mask) - 6;
+	field_enable = enable >> field_offset;
+
 	return ad9361_spi_writef(phy->spi, REG_RX_ENABLE_FILTER_CTRL,
-				 RX_CHANNEL_ENABLE(rx_if), enable);
+				 channel_mask, field_enable);
 }
 
 /**
