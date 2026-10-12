@@ -111,6 +111,7 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 {
 	struct ad9361_rf_phy *phy;
 	int32_t ret = 0;
+	int32_t cleanup_ret;
 	int32_t rev = 0;
 	int32_t i   = 0;
 
@@ -631,16 +632,16 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 
 	ret = ad9361_setup(phy);
 	if (ret < 0)
-		goto out_clk;
+		goto out;
 
 #if !defined(AXI_ADC_NOT_PRESENT) && !defined(BLADERF_NIOS_BUILD)
 	ret = axi_adc_init(&phy->rx_adc, init_param->rx_adc_init);
 	if (ret < 0)
-		goto out_clk;
+		goto out;
 	ret = axi_adc_read(phy->rx_adc, ADI_REG_VERSION,
 			   &phy->adc_state->pcore_version);
 	if (ret < 0)
-		goto out_clk;
+		goto out;
 
 	/* The TX half of the same core. init_param carries tx_dac_init and
 	 * nothing here ever used it, so the DAC side stayed in whatever state
@@ -661,12 +662,12 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 	 * back after init: cntrl_2 = 0, ratecntrl = 1 on this 2R2T board. */
 	if (init_param->tx_dac_init)
 		if ((ret = axi_dac_init(&phy->tx_dac, init_param->tx_dac_init)) < 0)
-			goto out_clk;
+			goto out;
 
 	/* platform specific wrapper to call ad9361_post_setup() */
 	ret = ad9361_post_setup(phy);
 	if (ret < 0)
-		goto out_clk;
+		goto out;
 #endif
 	/* BLADERF_NIOS_BUILD excludes the AXI ADC/DAC initialization block above,
 	 * so this PHY has no rx_adc handle. The NIOS sample-rate command must skip
@@ -680,28 +681,19 @@ int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 
 	return 0;
 
-out_clk:
-	ad9361_unregister_clocks(phy);
 out:
+	/* ad9361_init() owns every partially acquired resource until it returns.
+	 * Reuse the public teardown path so failures from SPI/GPIO/clock cleanup
+	 * are not hidden behind the initialization error. ad9361_remove() always
+	 * consumes the PHY, including when a platform teardown reports an error. */
 	if (ret >= 0)
 		ret = -ENODEV;
-	if (phy->spi)
-		no_os_spi_remove(phy->spi);
-	no_os_gpio_remove(phy->gpio_desc_resetb);
-	no_os_gpio_remove(phy->gpio_desc_sync);
-	no_os_gpio_remove(phy->gpio_desc_cal_sw1);
-	no_os_gpio_remove(phy->gpio_desc_cal_sw2);
-#ifndef AXI_ADC_NOT_PRESENT
-	if (phy->rx_adc)
-		axi_adc_remove(phy->rx_adc);
-	if (phy->tx_dac)
-		axi_dac_remove(phy->tx_dac);
-	no_os_free(phy->adc_conv);
-	no_os_free(phy->adc_state);
-#endif
-	no_os_free(phy->clk_refin);
-	no_os_free(phy->pdata);
-	no_os_free(phy);
+	cleanup_ret = ad9361_remove(phy);
+	if (cleanup_ret < 0) {
+		printf("%s : cleanup failed (%d) after init error (%d)\n",
+		       __func__, cleanup_ret, ret);
+		ret = cleanup_ret;
+	}
 	printf("%s : AD936x initialization error\n", __func__);
 
 	return ret;
