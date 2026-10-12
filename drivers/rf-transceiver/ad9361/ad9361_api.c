@@ -1008,9 +1008,20 @@ int32_t ad9361_set_rx_sampling_freq(struct ad9361_rf_phy *phy,
 				    uint32_t sampling_freq_hz)
 {
 	int32_t ret;
-	uint32_t rx[6], tx[6];
+	uint32_t rx[6], tx[6], current_rate;
 	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
+	/* A repeated rate request must be idempotent. Reprogramming an unchanged
+	 * clock chain invalidates the bandwidth/calibration cache and can force a
+	 * TX quadrature calibration in a clock ratio the current RX/TX profile
+	 * cannot calibrate. Preserve the known-good calibration when neither the
+	 * sample rate nor the bandwidth state changed. */
+	ret = clk_get_rate_checked(phy, phy->ref_clk_scale[RX_SAMPL_CLK],
+				   &current_rate);
+	if (ret < 0)
+		return ret;
+	if (phy->current_bw_valid && current_rate == sampling_freq_hz)
+		return 0;
 
 	ret = ad9361_calculate_rf_clock_chain(phy, sampling_freq_hz,
 					      phy->rate_governor, rx, tx);
@@ -1880,9 +1891,17 @@ int32_t ad9361_set_tx_sampling_freq(struct ad9361_rf_phy *phy,
 				    uint32_t sampling_freq_hz)
 {
 	int32_t ret;
-	uint32_t rx[6], tx[6];
+	uint32_t rx[6], tx[6], current_rate;
 	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
+	/* See ad9361_set_rx_sampling_freq(): do not invalidate a known-good
+	 * calibration by reapplying an unchanged shared clock plan. */
+	ret = clk_get_rate_checked(phy, phy->ref_clk_scale[TX_SAMPL_CLK],
+				   &current_rate);
+	if (ret < 0)
+		return ret;
+	if (phy->current_bw_valid && current_rate == sampling_freq_hz)
+		return 0;
 
 	ret = ad9361_calculate_rf_clock_chain(phy, sampling_freq_hz,
 					      phy->rate_governor, rx, tx);
