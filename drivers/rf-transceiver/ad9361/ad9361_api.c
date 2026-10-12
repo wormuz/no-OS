@@ -1079,6 +1079,9 @@ int32_t ad9361_set_rx_lo_freq(struct ad9361_rf_phy *phy,
 
 	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
+	if (lo_freq_hz < MIN_RX_CARRIER_FREQ_HZ ||
+	    lo_freq_hz > MAX_CARRIER_FREQ_HZ)
+		return -EINVAL;
 	if (!phy->rfpll_source_valid[0])
 		return -EIO;
 
@@ -1947,6 +1950,9 @@ int32_t ad9361_set_tx_lo_freq(struct ad9361_rf_phy *phy,
 	int32_t ret;
 
 	if (!phy || !phy->spi || !phy->pdata)
+		return -EINVAL;
+	if (lo_freq_hz < MIN_TX_CARRIER_FREQ_HZ ||
+	    lo_freq_hz > MAX_CARRIER_FREQ_HZ)
 		return -EINVAL;
 	if (!phy->rfpll_source_valid[1])
 		return -EIO;
