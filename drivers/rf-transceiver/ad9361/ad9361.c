@@ -9002,6 +9002,10 @@ calculate:
 
 	*freq_hz = ad9361_calc_rfpll_int_freq(parent_rate, integer,
 					      fract, vco_div);
+	if (*freq_hz < (tx ? MIN_TX_CARRIER_FREQ_HZ :
+			  MIN_RX_CARRIER_FREQ_HZ) ||
+	    *freq_hz > MAX_CARRIER_FREQ_HZ)
+		return -EINVAL;
 	if (vco_div_out != NULL)
 		*vco_div_out = vco_div;
 	return 0;
