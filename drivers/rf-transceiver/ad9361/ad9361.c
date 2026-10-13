@@ -3511,7 +3511,12 @@ static int32_t ad9361_rx_bb_analog_filter_calib(struct ad9361_rf_phy *phy,
 				     target));
 
 	/* Set RX baseband filter divide value */
-	ret = ad9361_spi_write(phy->spi, REG_RX_BBF_TUNE_DIVIDE, phy->rxbbf_div);
+	/* The divider is 9 bits across 0x1E1[7:0] and 0x1E0[0].
+	 * ad9361_spi_write() accepts only an 8-bit register value. Passing the
+	 * full divider made valid low-bandwidth settings fail with -EINVAL when
+	 * the divider exceeded 255. */
+	ret = ad9361_spi_write(phy->spi, REG_RX_BBF_TUNE_DIVIDE,
+			       phy->rxbbf_div & 0xff);
 	if (ret < 0)
 		return ret;
 	ret = ad9361_spi_writef(phy->spi, REG_RX_BBF_TUNE_CONFIG, NO_OS_BIT(0),
@@ -8758,8 +8763,9 @@ int32_t ad9361_bbpll_recalc_rate_checked(struct refclk_scale *clk_priv,
 		return ret;
 
 	/* Burst reads walk AD9361 register addresses downward. Starting at the
-	 * integer word returns fractional words 3, 2, 1 in buf[1..3]. */
-	fract = (buf[1] << 16) | (buf[2] << 8) | buf[3];
+	 * integer word returns fractional words 3, 2, 1 in buf[1..3]. The
+	 * hardware maps word 1 to the most-significant fractional byte. */
+	fract = (buf[3] << 16) | (buf[2] << 8) | buf[1];
 	integer = buf[0];
 
 	rate = ((uint64_t)parent_rate * fract);
@@ -8883,11 +8889,11 @@ int32_t ad9361_bbpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 	fract = tmp;
 
 	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_INTEGER_BB_FREQ_WORD, integer));
-	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_FRACT_BB_FREQ_WORD_3,
+	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_FRACT_BB_FREQ_WORD_1,
 					  (fract >> 16) & 0xff));
 	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_FRACT_BB_FREQ_WORD_2,
 					  (fract >> 8) & 0xff));
-	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_FRACT_BB_FREQ_WORD_1,
+	AD9361_BBPLL_TRY(ad9361_spi_write(spi, REG_FRACT_BB_FREQ_WORD_3,
 					  fract & 0xff));
 
 	ret = ad9361_spi_write(spi, REG_SDM_CTRL_1,
