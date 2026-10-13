@@ -994,6 +994,44 @@ int32_t ad9361_get_rx_rf_bandwidth(struct ad9361_rf_phy *phy,
 	return 0;
 }
 
+/* A sample-rate update changes the shared RX/TX clock chain before its RF
+ * bandwidth and calibration work completes. If that later work fails, the
+ * caller must not observe an error while the new clock plan remains active.
+ * Restore the previous chain and reapply the last known-good bandwidth state.
+ */
+static int32_t ad9361_restore_clock_chain_after_rate_failure(
+	struct ad9361_rf_phy *phy, const uint32_t old_rx[6],
+	const uint32_t old_tx[6], uint32_t old_rx_bw, uint32_t old_tx_bw)
+{
+	uint32_t restore_rx[6], restore_tx[6], check_rx[6], check_tx[6];
+	int32_t chain_ret, read_ret, bandwidth_ret;
+	bool clock_chain_restored;
+
+	memcpy(restore_rx, old_rx, sizeof(restore_rx));
+	memcpy(restore_tx, old_tx, sizeof(restore_tx));
+	chain_ret = ad9361_set_trx_clock_chain(phy, restore_rx, restore_tx);
+	read_ret = ad9361_get_trx_clock_chain(phy, check_rx, check_tx);
+	clock_chain_restored = read_ret == 0 &&
+		!memcmp(old_rx, check_rx, sizeof(check_rx)) &&
+		!memcmp(old_tx, check_tx, sizeof(check_tx));
+
+	/* Even if the clock-change hook reported an error, the actual dividers may
+	 * have been restored. Verify them before recalibrating the old bandwidth. */
+	bandwidth_ret = clock_chain_restored
+		? ad9361_update_rf_bandwidth(phy, old_rx_bw, old_tx_bw)
+		: -EIO;
+	if (!clock_chain_restored || bandwidth_ret < 0) {
+		phy->current_bw_valid = false;
+		dev_err(&phy->spi->dev,
+			"Sample-rate rollback failed (clock=%"PRId32
+			", readback=%"PRId32", bandwidth=%"PRId32")",
+			chain_ret, read_ret, bandwidth_ret);
+		return -EIO;
+	}
+
+	return 0;
+}
+
 /**
  * Set the RX sampling frequency.
  * @param phy The AD9361 current state structure.
@@ -1007,8 +1045,9 @@ int32_t ad9361_get_rx_rf_bandwidth(struct ad9361_rf_phy *phy,
 int32_t ad9361_set_rx_sampling_freq(struct ad9361_rf_phy *phy,
 				    uint32_t sampling_freq_hz)
 {
-	int32_t ret;
-	uint32_t rx[6], tx[6], current_rate;
+	int32_t ret, rollback_ret;
+	uint32_t rx[6], tx[6], old_rx[6], old_tx[6], current_rate;
+	uint32_t old_rx_bw, old_tx_bw;
 	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 	/* A repeated rate request must be idempotent. Reprogramming an unchanged
@@ -1022,6 +1061,17 @@ int32_t ad9361_set_rx_sampling_freq(struct ad9361_rf_phy *phy,
 		return ret;
 	if (phy->current_bw_valid && current_rate == sampling_freq_hz)
 		return 0;
+	if (!phy->current_bw_valid) {
+		dev_err(&phy->spi->dev,
+			"Cannot change RX sample rate with unknown RF bandwidth state");
+		return -EIO;
+	}
+
+	ret = ad9361_get_trx_clock_chain(phy, old_rx, old_tx);
+	if (ret < 0)
+		return ret;
+	old_rx_bw = phy->current_rx_bw_Hz;
+	old_tx_bw = phy->current_tx_bw_Hz;
 
 	ret = ad9361_calculate_rf_clock_chain(phy, sampling_freq_hz,
 					      phy->rate_governor, rx, tx);
@@ -1029,13 +1079,21 @@ int32_t ad9361_set_rx_sampling_freq(struct ad9361_rf_phy *phy,
 		return ret;
 
 	ret = ad9361_set_trx_clock_chain(phy, rx, tx);
-	if (ret < 0)
-		return ret;
+	if (ret < 0) {
+		rollback_ret = ad9361_restore_clock_chain_after_rate_failure(
+			phy, old_rx, old_tx, old_rx_bw, old_tx_bw);
+		return rollback_ret < 0 ? rollback_ret : ret;
+	}
 
 	ret = ad9361_update_rf_bandwidth(phy, phy->current_rx_bw_Hz,
 					 phy->current_tx_bw_Hz);
+	if (ret < 0) {
+		rollback_ret = ad9361_restore_clock_chain_after_rate_failure(
+			phy, old_rx, old_tx, old_rx_bw, old_tx_bw);
+		return rollback_ret < 0 ? rollback_ret : ret;
+	}
 
-	return ret;
+	return 0;
 }
 
 /**
@@ -1890,8 +1948,9 @@ int32_t ad9361_get_tx_rf_bandwidth(struct ad9361_rf_phy *phy,
 int32_t ad9361_set_tx_sampling_freq(struct ad9361_rf_phy *phy,
 				    uint32_t sampling_freq_hz)
 {
-	int32_t ret;
-	uint32_t rx[6], tx[6], current_rate;
+	int32_t ret, rollback_ret;
+	uint32_t rx[6], tx[6], old_rx[6], old_tx[6], current_rate;
+	uint32_t old_rx_bw, old_tx_bw;
 	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 	/* See ad9361_set_rx_sampling_freq(): do not invalidate a known-good
@@ -1902,6 +1961,17 @@ int32_t ad9361_set_tx_sampling_freq(struct ad9361_rf_phy *phy,
 		return ret;
 	if (phy->current_bw_valid && current_rate == sampling_freq_hz)
 		return 0;
+	if (!phy->current_bw_valid) {
+		dev_err(&phy->spi->dev,
+			"Cannot change TX sample rate with unknown RF bandwidth state");
+		return -EIO;
+	}
+
+	ret = ad9361_get_trx_clock_chain(phy, old_rx, old_tx);
+	if (ret < 0)
+		return ret;
+	old_rx_bw = phy->current_rx_bw_Hz;
+	old_tx_bw = phy->current_tx_bw_Hz;
 
 	ret = ad9361_calculate_rf_clock_chain(phy, sampling_freq_hz,
 					      phy->rate_governor, rx, tx);
@@ -1909,13 +1979,21 @@ int32_t ad9361_set_tx_sampling_freq(struct ad9361_rf_phy *phy,
 		return ret;
 
 	ret = ad9361_set_trx_clock_chain(phy, rx, tx);
-	if (ret < 0)
-		return ret;
+	if (ret < 0) {
+		rollback_ret = ad9361_restore_clock_chain_after_rate_failure(
+			phy, old_rx, old_tx, old_rx_bw, old_tx_bw);
+		return rollback_ret < 0 ? rollback_ret : ret;
+	}
 
 	ret = ad9361_update_rf_bandwidth(phy, phy->current_rx_bw_Hz,
 					 phy->current_tx_bw_Hz);
+	if (ret < 0) {
+		rollback_ret = ad9361_restore_clock_chain_after_rate_failure(
+			phy, old_rx, old_tx, old_rx_bw, old_tx_bw);
+		return rollback_ret < 0 ? rollback_ret : ret;
+	}
 
-	return ret;
+	return 0;
 }
 
 /**
