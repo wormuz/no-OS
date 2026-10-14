@@ -1520,6 +1520,8 @@ int32_t ad9361_status_wait_start(struct ad9361_rf_phy *phy,
 	if (!phy || !phy->spi || !wait || !mask || !timeout_us ||
 	    !poll_delay_us)
 		return -EINVAL;
+	if (ad9361_calibration_state_unknown(phy))
+		return -EIO;
 	if (phy->status_wait != NULL || phy->calibration_wait != NULL)
 		return -EBUSY;
 	memset(wait, 0, sizeof(*wait));
@@ -1580,8 +1582,12 @@ int32_t ad9361_status_wait_poll(struct ad9361_rf_phy *phy,
 		return 1;
 
 	ret = ad9361_spi_readf(phy->spi, wait->reg, wait->mask);
-	if (ret < 0)
+	if (ret < 0) {
+		/* A failed observation cannot prove that the RFIC operation reached
+		 * the requested state. Keep later mutations fail-closed. */
+		ad9361_mark_calibration_state_unknown(phy);
 		return ad9361_status_wait_finish(phy, wait, ret);
+	}
 
 	now = no_os_get_time();
 	now_us = (uint64_t)now.s * 1000000ULL + now.us;
@@ -1590,8 +1596,13 @@ int32_t ad9361_status_wait_poll(struct ad9361_rf_phy *phy,
 		return ad9361_status_wait_finish(
 			phy, wait, elapsed_us <= wait->timeout_us ? 0 : -ETIMEDOUT);
 	if (elapsed_us >= wait->timeout_us ||
-	    ++wait->polls >= wait->poll_budget)
+	    ++wait->polls >= wait->poll_budget) {
+		/* The requested state is still absent at the watchdog boundary; the
+		 * transition may still be in flight, so do not release RFIC ownership
+		 * as if the device were known idle. */
+		ad9361_mark_calibration_state_unknown(phy);
 		return ad9361_status_wait_finish(phy, wait, -ETIMEDOUT);
+	}
 
 	wait->poll_not_before_us = now_us + wait->poll_delay_us;
 	return 1;
@@ -4178,36 +4189,98 @@ static int32_t ad9361_txrx_synth_cp_calib(struct ad9361_rf_phy *phy,
  * @param phy The AD9361 state structure.
  * @return 0 in case of success, negative error code otherwise.
  */
-static int32_t ad9361_bb_dc_offset_calib(struct ad9361_rf_phy *phy)
+int32_t ad9361_bbdc_calibration_start(struct ad9361_rf_phy *phy,
+		struct ad9361_bbdc_calibration_job *job)
 {
 	uint32_t timeout_us;
 	int32_t ret;
 
+	if (!phy || !phy->spi || !job)
+		return -EINVAL;
+	if (job->active || phy->calibration_wait != NULL ||
+	    phy->status_wait != NULL)
+		return -EBUSY;
+	memset(job, 0, sizeof(*job));
+	if (ad9361_calibration_state_unknown(phy))
+		return -EIO;
+
 	dev_dbg(&phy->spi->dev, "%s", __func__);
 
 	ret = ad9361_spi_write(phy->spi, REG_BB_DC_OFFSET_COUNT, 0x3F);
-	if (ret < 0) {
-		ad9361_mark_calibration_state_unknown(phy);
-		return ret;
-	}
+	if (ret < 0)
+		goto fail_closed;
 	ret = ad9361_spi_write(phy->spi, REG_BB_DC_OFFSET_SHIFT,
 			       BB_DC_M_SHIFT(0xF));
-	if (ret < 0) {
-		ad9361_mark_calibration_state_unknown(phy);
-		return ret;
-	}
+	if (ret < 0)
+		goto fail_closed;
 	ret = ad9361_spi_write(phy->spi, REG_BB_DC_OFFSET_ATTEN,
 			       BB_DC_OFFSET_ATTEN(1));
-	if (ret < 0) {
-		ad9361_mark_calibration_state_unknown(phy);
-		return ret;
-	}
+	if (ret < 0)
+		goto fail_closed;
 
 	ret = ad9361_calibration_time_from_cycles(phy, 404000ULL,
 						  &timeout_us);
+	if (ret < 0) {
+		ad9361_mark_calibration_state_unknown(phy);
+		job->terminal = true;
+		job->terminal_status = ret;
+		return ret;
+	}
+	ret = ad9361_calibration_wait_start(phy, BBDC_CAL, timeout_us,
+					    &job->wait);
+	if (ret < 0) {
+		job->terminal = true;
+		job->terminal_status = ret;
+		return ret;
+	}
+	job->active = true;
+	return 0;
+
+fail_closed:
+	ad9361_mark_calibration_state_unknown(phy);
+	job->terminal = true;
+	job->terminal_status = ret;
+	return ret;
+}
+
+int32_t ad9361_bbdc_calibration_poll(struct ad9361_rf_phy *phy,
+		struct ad9361_bbdc_calibration_job *job)
+{
+	int32_t ret;
+
+	if (!phy || !job)
+		return -EINVAL;
+	if (job->terminal)
+		return job->terminal_status;
+	if (!job->active) {
+		if (job->wait.active || phy->calibration_wait == &job->wait)
+			ad9361_mark_calibration_state_unknown(phy);
+		job->terminal = true;
+		job->terminal_status = -EINVAL;
+		return -EINVAL;
+	}
+	ret = ad9361_calibration_wait_poll(phy, &job->wait);
+	if (ret == 1)
+		return 1;
+	job->active = false;
+	job->terminal = true;
+	job->terminal_status = ret;
+	return ret;
+}
+
+static int32_t ad9361_bb_dc_offset_calib(struct ad9361_rf_phy *phy)
+{
+	struct ad9361_bbdc_calibration_job job = { 0 };
+	int32_t ret = ad9361_bbdc_calibration_start(phy, &job);
+
 	if (ret < 0)
 		return ret;
-	return ad9361_run_calibration_timeout(phy, BBDC_CAL, timeout_us);
+	for (;;) {
+		ret = ad9361_bbdc_calibration_poll(phy, &job);
+		if (ret != 1)
+			return ret;
+		no_os_udelay(job.wait.poll_delay_us);
+	}
 }
 
 /**

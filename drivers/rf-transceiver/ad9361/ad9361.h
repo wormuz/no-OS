@@ -3550,6 +3550,16 @@ struct ad9361_bbf_calibration_job {
 	int32_t terminal_status;
 };
 
+/* One baseband DC-offset calibration job. Zero-initialize before start, keep
+ * it at a stable address, and retain exclusive PHY ownership through the
+ * terminal poll. */
+struct ad9361_bbdc_calibration_job {
+	struct ad9361_calibration_wait wait;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
+
 /* One resumable TX quadrature calibration attempt. The higher-level phase
  * search must retain its cursor and this object at a stable address until a
  * terminal poll. This primitive performs one attempt only; the caller owns
@@ -3838,7 +3848,9 @@ int32_t ad9361_status_wait_start(struct ad9361_rf_phy *phy,
 /* `done_state` is the normalized field value returned by ad9361_spi_readf,
  * not the raw masked register bits. */
 /* Returns 0 when the requested status is observed, 1 while pending, or a
- * terminal negative errno. Does not sleep or mutate the RFIC. */
+ * terminal negative errno. Does not sleep or mutate the RFIC. Keep `wait`
+ * at a stable address until terminal poll; observation failure or timeout
+ * latches the PHY unknown so callers cannot start another mutation. */
 int32_t ad9361_status_wait_poll(struct ad9361_rf_phy *phy,
 		struct ad9361_status_wait *wait);
 int32_t ad9361_synth_cp_calibration_start(struct ad9361_rf_phy *phy,
@@ -3855,6 +3867,11 @@ int32_t ad9361_bbf_calibration_start(struct ad9361_rf_phy *phy,
 /* Returns 1 while pending, 0 after tune-circuit cleanup, or a latched error. */
 int32_t ad9361_bbf_calibration_poll(struct ad9361_rf_phy *phy,
 		struct ad9361_bbf_calibration_job *job);
+int32_t ad9361_bbdc_calibration_start(struct ad9361_rf_phy *phy,
+		struct ad9361_bbdc_calibration_job *job);
+/* Returns 1 while pending, 0 on completion, or a latched negative error. */
+int32_t ad9361_bbdc_calibration_poll(struct ad9361_rf_phy *phy,
+		struct ad9361_bbdc_calibration_job *job);
 int32_t ad9361_tx_quad_calibration_attempt_start(
 		struct ad9361_rf_phy *phy, uint32_t phase, uint32_t rxnco_word,
 		uint32_t decim, bool capture_convergence,
