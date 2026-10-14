@@ -499,6 +499,9 @@ int32_t ad9361_set_rx_lo_freq(struct ad9361_rf_phy *phy, uint64_t lo_freq_hz);
 int32_t ad9361_get_rx_lo_freq(struct ad9361_rf_phy *phy, uint64_t *lo_freq_hz);
 /* Switch between internal and external LO. */
 int32_t ad9361_set_rx_lo_int_ext(struct ad9361_rf_phy *phy, uint8_t int_ext);
+int32_t ad9361_set_rx_lo_int_ext_with_cleanup(
+	struct ad9361_rf_phy *phy, uint8_t int_ext,
+	int32_t *cleanup_status);
 /* Get the RSSI for the selected channel. */
 int32_t ad9361_get_rx_rssi(struct ad9361_rf_phy *phy, uint8_t ch,
 			   struct rf_rssi *rssi);
@@ -595,6 +598,9 @@ void ad9361_invalidate_tx_quad_calib(struct ad9361_rf_phy *phy);
 int32_t ad9361_get_tx_lo_freq(struct ad9361_rf_phy *phy, uint64_t *lo_freq_hz);
 /* Switch between internal and external LO. */
 int32_t ad9361_set_tx_lo_int_ext(struct ad9361_rf_phy *phy, uint8_t int_ext);
+int32_t ad9361_set_tx_lo_int_ext_with_cleanup(
+	struct ad9361_rf_phy *phy, uint8_t int_ext,
+	int32_t *cleanup_status);
 /* Set the TX FIR filter configuration. */
 int32_t ad9361_set_tx_fir_config(struct ad9361_rf_phy *phy,
 				 AD9361_TXFIRConfig fir_cfg);

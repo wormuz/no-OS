@@ -1467,6 +1467,7 @@ static int set_external(void *device, char *buf, uint32_t len,
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
 	int32_t value;
+	int32_t cleanup_status = 0;
 	bool select;
 	int ret = 0;
 	ret = parse_i32_attr(buf, &value);
@@ -1475,9 +1476,15 @@ static int set_external(void *device, char *buf, uint32_t len,
 	select = value != 0;
 
 	if (channel->ch_num == 0)
-		ret = ad9361_set_rx_lo_int_ext(ad9361_phy, select);
+		ret = ad9361_set_rx_lo_int_ext_with_cleanup(
+			ad9361_phy, select, &cleanup_status);
 	else
-		ret = ad9361_set_tx_lo_int_ext(ad9361_phy, select);
+		ret = ad9361_set_tx_lo_int_ext_with_cleanup(
+			ad9361_phy, select, &cleanup_status);
+	if (cleanup_status < 0 && ad9361_phy && ad9361_phy->spi)
+		dev_err(&ad9361_phy->spi->dev,
+			"External LO switch primary=%d cleanup=%"PRId32,
+			ret, cleanup_status);
 	if (ret < 0)
 		return ret;
 

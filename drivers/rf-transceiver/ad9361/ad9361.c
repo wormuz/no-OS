@@ -14882,13 +14882,17 @@ int32_t ad9361_rfpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate)
  * @param index Index - Enable (1) external LO, disable (0) = use internal PLL.
  * @return 0 in case of success, negative error code otherwise.
  */
-int32_t ad9361_clk_mux_set_parent(struct refclk_scale *clk_priv, uint8_t index)
+int32_t ad9361_clk_mux_set_parent_with_cleanup(
+		struct refclk_scale *clk_priv, uint8_t index,
+		int32_t *cleanup_status_out)
 {
 	struct ad9361_rf_phy *phy;
 	int32_t ret, restore_ret;
 	bool tx;
 	bool source_switched = false;
 	uint64_t restore_hz;
+	if (cleanup_status_out)
+		*cleanup_status_out = 0;
 
 	if (!clk_priv || !clk_priv->phy || !clk_priv->phy->pdata ||
 	    !clk_priv->spi || index > 1 ||
@@ -14962,9 +14966,17 @@ int32_t ad9361_clk_mux_set_parent(struct refclk_scale *clk_priv, uint8_t index)
 		return ret < 0 ? ret : -EIO;
 
 	restore_ret = ad9361_ensm_restore_prev_state_checked(phy);
-	if (restore_ret < 0)
+	if (restore_ret < 0) {
+		ad9361_record_first_cleanup_status(cleanup_status_out,
+						   restore_ret);
 		ad9361_mark_calibration_state_unknown(phy);
+	}
 	return ret < 0 ? ret : restore_ret;
+}
+
+int32_t ad9361_clk_mux_set_parent(struct refclk_scale *clk_priv, uint8_t index)
+{
+	return ad9361_clk_mux_set_parent_with_cleanup(clk_priv, index, NULL);
 }
 
 /**

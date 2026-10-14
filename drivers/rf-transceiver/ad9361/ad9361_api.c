@@ -1877,10 +1877,14 @@ int32_t ad9361_get_rx_lo_freq(struct ad9361_rf_phy *phy,
  * 			   EXT_LO
  * @return 0 in case of success, negative error code otherwise.
  */
-int32_t ad9361_set_rx_lo_int_ext(struct ad9361_rf_phy *phy, uint8_t int_ext)
+int32_t ad9361_set_rx_lo_int_ext_with_cleanup(
+		struct ad9361_rf_phy *phy, uint8_t int_ext,
+		int32_t *cleanup_status)
 {
 	uint8_t old_use_ext;
 	int32_t ret;
+	if (cleanup_status)
+		*cleanup_status = 0;
 
 	if (!phy || !phy->spi || !phy->pdata || !phy->ref_clk_scale[RX_RFPLL] ||
 	    (int_ext != INT_LO && int_ext != EXT_LO))
@@ -1896,13 +1900,19 @@ int32_t ad9361_set_rx_lo_int_ext(struct ad9361_rf_phy *phy, uint8_t int_ext)
 	}
 
 	phy->pdata->use_ext_rx_lo = int_ext;
-	ret = ad9361_clk_mux_set_parent(phy->ref_clk_scale[RX_RFPLL], int_ext);
+	ret = ad9361_clk_mux_set_parent_with_cleanup(
+		phy->ref_clk_scale[RX_RFPLL], int_ext, cleanup_status);
 	/* clk_mux_set_parent commits mult as soon as the source switch succeeds;
 	 * it can still report an ENSM-restore or internal-PLL relock error after
 	 * that point. Keep pdata aligned with the committed mux source. */
 	if (ret < 0 && phy->ref_clk_scale[RX_RFPLL]->mult != int_ext)
 		phy->pdata->use_ext_rx_lo = old_use_ext;
 	return ret;
+}
+
+int32_t ad9361_set_rx_lo_int_ext(struct ad9361_rf_phy *phy, uint8_t int_ext)
+{
+	return ad9361_set_rx_lo_int_ext_with_cleanup(phy, int_ext, NULL);
 }
 
 /**
@@ -2821,10 +2831,14 @@ int32_t ad9361_get_tx_lo_freq(struct ad9361_rf_phy *phy,
  * 			   EXT_LO
  * @return 0 in case of success, negative error code otherwise.
  */
-int32_t ad9361_set_tx_lo_int_ext(struct ad9361_rf_phy *phy, uint8_t int_ext)
+int32_t ad9361_set_tx_lo_int_ext_with_cleanup(
+		struct ad9361_rf_phy *phy, uint8_t int_ext,
+		int32_t *cleanup_status)
 {
 	uint8_t old_use_ext;
 	int32_t ret;
+	if (cleanup_status)
+		*cleanup_status = 0;
 
 	if (!phy || !phy->spi || !phy->pdata || !phy->ref_clk_scale[TX_RFPLL] ||
 	    (int_ext != INT_LO && int_ext != EXT_LO))
@@ -2840,11 +2854,17 @@ int32_t ad9361_set_tx_lo_int_ext(struct ad9361_rf_phy *phy, uint8_t int_ext)
 	}
 
 	phy->pdata->use_ext_tx_lo = int_ext;
-	ret = ad9361_clk_mux_set_parent(phy->ref_clk_scale[TX_RFPLL], int_ext);
+	ret = ad9361_clk_mux_set_parent_with_cleanup(
+		phy->ref_clk_scale[TX_RFPLL], int_ext, cleanup_status);
 	/* See RX: a later cleanup error does not undo an already switched mux. */
 	if (ret < 0 && phy->ref_clk_scale[TX_RFPLL]->mult != int_ext)
 		phy->pdata->use_ext_tx_lo = old_use_ext;
 	return ret;
+}
+
+int32_t ad9361_set_tx_lo_int_ext(struct ad9361_rf_phy *phy, uint8_t int_ext)
+{
+	return ad9361_set_tx_lo_int_ext_with_cleanup(phy, int_ext, NULL);
 }
 
 /**
