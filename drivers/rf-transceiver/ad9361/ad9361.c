@@ -4311,7 +4311,7 @@ int32_t ad9361_calibration_wait_start(struct ad9361_rf_phy *phy,
 		uint32_t mask, uint32_t timeout_us,
 		struct ad9361_calibration_wait *wait)
 {
-	int32_t ret, status_ret;
+	int32_t ret;
 	struct no_os_time started;
 	bool done_before = true;
 
@@ -4349,12 +4349,10 @@ int32_t ad9361_calibration_wait_start(struct ad9361_rf_phy *phy,
 
 	ret = ad9361_spi_write(phy->spi, REG_CALIBRATION_CTRL, mask);
 	if (ret < 0) {
-		/* A failed SPI completion does not prove that the start write was
-		 * rejected. Read back the busy bit; if it cannot be proven clear,
-		 * callers must not perform calibration cleanup writes. */
-		status_ret = ad9361_spi_readf(phy->spi, REG_CALIBRATION_CTRL, mask);
-		if (status_ret != 0)
-			ad9361_mark_calibration_state_unknown(phy);
+		/* A failed SPI completion leaves acceptance ambiguous. A clear busy
+		 * bit cannot distinguish a rejected start from a short calibration
+		 * that already completed, so its result cannot be trusted. */
+		ad9361_mark_calibration_state_unknown(phy);
 		return ret;
 	}
 
