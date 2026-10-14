@@ -963,7 +963,8 @@ int32_t ad9361_dig_tune_with_cleanup(
 		if (cleanup_ret < 0) {
 			if (ret >= 0)
 				ret = cleanup_ret;
-			cleanup_status = cleanup_ret;
+			if (cleanup_status == 0)
+				cleanup_status = cleanup_ret;
 			ad9361_mark_calibration_state_unknown(phy);
 		} else {
 			tuned_rx_delay = (uint32_t)cleanup_ret;
@@ -972,7 +973,8 @@ int32_t ad9361_dig_tune_with_cleanup(
 			if (cleanup_ret < 0) {
 				if (ret >= 0)
 					ret = cleanup_ret;
-				cleanup_status = cleanup_ret;
+				if (cleanup_status == 0)
+					cleanup_status = cleanup_ret;
 				ad9361_mark_calibration_state_unknown(phy);
 			} else {
 				tuned_tx_delay = (uint32_t)cleanup_ret;
