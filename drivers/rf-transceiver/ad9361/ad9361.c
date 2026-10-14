@@ -9725,6 +9725,15 @@ static int32_t ad9361_setup_transaction_finish(
 		struct ad9361_setup_transaction *transaction, int32_t status)
 {
 	struct ad9361_rf_phy *phy = transaction->phy;
+	if (phy && (transaction->post_calibration_wait.active ||
+		    phy->status_wait == &transaction->post_calibration_wait)) {
+		/* A terminal setup result may not strand the child wait owner. */
+		ad9361_status_wait_finish(phy,
+				  &transaction->post_calibration_wait, -EIO);
+		ad9361_mark_calibration_state_unknown(phy);
+		if (status >= 0)
+			status = -EIO;
+	}
 
 	if (transaction->cleanup_status >= 0 &&
 	    transaction->clock_chain_job.cleanup_status < 0)
@@ -10104,12 +10113,21 @@ int32_t ad9361_setup_transaction_poll(
 
 	if (!phy || !transaction)
 		return -EINVAL;
-	if (transaction->terminal)
-		return transaction->phy == phy ? transaction->terminal_status :
-		       -EINVAL;
+	if (transaction->terminal) {
+		if (transaction->phy != phy)
+			return -EINVAL;
+		if (transaction->active || phy->setup_transaction == transaction ||
+		    transaction->post_calibration_wait.active ||
+		    phy->status_wait == &transaction->post_calibration_wait) {
+			ad9361_mark_calibration_state_unknown(phy);
+			return ad9361_setup_transaction_finish(transaction, -EIO);
+		}
+		return transaction->terminal_status;
+	}
 	if (!transaction->active || transaction->phy != phy ||
 	    phy->setup_transaction != transaction ||
-	    transaction->stage > AD9361_SETUP_TRANSACTION_GM_ABORT_STOP) {
+	    transaction->stage >
+		AD9361_SETUP_TRANSACTION_POST_CALIBRATION_WAIT) {
 		if (transaction->phy)
 			ad9361_mark_calibration_state_unknown(transaction->phy);
 		ad9361_mark_calibration_state_unknown(phy);
@@ -10905,6 +10923,27 @@ int32_t ad9361_setup_transaction_poll(
 		phy->setup_transaction = transaction;
 		if (ret < 0)
 			return ad9361_setup_transaction_finish(transaction, ret);
+		/* The setup tail's ENSM write only updates the driver's cached state.
+		 * Keep the INIT owner until hardware reports the requested stable
+		 * state; this readback is the completion event, not a guessed delay. */
+		ret = ad9361_status_wait_start(
+			phy, REG_STATE, ENSM_STATE(~0),
+			phy->pdata->fdd ? ENSM_STATE_FDD : ENSM_STATE_RX,
+			10000U, 120U, &transaction->post_calibration_wait);
+		if (ret < 0) {
+			ad9361_mark_calibration_state_unknown(phy);
+			return ad9361_setup_transaction_finish(transaction, ret);
+		}
+		transaction->stage =
+			AD9361_SETUP_TRANSACTION_POST_CALIBRATION_WAIT;
+		return 1;
+	case AD9361_SETUP_TRANSACTION_POST_CALIBRATION_WAIT:
+		ret = ad9361_status_wait_poll(
+			phy, &transaction->post_calibration_wait);
+		if (ret == 1)
+			return 1;
+		if (ret < 0)
+			return ad9361_setup_transaction_finish(transaction, ret);
 		return ad9361_setup_transaction_finish(transaction, 0);
 	case AD9361_SETUP_TRANSACTION_GM_ABORT_STOP:
 		/* handled before the switch */
@@ -10983,6 +11022,10 @@ uint32_t ad9361_setup_transaction_poll_delay_us(
 	    AD9361_SETUP_TRANSACTION_POST_CP_TX_BAND_WAIT)
 		return ad9361_ext_band_transaction_poll_delay_us(
 			&transaction->post_cp_tx_band_job);
+	if (transaction->stage ==
+	    AD9361_SETUP_TRANSACTION_POST_CALIBRATION_WAIT &&
+	    transaction->post_calibration_wait.active)
+		return transaction->post_calibration_wait.poll_delay_us;
 	if (transaction->stage == AD9361_SETUP_TRANSACTION_GM_ROW_WAIT ||
 	    transaction->stage == AD9361_SETUP_TRANSACTION_GM_CLEAR_WAIT) {
 		uint64_t now_us = ad9361_setup_time_us();

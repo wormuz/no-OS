@@ -4123,15 +4123,18 @@ enum ad9361_setup_transaction_stage {
 	AD9361_SETUP_TRANSACTION_CALIBRATION_START,
 	AD9361_SETUP_TRANSACTION_CALIBRATION,
 	AD9361_SETUP_TRANSACTION_GM_ABORT_STOP,
+	AD9361_SETUP_TRANSACTION_POST_CALIBRATION_WAIT,
 };
 
 /* Retained cold-setup owner. Pre-clock, post-clock, post-CP RFPLL, and gain
- * table and LO-mux phases advance here in ADI order. External-band callbacks
- * still contain synchronous configured sequences and are not yet suitable as
- * bounded NIOS poll steps. Keep this at a stable address through terminal
+ * table and LO-mux phases advance here in ADI order. Final setup success also
+ * waits for a hardware ENSM target-state readback. External-band callbacks
+ * still contain synchronous configured sequences and are not yet suitable
+ * as bounded NIOS poll steps. Keep this at a stable address through terminal
  * poll; no cancellation. */
 struct ad9361_setup_transaction {
 	struct ad9361_setup_calibration_transaction calibration_job;
+	struct ad9361_status_wait post_calibration_wait;
 	struct ad9361_clock_chain_transaction clock_chain_job;
 	struct ad9361_synth_cp_calibration_job synth_cp_job;
 	struct ad9361_rfpll_rate_transaction post_cp_rfpll_job;
