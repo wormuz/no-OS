@@ -126,9 +126,10 @@ struct ad9361_ext_band_transaction_frame {
 
 /* Retained depth-first band switch. Zero-initialize the context before its
  * first start. The setting tree, controller, GPIO descriptors, and any data
- * they reference must remain alive and immutable until terminal poll. Each
- * poll performs at most one GPIO operation or one RF-port operation; delays
- * use a monotonic deadline. */
+ * they reference must remain alive and immutable until terminal poll. Graph
+ * validation and execution each advance by one bounded state step per poll;
+ * a poll performs at most one GPIO/RF-port operation. Delays use a monotonic
+ * deadline. */
 struct ad9361_ext_band_transaction {
 	struct ad9361_rf_phy *phy;
 	struct ad9361_ext_band_ctl *ctl;
@@ -141,6 +142,7 @@ struct ad9361_ext_band_transaction {
 	uint8_t tx;
 	bool active;
 	bool terminal;
+	bool validation_pending;
 	bool mutation_started;
 	int32_t terminal_status;
 };

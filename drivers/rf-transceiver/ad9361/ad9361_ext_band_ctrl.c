@@ -436,63 +436,69 @@ static int32_t band_validate_action(const struct ad9361_ext_band_ctl *ctl,
 	return 0;
 }
 
-/* Iterative preflight bounds both recursion depth and total work, and rejects
- * cycles before the first external GPIO or RF-port mutation. */
-static int32_t band_validate_graph(const struct ad9361_ext_band_ctl *ctl,
-		const struct ad9361_band_setting *root)
+/* Advance graph preflight by one bounded state transition. Keep the depth-first
+ * cursor in the retained transaction so start() and each poll return control
+ * to NIOS without traversing a caller-sized sequence graph. No GPIO or RF-port
+ * mutation occurs until the graph has passed preflight. */
+static int32_t band_validate_graph_step(
+		const struct ad9361_ext_band_ctl *ctl,
+		struct ad9361_ext_band_transaction *transaction)
 {
-	struct ad9361_ext_band_transaction_frame stack[
-		AD9361_EXT_BAND_MAX_SEQ_DEPTH];
-	uint16_t depth = 1, nodes = 0, i;
+	struct ad9361_ext_band_transaction_frame *frame;
+	const struct ad9361_band_setting *child = NULL;
+	uint16_t i;
+	int32_t ret;
 
-	memset(stack, 0, sizeof(stack));
-	stack[0].setting = root;
-	while (depth) {
-		struct ad9361_ext_band_transaction_frame *frame = &stack[depth - 1U];
-		const struct ad9361_band_setting *child = NULL;
-
-		if (frame->phase == 0) {
-			int32_t ret;
-
-			if (++nodes > AD9361_EXT_BAND_MAX_SEQ_NODES)
-				return -E2BIG;
-			ret = band_validate_action(ctl, frame->setting);
-			if (ret < 0)
-				return ret;
-			frame->phase = 1;
+	if (!transaction->depth)
+		return 0;
+	frame = &transaction->stack[transaction->depth - 1U];
+	switch (frame->phase) {
+	case 0:
+		if (++transaction->expanded_nodes > AD9361_EXT_BAND_MAX_SEQ_NODES)
+			return -E2BIG;
+		ret = band_validate_action(ctl, frame->setting);
+		if (ret < 0)
+			return ret;
+		frame->phase = 1;
+		frame->index = 0;
+		return 1;
+	case 1:
+		if (frame->index < frame->setting->pre_seq_len)
+			child = &frame->setting->pre_seq[frame->index++];
+		else {
+			frame->phase = 2;
 			frame->index = 0;
+			return 1;
 		}
-		if (frame->phase == 1) {
-			if (frame->index < frame->setting->pre_seq_len)
-				child = &frame->setting->pre_seq[frame->index++];
-			else {
-				frame->phase = 2;
-				frame->index = 0;
-			}
-		} else if (frame->phase == 2) {
-			frame->phase = 3;
-			frame->index = 0;
-		} else if (frame->phase == 3) {
-			if (frame->index < frame->setting->post_seq_len)
-				child = &frame->setting->post_seq[frame->index++];
-			else
-				frame->phase = 4;
-		} else {
-			depth--;
-			continue;
+		break;
+	case 2:
+		frame->phase = 3;
+		frame->index = 0;
+		return 1;
+	case 3:
+		if (frame->index < frame->setting->post_seq_len)
+			child = &frame->setting->post_seq[frame->index++];
+		else {
+			frame->phase = 4;
+			return 1;
 		}
-
-		if (child) {
-			if (depth >= AD9361_EXT_BAND_MAX_SEQ_DEPTH)
-				return -E2BIG;
-			for (i = 0; i < depth; i++)
-				if (stack[i].setting == child)
-					return -ELOOP;
-			memset(&stack[depth], 0, sizeof(stack[depth]));
-			stack[depth++].setting = child;
-		}
+		break;
+	case 4:
+		transaction->depth--;
+		return 1;
+	default:
+		return -EIO;
 	}
-	return 0;
+
+	if (transaction->depth >= AD9361_EXT_BAND_MAX_SEQ_DEPTH)
+		return -E2BIG;
+	for (i = 0; i < transaction->depth; i++)
+		if (transaction->stack[i].setting == child)
+			return -ELOOP;
+	memset(&transaction->stack[transaction->depth], 0,
+	       sizeof(transaction->stack[transaction->depth]));
+	transaction->stack[transaction->depth++].setting = child;
+	return 1;
 }
 
 static int32_t band_find_target(struct ad9361_ext_band_ctl *ctl, bool tx,
@@ -597,16 +603,9 @@ int32_t ad9361_ext_band_transaction_start(struct ad9361_rf_phy *phy,
 			return ret;
 		}
 	}
-	ret = band_validate_graph(ctl, target);
-	if (ret < 0) {
-		transaction->terminal = true;
-		transaction->terminal_status = ret;
-		return ret;
-	}
 	transaction->stack[0].setting = target;
-	transaction->stack[0].current_setting = current;
-	transaction->stack[0].phase = AD9361_BAND_PHASE_PRE;
 	transaction->depth = 1;
+	transaction->validation_pending = true;
 	transaction->active = true;
 	ctl->active_transaction = transaction;
 	phy->ext_band_transaction = transaction;
@@ -631,6 +630,22 @@ int32_t ad9361_ext_band_transaction_poll(struct ad9361_rf_phy *phy,
 	}
 	if (ad9361_calibration_state_unknown(phy))
 		return band_finish(transaction, -EIO);
+	if (transaction->validation_pending) {
+		ret = band_validate_graph_step(transaction->ctl, transaction);
+		if (ret < 0)
+			return band_finish(transaction, ret);
+		if (ret > 0)
+			return 1;
+		memset(transaction->stack, 0, sizeof(transaction->stack));
+		transaction->depth = 1;
+		transaction->stack[0].setting = transaction->target_setting;
+		transaction->stack[0].current_setting = transaction->tx ?
+			transaction->ctl->current_tx_setting :
+			transaction->ctl->current_rx_setting;
+		transaction->stack[0].phase = AD9361_BAND_PHASE_PRE;
+		transaction->validation_pending = false;
+		return 1;
+	}
 
 	for (;;) {
 		if (!transaction->depth)
@@ -653,11 +668,11 @@ int32_t ad9361_ext_band_transaction_poll(struct ad9361_rf_phy *phy,
 				memset(frame, 0, sizeof(*frame));
 				frame->setting = child;
 				frame->phase = AD9361_BAND_PHASE_PRE;
-				continue;
+				return 1;
 			}
 			frame->phase = AD9361_BAND_PHASE_GPIO;
 			frame->gpio_index = 0;
-			continue;
+			return 1;
 		case AD9361_BAND_PHASE_GPIO:
 			if (setting->gpio_values &&
 			    frame->gpio_index < (uint32_t)transaction->ctl->ngpios) {
@@ -670,7 +685,7 @@ int32_t ad9361_ext_band_transaction_poll(struct ad9361_rf_phy *phy,
 
 				if (new_op == AD9361_EXT_BAND_CTL_OP_NOP ||
 				    (frame->current_setting && new_op == old_op))
-					continue;
+					return 1;
 				transaction->mutation_started = true;
 				switch (new_op) {
 				case AD9361_EXT_BAND_CTL_OP_LOW:
@@ -691,7 +706,7 @@ int32_t ad9361_ext_band_transaction_poll(struct ad9361_rf_phy *phy,
 				return ret < 0 ? band_finish(transaction, ret) : 1;
 			}
 			frame->phase = AD9361_BAND_PHASE_RX_PORT;
-			continue;
+			return 1;
 		case AD9361_BAND_PHASE_RX_PORT:
 			if (setting->rf_rx_input_sel != AD9361_EXT_BAND_NO_PORT_SEL &&
 			    (!frame->current_setting ||
@@ -707,7 +722,7 @@ int32_t ad9361_ext_band_transaction_poll(struct ad9361_rf_phy *phy,
 				return 1;
 			}
 			frame->phase = AD9361_BAND_PHASE_TX_PORT;
-			continue;
+			return 1;
 		case AD9361_BAND_PHASE_TX_PORT:
 			if (setting->rf_tx_output_sel != AD9361_EXT_BAND_NO_PORT_SEL &&
 			    (!frame->current_setting ||
@@ -724,7 +739,7 @@ int32_t ad9361_ext_band_transaction_poll(struct ad9361_rf_phy *phy,
 			}
 			frame->phase = AD9361_BAND_PHASE_POST;
 			frame->index = 0;
-			continue;
+			return 1;
 		case AD9361_BAND_PHASE_POST:
 			if (frame->index < setting->post_seq_len) {
 				const struct ad9361_band_setting *child =
@@ -739,7 +754,7 @@ int32_t ad9361_ext_band_transaction_poll(struct ad9361_rf_phy *phy,
 				memset(frame, 0, sizeof(*frame));
 				frame->setting = child;
 				frame->phase = AD9361_BAND_PHASE_PRE;
-				continue;
+				return 1;
 			}
 			transaction->depth--;
 			if (!transaction->depth) {
@@ -760,7 +775,7 @@ int32_t ad9361_ext_band_transaction_poll(struct ad9361_rf_phy *phy,
 				return 1;
 			}
 			frame->phase = frame->resume_phase;
-			continue;
+			return 1;
 		case AD9361_BAND_PHASE_WAIT:
 			if (band_time_us() < frame->delay_deadline_us)
 				return 1;
