@@ -10975,24 +10975,38 @@ uint32_t ad9361_setup_transaction_poll_delay_us(
 }
 
 /** Synchronous compatibility entry point over the retained setup cursor. */
-int32_t ad9361_setup(struct ad9361_rf_phy *phy)
+int32_t ad9361_setup_with_cleanup(struct ad9361_rf_phy *phy,
+				  int32_t *cleanup_status)
 {
 	struct ad9361_setup_transaction transaction = {0};
 	int32_t ret;
 
+	if (cleanup_status)
+		*cleanup_status = 0;
 	ret = ad9361_setup_transaction_start(phy, &transaction);
-	if (ret < 0)
+	if (ret < 0) {
+		if (cleanup_status)
+			*cleanup_status = transaction.cleanup_status;
 		return ret;
+	}
 	for (;;) {
 		uint32_t delay_us;
 
 		ret = ad9361_setup_transaction_poll(phy, &transaction);
-		if (ret != 1)
+		if (ret != 1) {
+			if (cleanup_status)
+				*cleanup_status = transaction.cleanup_status;
 			return ret;
+		}
 		delay_us = ad9361_setup_transaction_poll_delay_us(&transaction);
 		if (delay_us)
 			no_os_udelay(delay_us);
 	}
+}
+
+int32_t ad9361_setup(struct ad9361_rf_phy *phy)
+{
+	return ad9361_setup_with_cleanup(phy, NULL);
 }
 
 /**
@@ -12310,20 +12324,29 @@ int32_t ad9361_rf_bandwidth_transaction_poll(
 	return ad9361_rf_bandwidth_transaction_finish(transaction, -EIO);
 }
 
-int32_t ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
-				   uint32_t rf_rx_bw, uint32_t rf_tx_bw)
+int32_t ad9361_update_rf_bandwidth_with_cleanup(
+	struct ad9361_rf_phy *phy, uint32_t rf_rx_bw, uint32_t rf_tx_bw,
+	int32_t *cleanup_status)
 {
 	struct ad9361_rf_bandwidth_transaction transaction = {0};
 	int32_t ret;
 
+	if (cleanup_status)
+		*cleanup_status = 0;
 	ret = ad9361_rf_bandwidth_transaction_start(
 		phy, rf_rx_bw, rf_tx_bw, &transaction);
-	if (ret < 0)
+	if (ret < 0) {
+		if (cleanup_status)
+			*cleanup_status = transaction.cleanup_status;
 		return ret;
+	}
 	for (;;) {
 		ret = ad9361_rf_bandwidth_transaction_poll(phy, &transaction);
-		if (ret != 1)
+		if (ret != 1) {
+			if (cleanup_status)
+				*cleanup_status = transaction.cleanup_status;
 			return ret;
+		}
 		if (transaction.stage == AD9361_RF_BANDWIDTH_TRANSACTION_FILTER) {
 			if (transaction.filter_job.stage ==
 			    AD9361_RF_BANDWIDTH_FILTER_RX_BBF_WAIT)
@@ -12344,6 +12367,13 @@ int32_t ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
 			no_os_udelay(transaction.ensm_job.wait.poll_delay_us);
 		}
 	}
+}
+
+int32_t ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
+				   uint32_t rf_rx_bw, uint32_t rf_tx_bw)
+{
+	return ad9361_update_rf_bandwidth_with_cleanup(
+		phy, rf_rx_bw, rf_tx_bw, NULL);
 }
 
 /**

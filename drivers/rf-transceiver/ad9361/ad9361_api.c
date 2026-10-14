@@ -1260,22 +1260,31 @@ int32_t ad9361_get_rx_rf_gain(struct ad9361_rf_phy *phy,
  *
  * Note: This function will/may affect the data path.
  */
-int32_t ad9361_set_rx_rf_bandwidth(struct ad9361_rf_phy *phy,
-				   uint32_t bandwidth_hz)
+int32_t ad9361_set_rx_rf_bandwidth_with_cleanup(
+	struct ad9361_rf_phy *phy, uint32_t bandwidth_hz,
+	int32_t *cleanup_status)
 {
 	int32_t ret = 0;
+	if (cleanup_status)
+		*cleanup_status = 0;
 	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 
 	bandwidth_hz = ad9361_validate_rf_bw(phy, bandwidth_hz);
 
 	if (!phy->current_bw_valid || phy->current_rx_bw_Hz != bandwidth_hz)
-		ret = ad9361_update_rf_bandwidth(phy, bandwidth_hz,
-						 phy->current_tx_bw_Hz);
+		ret = ad9361_update_rf_bandwidth_with_cleanup(
+			phy, bandwidth_hz, phy->current_tx_bw_Hz, cleanup_status);
 	else
 		ret = 0;
 
 	return ret;
+}
+
+int32_t ad9361_set_rx_rf_bandwidth(struct ad9361_rf_phy *phy,
+				   uint32_t bandwidth_hz)
+{
+	return ad9361_set_rx_rf_bandwidth_with_cleanup(phy, bandwidth_hz, NULL);
 }
 
 /**
@@ -2576,22 +2585,31 @@ int32_t ad9361_get_tx_attenuation(struct ad9361_rf_phy *phy,
  *
  * Note: This function will/may affect the data path.
  */
-int32_t ad9361_set_tx_rf_bandwidth(struct ad9361_rf_phy *phy,
-				   uint32_t  bandwidth_hz)
+int32_t ad9361_set_tx_rf_bandwidth_with_cleanup(
+	struct ad9361_rf_phy *phy, uint32_t bandwidth_hz,
+	int32_t *cleanup_status)
 {
 	int32_t ret = 0;
+	if (cleanup_status)
+		*cleanup_status = 0;
 	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 
 	bandwidth_hz = ad9361_validate_rf_bw(phy, bandwidth_hz);
 
 	if (!phy->current_bw_valid || phy->current_tx_bw_Hz != bandwidth_hz)
-		ret = ad9361_update_rf_bandwidth(phy,
-						 phy->current_rx_bw_Hz, bandwidth_hz);
+		ret = ad9361_update_rf_bandwidth_with_cleanup(
+			phy, phy->current_rx_bw_Hz, bandwidth_hz, cleanup_status);
 	else
 		ret = 0;
 
 	return ret;
+}
+
+int32_t ad9361_set_tx_rf_bandwidth(struct ad9361_rf_phy *phy,
+				   uint32_t bandwidth_hz)
+{
+	return ad9361_set_tx_rf_bandwidth_with_cleanup(phy, bandwidth_hz, NULL);
 }
 
 /**
@@ -3297,12 +3315,17 @@ int32_t ad9361_get_trx_path_clks(struct ad9361_rf_phy *phy,
  * 				   MODE_2x2 (2)
  * @return 0 in case of success, negative error code otherwise.
  */
-int32_t ad9361_set_no_ch_mode(struct ad9361_rf_phy *phy, uint8_t no_ch_mode)
+int32_t ad9361_set_no_ch_mode_with_cleanup(
+	struct ad9361_rf_phy *phy, uint8_t no_ch_mode,
+	int32_t *cleanup_status_out)
 {
-	int32_t ret;
+	int32_t ret, cleanup_status = 0, child_cleanup_status;
 	uint32_t rates[NUM_AD9361_CLKS];
 	size_t i;
 	bool new_rx2tx2, old_rx2tx2;
+
+	if (cleanup_status_out)
+		*cleanup_status_out = 0;
 
 	if (!phy || !phy->pdata || !phy->spi || !phy->clk_refin ||
 	    !phy->clk_refin->rate)
@@ -3418,16 +3441,28 @@ int32_t ad9361_set_no_ch_mode(struct ad9361_rf_phy *phy, uint8_t no_ch_mode)
 			phy->clks[i]->rate = rates[i];
 	}
 
-	ret = ad9361_setup(phy);
+	child_cleanup_status = 0;
+	ret = ad9361_setup_with_cleanup(phy, &child_cleanup_status);
+	if (cleanup_status == 0 && child_cleanup_status < 0)
+		cleanup_status = child_cleanup_status;
 	if (ret < 0)
 		goto fail_closed;
 #if !defined(AXI_ADC_NOT_PRESENT) && !defined(BLADERF_NIOS_BUILD)
 	/* platform specific wrapper to call ad9361_post_setup() */
-	ret = ad9361_post_setup(phy);
+	child_cleanup_status = 0;
+	ret = ad9361_post_setup_with_cleanup(phy, &child_cleanup_status);
+	if (cleanup_status == 0 && child_cleanup_status < 0)
+		cleanup_status = child_cleanup_status;
 	if (ret < 0)
 		goto fail_closed;
 #endif
 
+	if (cleanup_status < 0) {
+		ret = cleanup_status;
+		goto fail_closed;
+	}
+	if (cleanup_status_out)
+		*cleanup_status_out = cleanup_status;
 	return 0;
 
 fail_closed:
@@ -3439,7 +3474,14 @@ fail_closed:
 						      ID_AD9361 : ID_AD9364];
 #endif
 	ad9361_mark_calibration_state_unknown(phy);
+	if (cleanup_status_out)
+		*cleanup_status_out = cleanup_status;
 	return ret;
+}
+
+int32_t ad9361_set_no_ch_mode(struct ad9361_rf_phy *phy, uint8_t no_ch_mode)
+{
+	return ad9361_set_no_ch_mode_with_cleanup(phy, no_ch_mode, NULL);
 }
 
 /**

@@ -4219,6 +4219,8 @@ int32_t ad9361_unregister_clocks(struct ad9361_rf_phy *phy);
 uint32_t ad9361_gt(struct ad9361_rf_phy *phy);
 int32_t ad9361_init_gain_tables(struct ad9361_rf_phy *phy);
 int32_t ad9361_setup(struct ad9361_rf_phy *phy);
+int32_t ad9361_setup_with_cleanup(
+		struct ad9361_rf_phy *phy, int32_t *cleanup_status);
 /* Start performs the current ordered setup prefix synchronously, then returns
  * with the retained calibration chain active. Poll returns 1 while pending,
  * 0 on success, or a negative terminal error. The prefix is still a known
@@ -4250,6 +4252,9 @@ int32_t ad9361_get_rx_gain(struct ad9361_rf_phy *phy,
 			   uint32_t rx_id, struct rf_rx_gain *rx_gain);
 int32_t ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
 				   uint32_t rf_rx_bw, uint32_t rf_tx_bw);
+int32_t ad9361_update_rf_bandwidth_with_cleanup(
+		struct ad9361_rf_phy *phy, uint32_t rf_rx_bw, uint32_t rf_tx_bw,
+		int32_t *cleanup_status);
 int32_t ad9361_calculate_rf_clock_chain(struct ad9361_rf_phy *phy,
 					uint32_t tx_sample_rate,
 					uint32_t rate_gov,
