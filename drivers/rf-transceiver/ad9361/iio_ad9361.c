@@ -1483,7 +1483,7 @@ static int set_external(void *device, char *buf, uint32_t len,
 			ad9361_phy, select, &cleanup_status);
 	if (cleanup_status < 0 && ad9361_phy && ad9361_phy->spi)
 		dev_err(&ad9361_phy->spi->dev,
-			"External LO switch primary=%d cleanup=%"PRId32,
+			"External LO switch status=%d cleanup=%"PRId32,
 			ret, cleanup_status);
 	if (ret < 0)
 		return ret;

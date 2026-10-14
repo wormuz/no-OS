@@ -401,10 +401,11 @@ static void ad9361_dig_tune_verbose_print(struct ad9361_rf_phy *phy,
  */
 static int32_t ad9361_set_intf_delay(struct ad9361_rf_phy *phy, bool tx,
 				     unsigned int clock_delay,
-				     unsigned int data_delay, bool clock_changed)
+				     unsigned int data_delay, bool clock_changed,
+				     int32_t *cleanup_status_out)
 {
 	uint8_t old_state;
-	int32_t ret, restore_ret;
+	int32_t ret, restore_ret, cleanup_status = 0;
 
 	if (clock_changed) {
 		ret = ad9361_ensm_read_state_checked(phy, &old_state);
@@ -413,19 +414,21 @@ static int32_t ad9361_set_intf_delay(struct ad9361_rf_phy *phy, bool tx,
 		ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
 		if (ret < 0) {
 			/* A failed force operation may have changed ENSM before its
-			 * completion/readback failed. Attempt to restore the state that
-			 * was observed before the operation, while preserving its error. */
-			if (!ad9361_calibration_state_unknown(phy))
-				restore_ret = ad9361_ensm_restore_state_checked(
-					phy, old_state);
-			else
-				restore_ret = -EIO;
+			 * completion/readback failed. Restore only while the device state
+			 * remains known, and preserve both errors independently. */
+			if (ad9361_calibration_state_unknown(phy))
+				return ret;
+			restore_ret = ad9361_ensm_restore_state_checked(phy, old_state);
 			if (restore_ret < 0) {
+				cleanup_status = restore_ret;
 				dev_err(&phy->spi->dev,
 					"Failed to restore ENSM after ALERT transition error (%"PRId32")\n",
 					restore_ret);
 				ad9361_mark_calibration_state_unknown(phy);
 			}
+			if (cleanup_status_out && *cleanup_status_out >= 0 &&
+			    cleanup_status < 0)
+				*cleanup_status_out = cleanup_status;
 			return ret;
 		}
 	}
@@ -440,10 +443,14 @@ static int32_t ad9361_set_intf_delay(struct ad9361_rf_phy *phy, bool tx,
 	if (clock_changed) {
 		restore_ret = ad9361_ensm_restore_state_checked(phy, old_state);
 		if (restore_ret < 0) {
+			cleanup_status = restore_ret;
 			ad9361_mark_calibration_state_unknown(phy);
 			ret = restore_ret;
 		}
 	}
+	if (cleanup_status_out && *cleanup_status_out >= 0 &&
+	    cleanup_status < 0)
+		*cleanup_status_out = cleanup_status;
 	return ret;
 }
 
@@ -464,7 +471,7 @@ int32_t ad9361_dig_interface_timing_analysis_with_cleanup(
 	int32_t i, j;
 	uint8_t field[16][16];
 	uint8_t rx;
-	int32_t ret, cleanup_ret;
+	int32_t ret, cleanup_ret, child_cleanup_status;
 	int32_t cleanup_status = 0;
 	enum ad9361_bist_mode old_prbs_mode;
 
@@ -532,7 +539,11 @@ int32_t ad9361_dig_interface_timing_analysis_with_cleanup(
 
 	for (i = 0; i < 16; i++) {
 		for (j = 0; j < 16; j++) {
-			ret = ad9361_set_intf_delay(phy, false, i, j, j == 0);
+			child_cleanup_status = 0;
+			ret = ad9361_set_intf_delay(
+				phy, false, i, j, j == 0, &child_cleanup_status);
+			if (cleanup_status == 0 && child_cleanup_status < 0)
+				cleanup_status = child_cleanup_status;
 			if (ret < 0)
 				goto cleanup;
 			ret = ad9361_check_pn(phy, false, 1);
@@ -634,8 +645,13 @@ static int32_t ad9361_dig_tune_delay(struct ad9361_rf_phy *phy,
 				 * i == 0: clock delay = 0, data delay from 0 to 15
 				 * i == 1: clock delay = 15, data delay from 15 to 0
 				 */
-				ret = ad9361_set_intf_delay(phy, tx, i ? 15 : 0,
-						     i ? 15 - j : j, j == 0);
+				child_cleanup_status = 0;
+				ret = ad9361_set_intf_delay(
+					phy, tx, i ? 15 : 0, i ? 15 - j : j,
+					j == 0, &child_cleanup_status);
+				if (cleanup_status && *cleanup_status == 0 &&
+				    child_cleanup_status < 0)
+					*cleanup_status = child_cleanup_status;
 				if (ret < 0)
 					return ret;
 				ret = ad9361_check_pn(phy, tx, 4);
@@ -665,10 +681,16 @@ static int32_t ad9361_dig_tune_delay(struct ad9361_rf_phy *phy,
 			ad9361_dig_tune_verbose_print(phy, field, tx, -1, (s0 + c0 / 2));
 	}
 
+	child_cleanup_status = 0;
 	if (c1 > c0)
-		ret = ad9361_set_intf_delay(phy, tx, s1 + c1 / 2, 0, true);
+		ret = ad9361_set_intf_delay(
+			phy, tx, s1 + c1 / 2, 0, true, &child_cleanup_status);
 	else
-		ret = ad9361_set_intf_delay(phy, tx, 0, s0 + c0 / 2, true);
+		ret = ad9361_set_intf_delay(
+			phy, tx, 0, s0 + c0 / 2, true, &child_cleanup_status);
+	if (cleanup_status && *cleanup_status == 0 &&
+	    child_cleanup_status < 0)
+		*cleanup_status = child_cleanup_status;
 
 	return ret;
 }
