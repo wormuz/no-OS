@@ -13236,10 +13236,12 @@ static int32_t ad9361_fir_enable_finish(
 	}
 	if (status == 0)
 		phy->fir_config_valid = valid_coefficients;
-	else if (transaction->tx)
-		phy->bypass_tx_fir = transaction->old_bypass;
-	else
-		phy->bypass_rx_fir = transaction->old_bypass;
+	else {
+		if (transaction->update_rx)
+			phy->bypass_rx_fir = transaction->old_rx_bypass;
+		if (transaction->update_tx)
+			phy->bypass_tx_fir = transaction->old_tx_bypass;
+	}
 
 	transaction->status = status;
 	transaction->active = false;
@@ -13250,13 +13252,14 @@ static int32_t ad9361_fir_enable_finish(
 	return status;
 }
 
-int32_t ad9361_fir_enable_transaction_start(
-	struct ad9361_rf_phy *phy, bool tx, uint8_t enable,
+static int32_t ad9361_fir_enable_transaction_start_mask(
+	struct ad9361_rf_phy *phy, bool update_rx, uint8_t rx_enable,
+	bool update_tx, uint8_t tx_enable,
 	struct ad9361_fir_enable_transaction *transaction)
 {
 	uint32_t rx[NUM_RX_CLOCKS], tx_path[NUM_TX_CLOCKS];
 	uint32_t max, min, current_tx_sample_rate;
-	bool old_bypass;
+	bool proposed_rx_bypass, proposed_tx_bypass;
 	int32_t ret;
 
 	if (!transaction)
@@ -13282,15 +13285,21 @@ int32_t ad9361_fir_enable_transaction_start(
 	    transaction->bandwidth_job.tx_quad_job.bandwidth_job.active)
 		return -EBUSY;
 	memset(transaction, 0, sizeof(*transaction));
-	if (!phy || !phy->spi || !phy->pdata || enable > 1)
+	if (!phy || !phy->spi || !phy->pdata ||
+	    (!update_rx && !update_tx) ||
+	    (update_rx && rx_enable > 1) ||
+	    (update_tx && tx_enable > 1))
 		return -EINVAL;
 	if (ad9361_calibration_state_unknown(phy))
 		return -EIO;
 	if (ad9361_operation_busy(phy))
 		return -EBUSY;
 
-	old_bypass = tx ? phy->bypass_tx_fir : phy->bypass_rx_fir;
-	if (phy->fir_config_valid && old_bypass == !enable) {
+	proposed_rx_bypass = update_rx ? !rx_enable : phy->bypass_rx_fir;
+	proposed_tx_bypass = update_tx ? !tx_enable : phy->bypass_tx_fir;
+	if (phy->fir_config_valid &&
+	    proposed_rx_bypass == phy->bypass_rx_fir &&
+	    proposed_tx_bypass == phy->bypass_tx_fir) {
 		transaction->phy = phy;
 		transaction->terminal = true;
 		transaction->terminal_status = 0;
@@ -13302,18 +13311,18 @@ int32_t ad9361_fir_enable_transaction_start(
 	 * blocking tune from a poll callback on another platform. */
 	if (phy->pdata->bb_clk_change_dig_tune_en ||
 	    (!phy->pdata->dig_interface_tune_fir_disable &&
-	     phy->bypass_tx_fir && phy->bypass_rx_fir && !enable))
+	     proposed_tx_bypass && proposed_rx_bypass))
 		return -EOPNOTSUPP;
 
 	transaction->phy = phy;
-	transaction->tx = tx;
-	transaction->old_bypass = old_bypass;
-	if (tx) {
+	transaction->update_rx = update_rx;
+	transaction->update_tx = update_tx;
+	transaction->old_rx_bypass = phy->bypass_rx_fir;
+	transaction->old_tx_bypass = phy->bypass_tx_fir;
+	if (update_tx)
 		ad9361_invalidate_tx_quad_calib(phy);
-		phy->bypass_tx_fir = !enable;
-	} else {
-		phy->bypass_rx_fir = !enable;
-	}
+	phy->bypass_rx_fir = proposed_rx_bypass;
+	phy->bypass_tx_fir = proposed_tx_bypass;
 	phy->fir_config_valid = false;
 
 	if (!phy->filt_valid || phy->bypass_rx_fir || phy->bypass_tx_fir) {
@@ -13397,11 +13406,27 @@ int32_t ad9361_fir_enable_transaction_start(
 preflight_fail:
 	if (transaction->cleanup_status < 0)
 		ad9361_mark_calibration_state_unknown(phy);
-	if (tx)
-		phy->bypass_tx_fir = old_bypass;
-	else
-		phy->bypass_rx_fir = old_bypass;
+	if (update_rx)
+		phy->bypass_rx_fir = transaction->old_rx_bypass;
+	if (update_tx)
+		phy->bypass_tx_fir = transaction->old_tx_bypass;
 	return ret;
+}
+
+int32_t ad9361_fir_enable_transaction_start(
+	struct ad9361_rf_phy *phy, bool tx, uint8_t enable,
+	struct ad9361_fir_enable_transaction *transaction)
+{
+	return ad9361_fir_enable_transaction_start_mask(
+		phy, !tx, tx ? 0 : enable, tx, tx ? enable : 0, transaction);
+}
+
+int32_t ad9361_fir_enable_pair_transaction_start(
+	struct ad9361_rf_phy *phy, uint8_t rx_enable, uint8_t tx_enable,
+	struct ad9361_fir_enable_transaction *transaction)
+{
+	return ad9361_fir_enable_transaction_start_mask(
+		phy, true, rx_enable, true, tx_enable, transaction);
 }
 
 int32_t ad9361_fir_enable_transaction_poll(

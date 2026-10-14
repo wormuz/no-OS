@@ -4010,8 +4010,10 @@ struct ad9361_fir_enable_transaction {
 	uint32_t rx_bw;
 	uint32_t tx_bw;
 	uint8_t stage;
-	bool tx;
-	bool old_bypass;
+	bool update_rx;
+	bool update_tx;
+	bool old_rx_bypass;
+	bool old_tx_bypass;
 	bool valid;
 	bool active;
 	bool terminal;
@@ -4531,6 +4533,9 @@ int32_t ad9361_rf_bandwidth_transaction_poll(
  * nested hardware work remains, 0 after commit, or a terminal errno. */
 int32_t ad9361_fir_enable_transaction_start(
 		struct ad9361_rf_phy *phy, bool tx, uint8_t enable,
+		struct ad9361_fir_enable_transaction *transaction);
+int32_t ad9361_fir_enable_pair_transaction_start(
+		struct ad9361_rf_phy *phy, uint8_t rx_enable, uint8_t tx_enable,
 		struct ad9361_fir_enable_transaction *transaction);
 int32_t ad9361_fir_enable_transaction_poll(
 		struct ad9361_rf_phy *phy,
