@@ -2692,7 +2692,7 @@ int32_t ad9361_ensm_force_state_checked(struct ad9361_rf_phy *phy,
 		return -EINVAL;
 	if (ad9361_calibration_state_unknown(phy))
 		return -EIO;
-	if (phy->calibration_wait != NULL)
+	if (phy->calibration_wait != NULL || phy->status_wait != NULL)
 		return -EBUSY;
 	spi = phy->spi;
 
@@ -2777,7 +2777,7 @@ int32_t ad9361_ensm_restore_state_checked(struct ad9361_rf_phy *phy,
 		return -EINVAL;
 	if (ad9361_calibration_state_unknown(phy))
 		return -EIO;
-	if (phy->calibration_wait != NULL)
+	if (phy->calibration_wait != NULL || phy->status_wait != NULL)
 		return -EBUSY;
 	spi = phy->spi;
 
@@ -4786,7 +4786,7 @@ int32_t ad9361_tx_quad_calibration_attempt_start(
 		return -EINVAL;
 	if (ad9361_calibration_state_unknown(phy))
 		return -EIO;
-	if (phy->calibration_wait != NULL)
+	if (phy->calibration_wait != NULL || phy->status_wait != NULL)
 		return -EBUSY;
 
 	memset(attempt, 0, sizeof(*attempt));
@@ -4973,7 +4973,7 @@ int32_t ad9361_tx_quad_phase_search_start(struct ad9361_rf_phy *phy,
 		return -EINVAL;
 	if (ad9361_calibration_state_unknown(phy))
 		return -EIO;
-	if (phy->calibration_wait != NULL)
+	if (phy->calibration_wait != NULL || phy->status_wait != NULL)
 		return -EBUSY;
 
 	memset(search, 0, sizeof(*search));
@@ -5184,7 +5184,7 @@ int32_t ad9361_tx_quad_calibration_job_start_with_restore_bw(
 		return -EINVAL;
 	if (ad9361_calibration_state_unknown(phy))
 		return -EIO;
-	if (phy->calibration_wait != NULL)
+	if (phy->calibration_wait != NULL || phy->status_wait != NULL)
 		return -EBUSY;
 
 	memset(job, 0, sizeof(*job));
@@ -5513,7 +5513,7 @@ int32_t ad9361_tracking_control(struct ad9361_rf_phy *phy, bool bbdc_track,
 		return -EINVAL;
 	if (ad9361_calibration_state_unknown(phy))
 		return -EIO;
-	if (phy->calibration_wait != NULL)
+	if (phy->calibration_wait != NULL || phy->status_wait != NULL)
 		return -EBUSY;
 	/* A failure at any register leaves a partially applied configuration.
 	 * Revalidate only after every write succeeds and the values match cache. */
@@ -8915,7 +8915,7 @@ int32_t ad9361_tx_quad_calibration_transaction_start(
 		return -EINVAL;
 	if (ad9361_calibration_state_unknown(phy))
 		return -EIO;
-	if (phy->calibration_wait != NULL)
+	if (phy->calibration_wait != NULL || phy->status_wait != NULL)
 		return -EBUSY;
 	if (!phy->current_bw_valid || !phy->rfpll_source_valid[0] ||
 	    !phy->rfpll_source_valid[1])
@@ -9286,7 +9286,7 @@ static int32_t ad9361_rfdc_calibration_start_timeout(
 	if (!phy->rfpll_source_valid[0] ||
 	    ad9361_calibration_state_unknown(phy))
 		return -EIO;
-	if (phy->calibration_wait != NULL)
+	if (phy->calibration_wait != NULL || phy->status_wait != NULL)
 		return -EBUSY;
 
 	memset(job, 0, sizeof(*job));
@@ -9479,7 +9479,7 @@ int32_t ad9361_rf_bandwidth_transaction_start(
 		return -EINVAL;
 	if (ad9361_calibration_state_unknown(phy))
 		return -EIO;
-	if (phy->calibration_wait != NULL)
+	if (phy->calibration_wait != NULL || phy->status_wait != NULL)
 		return -EBUSY;
 
 	memset(transaction, 0, sizeof(*transaction));
