@@ -1835,6 +1835,10 @@ int32_t ad9361_get_rx_lo_freq(struct ad9361_rf_phy *phy,
 
 	if (!phy || !phy->spi || !phy->pdata || !lo_freq_hz)
 		return -EINVAL;
+	/* An RFPLL readback is not a stable frequency while a retained RFIC
+	 * transaction may be between synthesizer programming and lock/readback. */
+	if (ad9361_operation_busy(phy))
+		return -EBUSY;
 	if (!phy->rfpll_source_valid[0])
 		return -EIO;
 
@@ -2780,6 +2784,9 @@ int32_t ad9361_get_tx_lo_freq(struct ad9361_rf_phy *phy,
 
 	if (!phy || !phy->spi || !phy->pdata || !lo_freq_hz)
 		return -EINVAL;
+	/* Keep the RX and TX readback contracts identical during RF transitions. */
+	if (ad9361_operation_busy(phy))
+		return -EBUSY;
 	if (!phy->rfpll_source_valid[1])
 		return -EIO;
 
