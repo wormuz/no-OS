@@ -3801,8 +3801,12 @@ int32_t ad9361_get_trx_rate_gov(struct ad9361_rf_phy *phy, uint32_t *rate_gov)
  *
  * Note: This function will/may affect the data path.
  */
-int32_t ad9361_do_calib(struct ad9361_rf_phy *phy, uint32_t cal, int32_t arg)
+int32_t ad9361_do_calib_with_cleanup(struct ad9361_rf_phy *phy,
+				     uint32_t cal, int32_t arg,
+				     int32_t *cleanup_status)
 {
+	if (cleanup_status)
+		*cleanup_status = 0;
 	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 	if (ad9361_calibration_state_unknown(phy))
@@ -3810,7 +3814,13 @@ int32_t ad9361_do_calib(struct ad9361_rf_phy *phy, uint32_t cal, int32_t arg)
 	if (ad9361_operation_busy(phy))
 		return -EBUSY;
 
-	return ad9361_do_calib_run(phy, cal, arg);
+	return ad9361_do_calib_run_with_cleanup(
+		phy, cal, arg, cleanup_status);
+}
+
+int32_t ad9361_do_calib(struct ad9361_rf_phy *phy, uint32_t cal, int32_t arg)
+{
+	return ad9361_do_calib_with_cleanup(phy, cal, arg, NULL);
 }
 
 /**

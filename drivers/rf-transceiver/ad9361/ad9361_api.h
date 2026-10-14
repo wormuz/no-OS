@@ -670,6 +670,9 @@ int32_t ad9361_set_trx_rate_gov(struct ad9361_rf_phy *phy, uint32_t rate_gov);
 int32_t ad9361_get_trx_rate_gov(struct ad9361_rf_phy *phy, uint32_t *rate_gov);
 /* Perform the selected calibration. */
 int32_t ad9361_do_calib(struct ad9361_rf_phy *phy, uint32_t cal, int32_t arg);
+int32_t ad9361_do_calib_with_cleanup(
+		struct ad9361_rf_phy *phy, uint32_t cal, int32_t arg,
+		int32_t *cleanup_status);
 /* Load and enable TRX FIR filters configurations. */
 int32_t ad9361_trx_load_enable_fir(struct ad9361_rf_phy *phy,
 				   AD9361_RXFIRConfig rx_fir_cfg,

@@ -2122,6 +2122,7 @@ static int set_calib_mode(void *device, char *buf, uint32_t len,
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
 	int32_t arg = -1;
+	int32_t cleanup_status = 0;
 	int ret = 0;
 	uint32_t val = 0;
 
@@ -2153,7 +2154,12 @@ static int set_calib_mode(void *device, char *buf, uint32_t len,
 	if (ret < 0)
 		return ret;
 	if (val)
-		ret = ad9361_do_calib(ad9361_phy, val, arg);
+		ret = ad9361_do_calib_with_cleanup(
+			ad9361_phy, val, arg, &cleanup_status);
+	if (cleanup_status < 0 && ad9361_phy && ad9361_phy->spi)
+		dev_err(&ad9361_phy->spi->dev,
+			"Calibration primary=%d cleanup=%"PRId32,
+			ret, cleanup_status);
 	if (ret < 0)
 		return ret;
 

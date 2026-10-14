@@ -11246,10 +11246,15 @@ int32_t ad9361_tx_quad_calibration_transaction_poll(
 	return 1;
 }
 
-int32_t ad9361_do_calib_run(struct ad9361_rf_phy *phy, uint32_t cal,
-				    int32_t arg)
+int32_t ad9361_do_calib_run_with_cleanup(
+	struct ad9361_rf_phy *phy, uint32_t cal, int32_t arg,
+	int32_t *cleanup_status_out)
 {
 	int32_t ret, ret2, restore_ret;
+	int32_t cleanup_status = 0;
+
+	if (cleanup_status_out)
+		*cleanup_status_out = 0;
 
 	/* Reject incomplete RFDC state before disabling tracking or changing
 	 * ENSM. The bounded RFDC entry point applies the same clock preflight;
@@ -11280,8 +11285,11 @@ int32_t ad9361_do_calib_run(struct ad9361_rf_phy *phy, uint32_t cal,
 		for (;;) {
 			ret = ad9361_tx_quad_calibration_transaction_poll(
 				phy, &transaction);
-			if (ret != 1)
+			if (ret != 1) {
+				if (cleanup_status_out)
+					*cleanup_status_out = transaction.cleanup_status;
 				return ret;
+			}
 			if (transaction.stage ==
 			    AD9361_TX_QUAD_TRANSACTION_CALIBRATE) {
 				no_os_udelay(
@@ -11346,16 +11354,26 @@ int32_t ad9361_do_calib_run(struct ad9361_rf_phy *phy, uint32_t cal,
 	if (cal == TX_QUAD_CAL &&
 	    (ret < 0 || ret2 < 0 || restore_ret < 0))
 		ad9361_invalidate_tx_quad_calib(phy);
+	if (ret2 < 0)
+		cleanup_status = ret2;
+	else if (restore_ret < 0)
+		cleanup_status = restore_ret;
+	if (cleanup_status_out)
+		*cleanup_status_out = cleanup_status;
 
 	if (ret < 0)
 		return ret;
-	if (ret2 < 0)
-		return ret2;
-	if (restore_ret < 0)
-		return restore_ret;
+	if (cleanup_status < 0)
+		return cleanup_status;
 	if (cal == TX_QUAD_CAL)
 		ad9361_tx_quad_history_commit(phy);
 	return 0;
+}
+
+int32_t ad9361_do_calib_run(struct ad9361_rf_phy *phy, uint32_t cal,
+			    int32_t arg)
+{
+	return ad9361_do_calib_run_with_cleanup(phy, cal, arg, NULL);
 }
 
 /* Keep calibration history only after both the calibration and its tracking /

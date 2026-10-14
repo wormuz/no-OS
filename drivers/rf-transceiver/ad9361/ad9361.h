@@ -4367,6 +4367,9 @@ int32_t ad9361_rf_port_setup(struct ad9361_rf_phy *phy, bool is_out,
 int32_t ad9361_mcs(struct ad9361_rf_phy *phy, int32_t step);
 int32_t ad9361_do_calib_run(struct ad9361_rf_phy *phy, uint32_t cal,
 			    int32_t arg);
+int32_t ad9361_do_calib_run_with_cleanup(
+		struct ad9361_rf_phy *phy, uint32_t cal, int32_t arg,
+		int32_t *cleanup_status);
 bool ad9361_calibration_state_unknown(const struct ad9361_rf_phy *phy);
 bool ad9361_operation_busy(const struct ad9361_rf_phy *phy);
 void ad9361_mark_calibration_state_unknown(struct ad9361_rf_phy *phy);
