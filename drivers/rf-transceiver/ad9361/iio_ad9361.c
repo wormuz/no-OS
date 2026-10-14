@@ -1509,6 +1509,7 @@ static int set_voltage_filter_fir_en(void *device, char *buf, uint32_t len,
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
 	int32_t value;
+	int32_t cleanup_status = 0;
 	int8_t en_dis;
 	int ret;
 	ret = parse_i32_attr(buf, &value);
@@ -1516,7 +1517,12 @@ static int set_voltage_filter_fir_en(void *device, char *buf, uint32_t len,
 		return ret < 0 ? ret : -EINVAL;
 	en_dis = (int8_t)value;
 
-	ret = ad9361_set_trx_fir_en_dis(ad9361_phy, en_dis);
+	ret = ad9361_set_trx_fir_en_dis_with_cleanup(
+		ad9361_phy, en_dis, &cleanup_status);
+	if (cleanup_status < 0 && ad9361_phy && ad9361_phy->spi)
+		dev_err(&ad9361_phy->spi->dev,
+			"FIR enable primary=%d cleanup=%d", ret,
+			cleanup_status);
 	if (ret < 0)
 		return ret;
 
@@ -2208,9 +2214,6 @@ static int set_multichip_sync(void *device, char *buf, uint32_t len,
 	return len;
 }
 
-extern int32_t ad9361_parse_fir(struct ad9361_rf_phy *phy,
-				char *data, uint32_t size);
-
 /**
  * @brief set_filter_fir_config().
  * @param device - Physical instance of a iio_axi_dac device.
@@ -2225,8 +2228,14 @@ static int set_filter_fir_config(void *device, char *buf, uint32_t len,
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
 	int32_t ret;
+	int32_t cleanup_status = 0;
 
-	ret = ad9361_parse_fir(ad9361_phy, (char *)buf, len);
+	ret = ad9361_parse_fir_with_cleanup(
+		ad9361_phy, (char *)buf, len, &cleanup_status);
+	if (cleanup_status < 0 && ad9361_phy && ad9361_phy->spi)
+		dev_err(&ad9361_phy->spi->dev,
+			"FIR parse primary=%"PRId32" cleanup=%"PRId32,
+			ret, cleanup_status);
 	if (ret < 0)
 		return ret;
 
@@ -3117,12 +3126,18 @@ static int set_in_out_voltage_filter_fir_en(void *dev, char *buf, uint32_t len,
 	/* Set both RX and TX FIR simultaneously */
 	struct ad9361_rf_phy *phy = (struct ad9361_rf_phy *)dev;
 	int32_t value;
+	int32_t cleanup_status = 0;
 	int parse_ret = parse_i32_attr(buf, &value);
 	if (parse_ret < 0 || (value != 0 && value != 1))
 		return parse_ret < 0 ? parse_ret : -EINVAL;
 	int8_t en = (int8_t)value;
 	int ret;
-	ret = ad9361_set_trx_fir_en_dis(phy, en ? 1 : 0);
+	ret = ad9361_set_trx_fir_en_dis_with_cleanup(
+		phy, en ? 1 : 0, &cleanup_status);
+	if (cleanup_status < 0 && phy && phy->spi)
+		dev_err(&phy->spi->dev,
+			"TRX FIR enable primary=%d cleanup=%d", ret,
+			cleanup_status);
 	if (ret < 0)
 		return ret;
 	return (int)len;

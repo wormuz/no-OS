@@ -12711,11 +12711,12 @@ int32_t ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
  * @param size Buffer size.
  * @return 0 in case of success, negative error code otherwise.
  */
-int32_t ad9361_parse_fir(struct ad9361_rf_phy *phy,
-			 char *data, uint32_t size)
+int32_t ad9361_parse_fir_with_cleanup(struct ad9361_rf_phy *phy,
+			 char *data, uint32_t size, int32_t *cleanup_status_out)
 {
 	char *line;
 	int32_t i = 0, ret, txc, rxc;
+	int32_t cleanup_status = 0, child_cleanup_status;
 	int32_t tx = -1, tx_gain = 0, tx_int = 0;
 	int32_t rx = -1, rx_gain = 0, rx_dec = 0;
 	int32_t rtx = -1, rrx = -1;
@@ -12725,6 +12726,8 @@ int32_t ad9361_parse_fir(struct ad9361_rf_phy *phy,
 
 	/* Match the IIO attribute transport buffer; keep malformed direct calls
 	 * from requesting an unbounded allocation. */
+	if (cleanup_status_out)
+		*cleanup_status_out = 0;
 	if (!phy || !data || !size || size > 4096U)
 		return -EINVAL;
 	if (ad9361_operation_busy(phy))
@@ -12872,7 +12875,12 @@ int32_t ad9361_parse_fir(struct ad9361_rf_phy *phy,
 	case FIR_TX2:
 	case FIR_TX1_TX2:
 		phy->tx_fir_int = tx_int;
-		ret = ad9361_load_fir_filter_coef(phy, (enum fir_dest)tx, tx_gain, i, coef_tx);
+		child_cleanup_status = 0;
+		ret = ad9361_load_fir_filter_coef_with_cleanup(
+			phy, (enum fir_dest)tx, tx_gain, i, coef_tx,
+			&child_cleanup_status);
+		if (cleanup_status == 0 && child_cleanup_status < 0)
+			cleanup_status = child_cleanup_status;
 		break;
 	default:
 		ret = -EINVAL;
@@ -12885,8 +12893,12 @@ int32_t ad9361_parse_fir(struct ad9361_rf_phy *phy,
 	case FIR_RX2:
 	case FIR_RX1_RX2:
 		phy->rx_fir_dec = rx_dec;
-		ret = ad9361_load_fir_filter_coef(phy, (enum fir_dest)(rx | FIR_IS_RX),
-						  rx_gain, i, coef_rx);
+		child_cleanup_status = 0;
+		ret = ad9361_load_fir_filter_coef_with_cleanup(
+			phy, (enum fir_dest)(rx | FIR_IS_RX), rx_gain, i, coef_rx,
+			&child_cleanup_status);
+		if (cleanup_status == 0 && child_cleanup_status < 0)
+			cleanup_status = child_cleanup_status;
 		break;
 	default:
 		ret = -EINVAL;
@@ -12902,7 +12914,17 @@ int32_t ad9361_parse_fir(struct ad9361_rf_phy *phy,
 
 parse_out:
 	no_os_free(input);
+	if (cleanup_status_out)
+		*cleanup_status_out = cleanup_status;
+	if (ret >= 0 && cleanup_status < 0)
+		ret = cleanup_status;
 	return ret;
+}
+
+int32_t ad9361_parse_fir(struct ad9361_rf_phy *phy,
+			 char *data, uint32_t size)
+{
+	return ad9361_parse_fir_with_cleanup(phy, data, size, NULL);
 }
 
 /**

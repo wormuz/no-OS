@@ -3778,11 +3778,15 @@ int32_t ad9361_do_calib(struct ad9361_rf_phy *phy, uint32_t cal, int32_t arg)
  *
  * Note: This function will/may affect the data path.
  */
-int32_t ad9361_trx_load_enable_fir(struct ad9361_rf_phy *phy,
-				   AD9361_RXFIRConfig rx_fir_cfg,
-				   AD9361_TXFIRConfig tx_fir_cfg)
+int32_t ad9361_trx_load_enable_fir_with_cleanup(
+	struct ad9361_rf_phy *phy, AD9361_RXFIRConfig rx_fir_cfg,
+	AD9361_TXFIRConfig tx_fir_cfg, int32_t *cleanup_status_out)
 {
 	int32_t rtx = -1, rrx = -1, ret;
+	int32_t cleanup_status = 0, child_cleanup_status;
+
+	if (cleanup_status_out)
+		*cleanup_status_out = 0;
 
 	if (!phy || !phy->spi)
 		return -EINVAL;
@@ -3815,22 +3819,47 @@ int32_t ad9361_trx_load_enable_fir(struct ad9361_rf_phy *phy,
 		phy->filt_rx_bw_Hz = rx_fir_cfg.rx_bandwidth;
 	}
 
-	ret = ad9361_set_tx_fir_config(phy, tx_fir_cfg);
+	child_cleanup_status = 0;
+	ret = ad9361_set_tx_fir_config_with_cleanup(
+		phy, tx_fir_cfg, &child_cleanup_status);
+	if (child_cleanup_status < 0)
+		cleanup_status = child_cleanup_status;
 	if (ret < 0)
-		return ret;
+		goto out;
 
-	ret = ad9361_set_rx_fir_config(phy, rx_fir_cfg);
+	child_cleanup_status = 0;
+	ret = ad9361_set_rx_fir_config_with_cleanup(
+		phy, rx_fir_cfg, &child_cleanup_status);
+	if (cleanup_status == 0 && child_cleanup_status < 0)
+		cleanup_status = child_cleanup_status;
 	if (ret < 0)
-		return ret;
+		goto out;
 
 	if (!(rrx | rtx))
 		phy->filt_valid = true;
 
-	ret = ad9361_set_trx_fir_en_dis(phy, 1);
+	child_cleanup_status = 0;
+	ret = ad9361_set_trx_fir_en_dis_with_cleanup(
+		phy, 1, &child_cleanup_status);
+	if (cleanup_status == 0 && child_cleanup_status < 0)
+		cleanup_status = child_cleanup_status;
 	if (ret < 0)
-		return ret;
+		goto out;
 
-	return 0;
+out:
+	if (cleanup_status_out)
+		*cleanup_status_out = cleanup_status;
+	if (ret >= 0 && cleanup_status < 0)
+		ret = cleanup_status;
+	return ret;
+}
+
+int32_t ad9361_trx_load_enable_fir(struct ad9361_rf_phy *phy,
+				   AD9361_RXFIRConfig rx_fir_cfg,
+				   AD9361_TXFIRConfig tx_fir_cfg)
+{
+	return ad9361_trx_load_enable_fir_with_cleanup(
+		phy, rx_fir_cfg, tx_fir_cfg, NULL);
 }
 
 /**

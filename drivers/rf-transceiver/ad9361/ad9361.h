@@ -4287,6 +4287,10 @@ int32_t ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
 int32_t ad9361_load_fir_filter_coef_with_cleanup(
 		struct ad9361_rf_phy *phy, enum fir_dest dest, int32_t gain_dB,
 		uint32_t ntaps, short *coef, int32_t *cleanup_status);
+int32_t ad9361_parse_fir(struct ad9361_rf_phy *phy, char *data,
+		 uint32_t size);
+int32_t ad9361_parse_fir_with_cleanup(struct ad9361_rf_phy *phy,
+		 char *data, uint32_t size, int32_t *cleanup_status);
 int32_t ad9361_validate_enable_fir(struct ad9361_rf_phy *phy);
 int32_t ad9361_validate_enable_fir_with_cleanup(
 		struct ad9361_rf_phy *phy, int32_t *cleanup_status);
