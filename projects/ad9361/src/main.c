@@ -31,7 +31,9 @@
  * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 *******************************************************************************/
 
+#include <errno.h>
 #include <inttypes.h>
+#include <stdbool.h>
 #include "app_config.h"
 #include "ad9361_api.h"
 #include "parameters.h"
@@ -591,9 +593,36 @@ static int ad9361_iio_axi_dac_get_sampling_freq(struct axi_dac *dev,
 /***************************************************************************//**
  * @brief main
 *******************************************************************************/
+/* Preserve ownership returned by ad9361_init() when cleanup found an
+ * ambiguous in-flight calibration. A hard board RESETB assertion is the only
+ * path that permits release of that quarantine. */
+static int32_t remove_phy_with_recovery(struct ad9361_rf_phy **phy)
+{
+	bool consumed = false;
+	int32_t status;
+
+	if (!phy || !*phy)
+		return 0;
+	if ((*phy)->calibration_wait_quarantined) {
+		if (!(*phy)->gpio_desc_resetb)
+			return -EBUSY;
+		status = no_os_gpio_set_value((*phy)->gpio_desc_resetb, 0);
+		if (status < 0)
+			return status;
+		no_os_udelay(2);
+		status = ad9361_remove_ex(*phy, true, &consumed);
+	} else {
+		status = ad9361_remove_ex(*phy, false, &consumed);
+	}
+	if (consumed)
+		*phy = NULL;
+	return status;
+}
+
 int main(void)
 {
 	int32_t status;
+	int32_t cleanup_status;
 #ifdef XILINX_PLATFORM
 	Xil_ICacheEnable();
 	Xil_DCacheEnable();
@@ -655,7 +684,13 @@ int main(void)
 	default_init_param.digital_interface_tune_fir_disable = 1;
 #endif
 
-	ad9361_init(&ad9361_phy, &default_init_param);
+	status = ad9361_init(&ad9361_phy, &default_init_param);
+	if (status < 0 || !ad9361_phy) {
+		int32_t cleanup_status = remove_phy_with_recovery(&ad9361_phy);
+		printf("AD9361 init failed (%"PRIi32"), cleanup status %"PRIi32"\n",
+		       status, cleanup_status);
+		return status < 0 ? status : -EIO;
+	}
 
 	ad9361_set_tx_fir_config(ad9361_phy, tx_fir_config);
 	ad9361_set_rx_fir_config(ad9361_phy, rx_fir_config);
@@ -679,7 +714,16 @@ int main(void)
 	rx_adc_init.num_slave_channels = 0;
 	tx_dac_init.base = AD9361_TX_1_BASEADDR;
 
-	ad9361_init(&ad9361_phy_b, &default_init_param);
+	status = ad9361_init(&ad9361_phy_b, &default_init_param);
+	if (status < 0 || !ad9361_phy_b) {
+		int32_t cleanup_status = remove_phy_with_recovery(&ad9361_phy_b);
+		int32_t first_cleanup_status =
+			remove_phy_with_recovery(&ad9361_phy);
+		printf("AD9361 B init failed (%"PRIi32"), cleanup status %"PRIi32
+		       ", first PHY cleanup status %"PRIi32"\n",
+		       status, cleanup_status, first_cleanup_status);
+		return status < 0 ? status : -EIO;
+	}
 
 	ad9361_set_tx_fir_config(ad9361_phy_b, tx_fir_config);
 	ad9361_set_rx_fir_config(ad9361_phy_b, rx_fir_config);
@@ -1251,9 +1295,20 @@ int main(void)
 	}
 #endif
 
-	ad9361_remove(ad9361_phy);
+	status = 0;
+	cleanup_status = remove_phy_with_recovery(&ad9361_phy);
+	if (cleanup_status < 0) {
+		printf("AD9361 cleanup failed (%"PRIi32")\n", cleanup_status);
+		status = cleanup_status;
+	}
 #ifdef FMCOMMS5
-	ad9361_remove(ad9361_phy_b);
+	cleanup_status = remove_phy_with_recovery(&ad9361_phy_b);
+	if (cleanup_status < 0) {
+		printf("AD9361 B cleanup failed (%"PRIi32")\n", cleanup_status);
+		if (status == 0) {
+			status = cleanup_status;
+		}
+	}
 #endif
 
 #ifdef XILINX_PLATFORM
@@ -1264,9 +1319,11 @@ int main(void)
 #ifdef ALTERA_PLATFORM
 	if (altera_bridge_uninit()) {
 		printf("Altera Bridge Uninit Error!\n");
-		return -1;
+		if (status == 0) {
+			status = -1;
+		}
 	}
 #endif
 
-	return 0;
+	return status;
 }

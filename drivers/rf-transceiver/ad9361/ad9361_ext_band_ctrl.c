@@ -17,194 +17,14 @@
 #include "no_os_alloc.h"
 #include "no_os_spi.h"
 
-/**
- * @brief Find the first band setting whose frequency range contains freq.
- * @param list  - Array of pointers to band settings.
- * @param count - Number of entries in list.
- * @param freq  - Frequency to match (Hz).
- * @return Pointer to the matching setting, or NULL if none matches.
- */
-static struct ad9361_band_setting *
-find_setting(struct ad9361_band_setting **list, uint32_t count, uint64_t freq)
-{
-	uint32_t i;
+#define AD9361_BAND_PHASE_PRE        0u
+#define AD9361_BAND_PHASE_GPIO       1u
+#define AD9361_BAND_PHASE_RX_PORT    2u
+#define AD9361_BAND_PHASE_TX_PORT    3u
+#define AD9361_BAND_PHASE_POST       4u
+#define AD9361_BAND_PHASE_WAIT       5u
 
-	for (i = 0; i < count; i++) {
-		if (list[i]->freq_min <= freq && freq < list[i]->freq_max)
-			return list[i];
-	}
-	return NULL;
-}
-
-/**
- * @brief Apply GPIO operations for a band setting transition.
- * @param phy      - AD9361 PHY state.
- * @param new_sett - Band setting to apply.
- * @param curr     - Currently active band setting (may be NULL).
- * @return 0 on success, negative errno on failure.
- */
-static int apply_gpio_settings(struct ad9361_rf_phy *phy,
-			       const struct ad9361_band_setting *new_sett,
-			       const struct ad9361_band_setting *curr)
-{
-	struct ad9361_ext_band_ctl *ctl = phy->ext_band_ctl;
-	uint32_t i;
-	int ret;
-
-	if (!new_sett->gpio_values || ctl->ngpios == 0)
-		return 0;
-
-	for (i = 0; i < (uint32_t)ctl->ngpios; i++) {
-		uint32_t new_val = new_sett->gpio_values[i];
-		uint32_t cur_val = (curr && curr->gpio_values)
-				   ? curr->gpio_values[i]
-				   : AD9361_EXT_BAND_CTL_OP_NOP;
-
-		if (curr && cur_val == new_val)
-			continue;
-
-		if (new_val == AD9361_EXT_BAND_CTL_OP_NOP)
-			continue;
-
-		if (!ctl->gpios[i]) {
-			dev_err(&phy->spi->dev,
-				"%s: GPIO[%u] is NULL", __func__, (unsigned)i);
-			return -EINVAL;
-		}
-
-		switch (new_val) {
-		case AD9361_EXT_BAND_CTL_OP_LOW:
-			ret = no_os_gpio_direction_output(ctl->gpios[i], 0);
-			break;
-		case AD9361_EXT_BAND_CTL_OP_HIGH:
-			ret = no_os_gpio_direction_output(ctl->gpios[i], 1);
-			break;
-		case AD9361_EXT_BAND_CTL_OP_INPUT:
-			ret = no_os_gpio_direction_input(ctl->gpios[i]);
-			break;
-		default:
-			dev_err(&phy->spi->dev,
-				"%s: unknown op %u on pin %u",
-				__func__, (unsigned)new_val, (unsigned)i);
-			return -EINVAL;
-		}
-
-		if (ret < 0) {
-			dev_err(&phy->spi->dev,
-				"%s: GPIO[%u] op %u failed: %d",
-				__func__, (unsigned)i, (unsigned)new_val, ret);
-			return ret;
-		}
-
-		dev_dbg(&phy->spi->dev,
-			"%s: GPIO[%u] op=%u",
-			__func__, (unsigned)i, (unsigned)new_val);
-	}
-
-	return 0;
-}
-
-/**
- * @brief Apply a complete band setting (pre-seq, GPIOs, ports, post-seq).
- * @param phy      - AD9361 PHY state.
- * @param new_sett - Band setting to apply.
- * @param curr_ptr - Pointer to the current setting pointer (updated on
- *                   success). May be NULL for sub-sequence steps.
- * @return 0 on success, negative errno on failure.
- */
-static int apply_setting(struct ad9361_rf_phy *phy,
-			 const struct ad9361_band_setting *new_sett,
-			 const struct ad9361_band_setting **curr_ptr)
-{
-	const struct ad9361_band_setting *curr = curr_ptr ? *curr_ptr : NULL;
-	int ret;
-
-	dev_dbg(&phy->spi->dev, "%s: applying '%s'",
-		__func__, new_sett->name ? new_sett->name : "<unnamed>");
-
-	/* Apply pre-sequence steps */
-	if (new_sett->pre_seq && new_sett->pre_seq_len > 0) {
-		uint32_t i;
-		for (i = 0; i < new_sett->pre_seq_len; i++) {
-			ret = apply_setting(phy, &new_sett->pre_seq[i], NULL);
-			if (ret < 0)
-				return ret;
-			if (new_sett->pre_seq[i].delay_us)
-				no_os_udelay(new_sett->pre_seq[i].delay_us);
-		}
-	}
-
-	/* Drive GPIOs */
-	ret = apply_gpio_settings(phy, new_sett, curr);
-	if (ret < 0)
-		return ret;
-
-	/* Switch RX RF port if specified */
-	if (new_sett->rf_rx_input_sel != AD9361_EXT_BAND_NO_PORT_SEL) {
-		if (!curr ||
-		    curr->rf_rx_input_sel != new_sett->rf_rx_input_sel) {
-			ret = ad9361_rf_port_setup(phy, false,
-						   new_sett->rf_rx_input_sel,
-						   0);
-			if (ret < 0) {
-				dev_err(&phy->spi->dev,
-					"%s: RX port %u failed: %d",
-					__func__,
-					(unsigned)new_sett->rf_rx_input_sel,
-					ret);
-				return ret;
-			}
-			dev_dbg(&phy->spi->dev,
-				"%s: RX port -> %u",
-				__func__,
-				(unsigned)new_sett->rf_rx_input_sel);
-		}
-	}
-
-	/* Switch TX RF port if specified */
-	if (new_sett->rf_tx_output_sel != AD9361_EXT_BAND_NO_PORT_SEL) {
-		if (!curr ||
-		    curr->rf_tx_output_sel != new_sett->rf_tx_output_sel) {
-			ret = ad9361_rf_port_setup(phy, true, 0,
-						   new_sett->rf_tx_output_sel);
-			if (ret < 0) {
-				dev_err(&phy->spi->dev,
-					"%s: TX port %u failed: %d",
-					__func__,
-					(unsigned)new_sett->rf_tx_output_sel,
-					ret);
-				return ret;
-			}
-			dev_dbg(&phy->spi->dev,
-				"%s: TX port -> %u",
-				__func__,
-				(unsigned)new_sett->rf_tx_output_sel);
-		}
-	}
-
-	/* Apply post-sequence steps */
-	if (new_sett->post_seq && new_sett->post_seq_len > 0) {
-		uint32_t i;
-		for (i = 0; i < new_sett->post_seq_len; i++) {
-			ret = apply_setting(phy, &new_sett->post_seq[i], NULL);
-			if (ret < 0)
-				return ret;
-			if (new_sett->post_seq[i].delay_us)
-				no_os_udelay(new_sett->post_seq[i].delay_us);
-		}
-	}
-
-	/* Publish the cached setting only after every GPIO, port, and post-sequence
-	 * operation succeeds. Otherwise a retry of the same LO band can be skipped
-	 * even though the failed post-sequence left the RF path partially set. */
-	if (curr_ptr)
-		*curr_ptr = new_sett;
-
-	dev_dbg(&phy->spi->dev, "%s: applied '%s'",
-		__func__, new_sett->name ? new_sett->name : "<unnamed>");
-
-	return 0;
-}
+static void band_cancel_active(struct ad9361_ext_band_ctl *ctl);
 
 /**
  * @brief Grow a settings array by one element.
@@ -233,6 +53,20 @@ static struct ad9361_band_setting **grow_settings_array(
 
 	no_os_free(old_arr);
 	return new_arr;
+}
+
+static bool band_setting_is_registered(const struct ad9361_ext_band_ctl *ctl,
+		const struct ad9361_band_setting *setting)
+{
+	uint32_t i;
+
+	for (i = 0; i < ctl->rx_count; i++)
+		if (ctl->rx_settings[i] == setting)
+			return true;
+	for (i = 0; i < ctl->tx_count; i++)
+		if (ctl->tx_settings[i] == setting)
+			return true;
+	return false;
 }
 
 /**
@@ -286,32 +120,53 @@ ad9361_band_setting_alloc(const char *name, uint64_t freq_min,
 	return s;
 }
 
+static void band_setting_release_members(
+		struct ad9361_band_setting *setting,
+		const struct ad9361_band_setting **ancestors, uint32_t depth)
+{
+	uint32_t i;
+
+	if (!setting || depth >= AD9361_EXT_BAND_MAX_SEQ_DEPTH)
+		return;
+	for (i = 0; i < depth; i++)
+		if (ancestors[i] == setting)
+			return;
+	ancestors[depth] = setting;
+	no_os_free((void *)setting->name);
+	setting->name = NULL;
+	no_os_free(setting->gpio_values);
+	setting->gpio_values = NULL;
+
+	if (setting->pre_seq) {
+		for (i = 0; i < setting->pre_seq_len; i++)
+			band_setting_release_members(&setting->pre_seq[i],
+						     ancestors, depth + 1U);
+		no_os_free(setting->pre_seq);
+		setting->pre_seq = NULL;
+		setting->pre_seq_len = 0;
+	}
+	if (setting->post_seq) {
+		for (i = 0; i < setting->post_seq_len; i++)
+			band_setting_release_members(&setting->post_seq[i],
+						     ancestors, depth + 1U);
+		no_os_free(setting->post_seq);
+		setting->post_seq = NULL;
+		setting->post_seq_len = 0;
+	}
+}
+
 /**
- * @brief Release a band setting and its sub-sequences.
+ * @brief Release a band setting and its owned nested sequences.
  * @param s - Band setting to free (may be NULL).
  */
 void ad9361_band_setting_free(struct ad9361_band_setting *s)
 {
-	uint32_t i;
+	const struct ad9361_band_setting *ancestors[
+		AD9361_EXT_BAND_MAX_SEQ_DEPTH] = { NULL };
 
 	if (!s)
 		return;
-
-	no_os_free((void *)s->name);
-	no_os_free(s->gpio_values);
-
-	if (s->pre_seq) {
-		for (i = 0; i < s->pre_seq_len; i++)
-			no_os_free(s->pre_seq[i].gpio_values);
-		no_os_free(s->pre_seq);
-	}
-
-	if (s->post_seq) {
-		for (i = 0; i < s->post_seq_len; i++)
-			no_os_free(s->post_seq[i].gpio_values);
-		no_os_free(s->post_seq);
-	}
-
+	band_setting_release_members(s, ancestors, 0);
 	no_os_free(s);
 }
 
@@ -388,6 +243,9 @@ void ad9361_ext_band_ctl_free(struct ad9361_ext_band_ctl *ctl)
 
 	if (!ctl)
 		return;
+	band_cancel_active(ctl);
+	if (ctl->registered_phy && ctl->registered_phy->ext_band_ctl == ctl)
+		ctl->registered_phy->ext_band_ctl = NULL;
 
 	for (i = 0; i < ctl->rx_count; i++)
 		ad9361_band_setting_free(ctl->rx_settings[i]);
@@ -410,7 +268,7 @@ void ad9361_ext_band_ctl_free(struct ad9361_ext_band_ctl *ctl)
 int ad9361_ext_band_ctl_add_gpio(struct ad9361_ext_band_ctl *ctl,
 				 struct no_os_gpio_desc *gpio)
 {
-	if (!ctl || !gpio)
+	if (!ctl || !gpio || ctl->active_transaction)
 		return -EINVAL;
 
 	if (ctl->ngpios >= AD9361_EXT_BAND_MAX_GPIOS)
@@ -433,8 +291,11 @@ int ad9361_ext_band_ctl_add_rx_setting(struct ad9361_ext_band_ctl *ctl,
 {
 	struct ad9361_band_setting **new_arr;
 
-	if (!ctl || !s)
+	if (!ctl || !s || ctl->active_transaction ||
+	    band_setting_is_registered(ctl, s))
 		return -EINVAL;
+	if (ctl->rx_count >= AD9361_EXT_BAND_MAX_SETTINGS)
+		return -ENOMEM;
 
 	new_arr = grow_settings_array(ctl->rx_settings, ctl->rx_count, s);
 	if (!new_arr)
@@ -457,8 +318,11 @@ int ad9361_ext_band_ctl_add_tx_setting(struct ad9361_ext_band_ctl *ctl,
 {
 	struct ad9361_band_setting **new_arr;
 
-	if (!ctl || !s)
+	if (!ctl || !s || ctl->active_transaction ||
+	    band_setting_is_registered(ctl, s))
 		return -EINVAL;
+	if (ctl->tx_count >= AD9361_EXT_BAND_MAX_SETTINGS)
+		return -ENOMEM;
 
 	new_arr = grow_settings_array(ctl->tx_settings, ctl->tx_count, s);
 	if (!new_arr)
@@ -480,8 +344,13 @@ int32_t ad9361_register_ext_band_control(struct ad9361_rf_phy *phy,
 {
 	if (!phy || !ctl)
 		return -EINVAL;
+	if (phy->ext_band_transaction || ctl->active_transaction ||
+	    (phy->ext_band_ctl && phy->ext_band_ctl != ctl) ||
+	    (ctl->registered_phy && ctl->registered_phy != phy))
+		return -EBUSY;
 
 	phy->ext_band_ctl = ctl;
+	ctl->registered_phy = phy;
 
 	dev_dbg(&phy->spi->dev,
 		"%s: registered (%u RX / %u TX settings, %d GPIOs)",
@@ -499,87 +368,463 @@ int32_t ad9361_register_ext_band_control(struct ad9361_rf_phy *phy,
  */
 void ad9361_unregister_ext_band_control(struct ad9361_rf_phy *phy)
 {
-	if (phy)
+	if (phy) {
+		band_cancel_active(phy->ext_band_ctl);
+		if (phy->ext_band_ctl && phy->ext_band_ctl->registered_phy == phy)
+			phy->ext_band_ctl->registered_phy = NULL;
 		phy->ext_band_ctl = NULL;
+	}
 }
 
-/**
- * @brief Switch RX band for a new LO frequency.
- *        Called automatically from ad9361_rfpll_set_rate() on every RX LO
- *        change. Applications may also call this directly.
- * @param phy  - AD9361 PHY state.
- * @param freq - New RX LO frequency in Hz.
- * @return 0 on success (including no matching setting), or negative errno.
- */
+static uint64_t band_time_us(void)
+{
+	struct no_os_time now = no_os_get_time();
+
+	return (uint64_t)now.s * 1000000ULL + now.us;
+}
+
+static void band_cancel_active(struct ad9361_ext_band_ctl *ctl)
+{
+	struct ad9361_ext_band_transaction *transaction;
+	struct ad9361_rf_phy *phy;
+
+	if (!ctl || !ctl->active_transaction)
+		return;
+	transaction = ctl->active_transaction;
+	phy = transaction->phy;
+	if (transaction->mutation_started) {
+		if (transaction->tx)
+			ctl->current_tx_setting = NULL;
+		else
+			ctl->current_rx_setting = NULL;
+	}
+	if (phy && phy->ext_band_transaction == transaction)
+		phy->ext_band_transaction = NULL;
+	transaction->ctl = NULL;
+	transaction->active = false;
+	transaction->terminal = true;
+	transaction->terminal_status = -ECANCELED;
+	ctl->active_transaction = NULL;
+}
+
+static int32_t band_validate_action(const struct ad9361_ext_band_ctl *ctl,
+		const struct ad9361_band_setting *setting)
+{
+	uint32_t i;
+
+	if (!setting || (setting->pre_seq_len && !setting->pre_seq) ||
+	    (setting->post_seq_len && !setting->post_seq) ||
+	    setting->ngpios > AD9361_EXT_BAND_MAX_GPIOS)
+		return -EINVAL;
+	if (setting->gpio_values && setting->ngpios < (uint32_t)ctl->ngpios)
+		return -EINVAL;
+	if (setting->rf_rx_input_sel != AD9361_EXT_BAND_NO_PORT_SEL &&
+	    setting->rf_rx_input_sel > 11)
+		return -EINVAL;
+	if (setting->rf_tx_output_sel != AD9361_EXT_BAND_NO_PORT_SEL &&
+	    setting->rf_tx_output_sel > 1)
+		return -EINVAL;
+	if (setting->gpio_values) {
+		for (i = 0; i < (uint32_t)ctl->ngpios; i++) {
+			uint32_t op = setting->gpio_values[i];
+
+			if (op > AD9361_EXT_BAND_CTL_OP_NOP ||
+			    (op != AD9361_EXT_BAND_CTL_OP_NOP && !ctl->gpios[i]))
+				return -EINVAL;
+		}
+	}
+	return 0;
+}
+
+/* Iterative preflight bounds both recursion depth and total work, and rejects
+ * cycles before the first external GPIO or RF-port mutation. */
+static int32_t band_validate_graph(const struct ad9361_ext_band_ctl *ctl,
+		const struct ad9361_band_setting *root)
+{
+	struct ad9361_ext_band_transaction_frame stack[
+		AD9361_EXT_BAND_MAX_SEQ_DEPTH];
+	uint16_t depth = 1, nodes = 0, i;
+
+	memset(stack, 0, sizeof(stack));
+	stack[0].setting = root;
+	while (depth) {
+		struct ad9361_ext_band_transaction_frame *frame = &stack[depth - 1U];
+		const struct ad9361_band_setting *child = NULL;
+
+		if (frame->phase == 0) {
+			int32_t ret;
+
+			if (++nodes > AD9361_EXT_BAND_MAX_SEQ_NODES)
+				return -E2BIG;
+			ret = band_validate_action(ctl, frame->setting);
+			if (ret < 0)
+				return ret;
+			frame->phase = 1;
+			frame->index = 0;
+		}
+		if (frame->phase == 1) {
+			if (frame->index < frame->setting->pre_seq_len)
+				child = &frame->setting->pre_seq[frame->index++];
+			else {
+				frame->phase = 2;
+				frame->index = 0;
+			}
+		} else if (frame->phase == 2) {
+			frame->phase = 3;
+			frame->index = 0;
+		} else if (frame->phase == 3) {
+			if (frame->index < frame->setting->post_seq_len)
+				child = &frame->setting->post_seq[frame->index++];
+			else
+				frame->phase = 4;
+		} else {
+			depth--;
+			continue;
+		}
+
+		if (child) {
+			if (depth >= AD9361_EXT_BAND_MAX_SEQ_DEPTH)
+				return -E2BIG;
+			for (i = 0; i < depth; i++)
+				if (stack[i].setting == child)
+					return -ELOOP;
+			memset(&stack[depth], 0, sizeof(stack[depth]));
+			stack[depth++].setting = child;
+		}
+	}
+	return 0;
+}
+
+static int32_t band_find_target(struct ad9361_ext_band_ctl *ctl, bool tx,
+		uint64_t freq, struct ad9361_band_setting **target)
+{
+	struct ad9361_band_setting **list = tx ? ctl->tx_settings : ctl->rx_settings;
+	uint32_t count = tx ? ctl->tx_count : ctl->rx_count;
+	uint32_t i;
+
+	*target = NULL;
+	if (count > AD9361_EXT_BAND_MAX_SETTINGS || (count && !list))
+		return -EINVAL;
+	for (i = 0; i < count; i++) {
+		if (!list[i] || list[i]->freq_min >= list[i]->freq_max)
+			return -EINVAL;
+		if (!*target && list[i]->freq_min <= freq && freq < list[i]->freq_max)
+			*target = list[i];
+	}
+	return 0;
+}
+
+static int32_t band_finish(struct ad9361_ext_band_transaction *transaction,
+		int32_t status)
+{
+	struct ad9361_rf_phy *phy = transaction->phy;
+	struct ad9361_ext_band_ctl *ctl = transaction->ctl;
+
+	if (status < 0 && transaction->mutation_started && ctl) {
+		if (transaction->tx)
+			ctl->current_tx_setting = NULL;
+		else
+			ctl->current_rx_setting = NULL;
+		/* The external path is ambiguous, but this alone does not prove that
+		 * AD9361 register/calibration state is corrupt. Keep the setting cache
+		 * invalid and return a terminal failure; the owning RF/data-path layer
+		 * must fence IQ until a complete band transaction succeeds. */
+	}
+	if (phy && phy->ext_band_transaction == transaction)
+		phy->ext_band_transaction = NULL;
+	if (ctl && ctl->active_transaction == transaction)
+		ctl->active_transaction = NULL;
+	transaction->active = false;
+	transaction->terminal = true;
+	transaction->terminal_status = status;
+	return status;
+}
+
+int32_t ad9361_ext_band_transaction_start(struct ad9361_rf_phy *phy,
+		bool tx, uint64_t freq,
+	struct ad9361_ext_band_transaction *transaction)
+{
+	struct ad9361_ext_band_ctl *ctl;
+	struct ad9361_band_setting *target, *current;
+	int32_t ret;
+
+	if (!phy || !transaction)
+		return -EINVAL;
+	if (transaction->active)
+		return -EBUSY;
+	if (ad9361_calibration_state_unknown(phy))
+		return -EIO;
+	if (ad9361_operation_busy(phy))
+		return -EBUSY;
+	memset(transaction, 0, sizeof(*transaction));
+	transaction->phy = phy;
+	transaction->tx = tx;
+	transaction->frequency_hz = freq;
+	ctl = phy->ext_band_ctl;
+	if (!ctl) {
+		transaction->terminal = true;
+		return 0;
+	}
+	if (ctl->registered_phy != phy ||
+	    ctl->ngpios < 0 || ctl->ngpios > AD9361_EXT_BAND_MAX_GPIOS) {
+		transaction->terminal = true;
+		transaction->terminal_status = -EINVAL;
+		return -EINVAL;
+	}
+	if (ctl->active_transaction) {
+		transaction->terminal = true;
+		transaction->terminal_status = -EBUSY;
+		return -EBUSY;
+	}
+	ret = band_find_target(ctl, tx, freq, &target);
+	if (ret < 0) {
+		transaction->terminal = true;
+		transaction->terminal_status = ret;
+		return ret;
+	}
+	transaction->ctl = ctl;
+	transaction->target_setting = target;
+	current = tx ? ctl->current_tx_setting : ctl->current_rx_setting;
+	if (!target || target == current) {
+		transaction->terminal = true;
+		return 0;
+	}
+	if (current) {
+		ret = band_validate_action(ctl, current);
+		if (ret < 0) {
+			transaction->terminal = true;
+			transaction->terminal_status = ret;
+			return ret;
+		}
+	}
+	ret = band_validate_graph(ctl, target);
+	if (ret < 0) {
+		transaction->terminal = true;
+		transaction->terminal_status = ret;
+		return ret;
+	}
+	transaction->stack[0].setting = target;
+	transaction->stack[0].current_setting = current;
+	transaction->stack[0].phase = AD9361_BAND_PHASE_PRE;
+	transaction->depth = 1;
+	transaction->active = true;
+	ctl->active_transaction = transaction;
+	phy->ext_band_transaction = transaction;
+	return 0;
+}
+
+int32_t ad9361_ext_band_transaction_poll(struct ad9361_rf_phy *phy,
+		struct ad9361_ext_band_transaction *transaction)
+{
+	struct ad9361_ext_band_transaction_frame *frame;
+	struct ad9361_band_setting *setting;
+	int32_t ret;
+
+	if (!phy || !transaction)
+		return -EINVAL;
+	if (transaction->terminal)
+		return transaction->phy == phy ? transaction->terminal_status : -EINVAL;
+	if (!transaction->active || transaction->phy != phy || !transaction->ctl ||
+	    phy->ext_band_transaction != transaction ||
+	    transaction->ctl->active_transaction != transaction) {
+		return band_finish(transaction, -EIO);
+	}
+	if (ad9361_calibration_state_unknown(phy))
+		return band_finish(transaction, -EIO);
+
+	for (;;) {
+		if (!transaction->depth)
+			return band_finish(transaction, -EIO);
+		frame = &transaction->stack[transaction->depth - 1U];
+		setting = (struct ad9361_band_setting *)frame->setting;
+		switch (frame->phase) {
+		case AD9361_BAND_PHASE_PRE:
+			if (frame->index < setting->pre_seq_len) {
+				const struct ad9361_band_setting *child =
+					&setting->pre_seq[frame->index++];
+
+				if (transaction->depth >= AD9361_EXT_BAND_MAX_SEQ_DEPTH)
+					return band_finish(transaction, -E2BIG);
+				frame->resume_phase = AD9361_BAND_PHASE_PRE;
+				frame->phase = AD9361_BAND_PHASE_WAIT;
+				frame->delay_deadline_us = child->delay_us;
+				frame->gpio_index = UINT32_MAX;
+				frame = &transaction->stack[transaction->depth++];
+				memset(frame, 0, sizeof(*frame));
+				frame->setting = child;
+				frame->phase = AD9361_BAND_PHASE_PRE;
+				continue;
+			}
+			frame->phase = AD9361_BAND_PHASE_GPIO;
+			frame->gpio_index = 0;
+			continue;
+		case AD9361_BAND_PHASE_GPIO:
+			if (setting->gpio_values &&
+			    frame->gpio_index < (uint32_t)transaction->ctl->ngpios) {
+				uint32_t index = frame->gpio_index++;
+				uint32_t new_op = setting->gpio_values[index];
+				uint32_t old_op = frame->current_setting &&
+					frame->current_setting->gpio_values ?
+					frame->current_setting->gpio_values[index] :
+					AD9361_EXT_BAND_CTL_OP_NOP;
+
+				if (new_op == AD9361_EXT_BAND_CTL_OP_NOP ||
+				    (frame->current_setting && new_op == old_op))
+					continue;
+				transaction->mutation_started = true;
+				switch (new_op) {
+				case AD9361_EXT_BAND_CTL_OP_LOW:
+					ret = no_os_gpio_direction_output(
+						transaction->ctl->gpios[index], 0);
+					break;
+				case AD9361_EXT_BAND_CTL_OP_HIGH:
+					ret = no_os_gpio_direction_output(
+						transaction->ctl->gpios[index], 1);
+					break;
+				case AD9361_EXT_BAND_CTL_OP_INPUT:
+					ret = no_os_gpio_direction_input(
+						transaction->ctl->gpios[index]);
+					break;
+				default:
+					return band_finish(transaction, -EINVAL);
+				}
+				return ret < 0 ? band_finish(transaction, ret) : 1;
+			}
+			frame->phase = AD9361_BAND_PHASE_RX_PORT;
+			continue;
+		case AD9361_BAND_PHASE_RX_PORT:
+			if (setting->rf_rx_input_sel != AD9361_EXT_BAND_NO_PORT_SEL &&
+			    (!frame->current_setting ||
+			     frame->current_setting->rf_rx_input_sel !=
+				setting->rf_rx_input_sel)) {
+				transaction->mutation_started = true;
+				phy->ext_band_transaction = NULL;
+				ret = ad9361_rf_port_setup(phy, false,
+					setting->rf_rx_input_sel, 0);
+				phy->ext_band_transaction = transaction;
+				if (ret < 0)
+					return band_finish(transaction, ret);
+				return 1;
+			}
+			frame->phase = AD9361_BAND_PHASE_TX_PORT;
+			continue;
+		case AD9361_BAND_PHASE_TX_PORT:
+			if (setting->rf_tx_output_sel != AD9361_EXT_BAND_NO_PORT_SEL &&
+			    (!frame->current_setting ||
+			     frame->current_setting->rf_tx_output_sel !=
+				setting->rf_tx_output_sel)) {
+				transaction->mutation_started = true;
+				phy->ext_band_transaction = NULL;
+				ret = ad9361_rf_port_setup(phy, true, 0,
+					setting->rf_tx_output_sel);
+				phy->ext_band_transaction = transaction;
+				if (ret < 0)
+					return band_finish(transaction, ret);
+				return 1;
+			}
+			frame->phase = AD9361_BAND_PHASE_POST;
+			frame->index = 0;
+			continue;
+		case AD9361_BAND_PHASE_POST:
+			if (frame->index < setting->post_seq_len) {
+				const struct ad9361_band_setting *child =
+					&setting->post_seq[frame->index++];
+
+				if (transaction->depth >= AD9361_EXT_BAND_MAX_SEQ_DEPTH)
+					return band_finish(transaction, -E2BIG);
+				frame->resume_phase = AD9361_BAND_PHASE_POST;
+				frame->phase = AD9361_BAND_PHASE_WAIT;
+				frame->delay_deadline_us = child->delay_us;
+				frame = &transaction->stack[transaction->depth++];
+				memset(frame, 0, sizeof(*frame));
+				frame->setting = child;
+				frame->phase = AD9361_BAND_PHASE_PRE;
+				continue;
+			}
+			transaction->depth--;
+			if (!transaction->depth) {
+				if (transaction->tx)
+					transaction->ctl->current_tx_setting =
+						transaction->target_setting;
+				else
+					transaction->ctl->current_rx_setting =
+						transaction->target_setting;
+				return band_finish(transaction, 0);
+			}
+			frame = &transaction->stack[transaction->depth - 1U];
+			if (frame->delay_deadline_us) {
+				uint32_t delay_us = (uint32_t)frame->delay_deadline_us;
+
+				frame->delay_deadline_us = band_time_us() + delay_us;
+				frame->phase = AD9361_BAND_PHASE_WAIT;
+				return 1;
+			}
+			frame->phase = frame->resume_phase;
+			continue;
+		case AD9361_BAND_PHASE_WAIT:
+			if (band_time_us() < frame->delay_deadline_us)
+				return 1;
+			frame->delay_deadline_us = 0;
+			frame->phase = frame->resume_phase;
+			return 1;
+		default:
+			return band_finish(transaction, -EIO);
+		}
+	}
+}
+
+uint32_t ad9361_ext_band_transaction_poll_delay_us(
+		const struct ad9361_ext_band_transaction *transaction)
+{
+	uint64_t now, remaining;
+	const struct ad9361_ext_band_transaction_frame *frame;
+
+	if (!transaction || !transaction->active || !transaction->depth)
+		return 0;
+	frame = &transaction->stack[transaction->depth - 1U];
+	if (frame->phase != AD9361_BAND_PHASE_WAIT)
+		return 0;
+	now = band_time_us();
+	remaining = frame->delay_deadline_us > now ?
+		frame->delay_deadline_us - now : 0;
+	return remaining > UINT32_MAX ? UINT32_MAX : (uint32_t)remaining;
+}
+
+static int32_t ad9361_ext_band_transaction_run_sync(
+		struct ad9361_rf_phy *phy, bool tx, uint64_t freq)
+{
+	struct ad9361_ext_band_transaction transaction = {0};
+	int32_t ret;
+
+	ret = ad9361_ext_band_transaction_start(phy, tx, freq, &transaction);
+	if (ret < 0)
+		return ret;
+	for (;;) {
+		uint32_t delay_us;
+
+		ret = ad9361_ext_band_transaction_poll(phy, &transaction);
+		if (ret != 1)
+			return ret;
+		delay_us = ad9361_ext_band_transaction_poll_delay_us(&transaction);
+		if (delay_us)
+			no_os_udelay(delay_us);
+	}
+}
+
+/** Apply an RX band change through the retained sequence engine. */
 int32_t ad9361_adjust_rx_ext_band_settings(struct ad9361_rf_phy *phy,
 		uint64_t freq)
 {
-	struct ad9361_ext_band_ctl *ctl;
-	struct ad9361_band_setting *sett;
-	int ret;
-
 	if (!phy)
 		return -EINVAL;
-
-	if (!phy->ext_band_ctl)
-		return 0;
-
-	ctl = phy->ext_band_ctl;
-
-	sett = find_setting(ctl->rx_settings, ctl->rx_count, freq);
-	if (!sett)
-		return 0;
-
-	if (ctl->current_rx_setting == sett)
-		return 0;
-
-	ret = apply_setting(phy, sett,
-			    (const struct ad9361_band_setting **)
-			    &ctl->current_rx_setting);
-	if (ret < 0) {
-		/* GPIOs and RF ports may already be partially changed. Forget the
-		 * cached band so a later request, including a return to the previous
-		 * band, reapplies every configured pin and port. */
-		ctl->current_rx_setting = NULL;
-	}
-	return ret;
+	return ad9361_ext_band_transaction_run_sync(phy, false, freq);
 }
 
-/**
- * @brief Switch TX band for a new LO frequency.
- * @param phy  - AD9361 PHY state.
- * @param freq - New TX LO frequency in Hz.
- * @return 0 on success, or negative errno on hardware failure.
- */
+/** Apply a TX band change through the retained sequence engine. */
 int32_t ad9361_adjust_tx_ext_band_settings(struct ad9361_rf_phy *phy,
 		uint64_t freq)
 {
-	struct ad9361_ext_band_ctl *ctl;
-	struct ad9361_band_setting *sett;
-	int ret;
-
 	if (!phy)
 		return -EINVAL;
-
-	if (!phy->ext_band_ctl)
-		return 0;
-
-	ctl = phy->ext_band_ctl;
-
-	sett = find_setting(ctl->tx_settings, ctl->tx_count, freq);
-	if (!sett)
-		return 0;
-
-	if (ctl->current_tx_setting == sett)
-		return 0;
-
-	ret = apply_setting(phy, sett,
-			    (const struct ad9361_band_setting **)
-			    &ctl->current_tx_setting);
-	if (ret < 0) {
-		/* A failed band change can leave external switch GPIOs partially
-		 * updated. Force a complete reapply on the next TX band request. */
-		ctl->current_tx_setting = NULL;
-	}
-	return ret;
+	return ad9361_ext_band_transaction_run_sync(phy, true, freq);
 }

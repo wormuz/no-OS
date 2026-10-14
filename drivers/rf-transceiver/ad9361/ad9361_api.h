@@ -292,7 +292,46 @@ typedef struct {
 	struct axi_adc_init	*rx_adc_init;
 	struct axi_dac_init	*tx_dac_init;
 #endif
+	/* Opt in to the factory RSSI gain-step calibration during ad9361_setup.
+	 * This requires a controlled RF input; ordinary runtime initialization
+	 * skips it unless explicitly requested. */
+	uint8_t		rssi_gain_step_calibration_enable;
 } AD9361_InitParam;
+
+/* Candidate-PHY constructor cursor. Zero-initialize this context before its
+ * first start. Keep this context, init_param, and phy_out at stable addresses
+ * through terminal poll. The candidate is not published through phy_out until
+ * all setup and platform post-setup phases succeed. Accepted transactions
+ * have no cancel operation. */
+struct ad9361_init_transaction {
+	struct ad9361_setup_transaction setup_job;
+	struct ad9361_rf_phy *candidate;
+	struct ad9361_rf_phy **phy_out;
+	AD9361_InitParam *init_param;
+	uint64_t phase_deadline_us;
+	uint8_t lock_config_index;
+	uint8_t lock_config_value;
+	enum {
+		AD9361_INIT_TXN_RESET_ASSERT = 0,
+		AD9361_INIT_TXN_RESET_LOW_WAIT,
+		AD9361_INIT_TXN_RESET_RELEASE,
+		AD9361_INIT_TXN_RESET_HIGH_WAIT,
+		AD9361_INIT_TXN_PRODUCT_ID,
+		AD9361_INIT_TXN_LOCK_READ,
+		AD9361_INIT_TXN_LOCK_WRITE,
+		AD9361_INIT_TXN_LOCK_VERIFY,
+		AD9361_INIT_TXN_CLOCKS,
+		AD9361_INIT_TXN_SETUP_START,
+		AD9361_INIT_TXN_SETUP_POLL,
+		AD9361_INIT_TXN_PLATFORM_POST_SETUP,
+	} stage;
+	int32_t revision;
+	int32_t status;
+	int32_t cleanup_status;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
 
 typedef struct {
 	uint32_t	rx;				/* 1, 2, 3(both) */
@@ -362,11 +401,32 @@ enum ad9361_ensm_mode {
 #define ON			0
 #define OFF			1
 
-/* Initialize the AD9361 part. */
+/* Initialize the AD9361 part. On ordinary failure the output is NULL. If
+ * cleanup cannot consume a quarantined/busy partial PHY, the output remains
+ * non-NULL and ownership is returned to the caller for reset recovery. */
 int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 		    AD9361_InitParam *init_param);
-/* Free the allocated resources. The PHY pointer is consumed even when a
- * platform cleanup callback fails; callers must discard it on every return. */
+int32_t ad9361_init_transaction_start(
+		struct ad9361_init_transaction *transaction,
+		struct ad9361_rf_phy **ad9361_phy,
+		AD9361_InitParam *init_param);
+int32_t ad9361_init_transaction_poll(
+		struct ad9361_init_transaction *transaction);
+uint32_t ad9361_init_transaction_poll_delay_us(
+		const struct ad9361_init_transaction *transaction);
+/* Free allocated resources. `board_reset_asserted` must attest that the
+ * board-level RESETB pin is physically held low for the entire call; it is
+ * the only way to release an ambiguous calibration quarantine. The PHY is
+ * consumed when `consumed` is true, including if platform cleanup reports an
+ * error. Callers must serialize removal against every API operation and
+ * retained-job poll. RESETB aborts hardware work; it does not retire a live
+ * software parent context, so such a context still returns -EBUSY. */
+int32_t ad9361_remove_ex(struct ad9361_rf_phy *phy,
+		bool board_reset_asserted, bool *consumed);
+/* Compatibility wrapper. A quarantined calibration remains busy because
+ * this form cannot attest that board RESETB is asserted. For exact ownership
+ * after any errno, use ad9361_remove_ex(): -EBUSY here means not consumed,
+ * while a cleanup callback can also return -EBUSY after consumption. */
 int32_t ad9361_remove(struct ad9361_rf_phy *phy);
 /* Set the Enable State Machine (ENSM) mode. */
 int32_t ad9361_set_en_state_machine_mode(struct ad9361_rf_phy *phy,
@@ -389,6 +449,14 @@ int32_t ad9361_get_rx_rf_bandwidth(struct ad9361_rf_phy *phy,
 /* Set the RX sampling frequency. */
 int32_t ad9361_set_rx_sampling_freq(struct ad9361_rf_phy *phy,
 				    uint32_t sampling_freq_hz);
+int32_t ad9361_sample_rate_transaction_start(
+		struct ad9361_rf_phy *phy, uint32_t sampling_freq_hz, bool tx,
+		struct ad9361_sample_rate_transaction *transaction);
+/* Returns 1 while new bandwidth/TXQ or recovery work is active, 0 after the
+ * new plan commits, or the original terminal error after recovery attempt. */
+int32_t ad9361_sample_rate_transaction_poll(
+		struct ad9361_rf_phy *phy,
+		struct ad9361_sample_rate_transaction *transaction);
 /* Get current RX sampling frequency. */
 int32_t ad9361_get_rx_sampling_freq(struct ad9361_rf_phy *phy,
 				    uint32_t *sampling_freq_hz);
@@ -481,6 +549,15 @@ int32_t ad9361_get_tx_sampling_freq(struct ad9361_rf_phy *phy,
 				    uint32_t *sampling_freq_hz);
 /* Set the TX LO frequency. */
 int32_t ad9361_set_tx_lo_freq(struct ad9361_rf_phy *phy, uint64_t lo_freq_hz);
+/* Ensure TX quadrature calibration is valid for the final selected output,
+ * active TX mode, and current LO. Call after configuring LO and RF port. */
+int32_t ad9361_ensure_tx_quad_calib(struct ad9361_rf_phy *phy);
+/* Returns 1 when the keyed TXQ history is already valid, 0 when a transaction
+ * was started, or a negative errno. */
+int32_t ad9361_ensure_tx_quad_calib_start(
+		struct ad9361_rf_phy *phy,
+		struct ad9361_tx_quad_calibration_transaction *transaction);
+void ad9361_invalidate_tx_quad_calib(struct ad9361_rf_phy *phy);
 /* Get current TX LO frequency. */
 int32_t ad9361_get_tx_lo_freq(struct ad9361_rf_phy *phy, uint64_t *lo_freq_hz);
 /* Switch between internal and external LO. */

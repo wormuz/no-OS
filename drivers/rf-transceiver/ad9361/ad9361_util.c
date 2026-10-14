@@ -59,6 +59,14 @@ int32_t clk_get_rate_checked(struct ad9361_rf_phy *phy,
 	if (!phy || !clk_priv || clk_priv->phy != phy || !rate ||
 	    (uint32_t)clk_priv->source >= NUM_AD9361_CLKS)
 		return -EINVAL;
+	/* A checked clock read can fall through to live divider-register reads.
+	 * No rate is authoritative while any RFIC wait/job owns the device: an
+	 * RFPLL may be between divider writes, or a calibration may still be
+	 * changing the clock-dependent state. */
+	if (ad9361_operation_busy(phy))
+		return -EBUSY;
+	if (ad9361_calibration_state_unknown(phy))
+		return -EIO;
 
 	switch (clk_priv->source) {
 	case TX_REFCLK:
@@ -168,6 +176,306 @@ static int32_t ad9361_clock_rate_update_failed(
 	return status;
 }
 
+void ad9361_clock_rate_invalidate(struct ad9361_rf_phy *phy,
+				 uint32_t source)
+{
+	ad9361_invalidate_clock_rate_subtree(phy, source);
+}
+
+int32_t ad9361_bbpll_clock_transaction_start(
+	struct ad9361_rf_phy *phy, struct refclk_scale *clk_priv,
+	uint32_t rate, struct ad9361_bbpll_clock_transaction *transaction)
+{
+	uint32_t parent_rate, rounded_rate;
+	int32_t ret;
+
+	if (!phy || !clk_priv || !transaction || !rate ||
+	    clk_priv->phy != phy || clk_priv->source != BBPLL_CLK ||
+	    !phy->clk_refin || !phy->clks[BBPLL_CLK] ||
+	    (uint32_t)clk_priv->parent_source >= NUM_AD9361_CLKS ||
+	    !phy->clks[clk_priv->parent_source])
+		return -EINVAL;
+	if (transaction->active || transaction->rate_transaction.active ||
+	    transaction->rate_transaction.wait.active)
+		return -EBUSY;
+	memset(transaction, 0, sizeof(*transaction));
+	if (ad9361_calibration_state_unknown(phy))
+		return -EIO;
+	if (ad9361_operation_busy(phy))
+		return -EBUSY;
+
+	parent_rate = phy->clks[clk_priv->parent_source]->rate;
+	if (parent_rate == 0)
+		return -EINVAL;
+	rounded_rate = ad9361_bbpll_round_rate(clk_priv, rate, &parent_rate);
+	if ((int32_t)rounded_rate < 0)
+		return (int32_t)rounded_rate;
+
+	transaction->phy = phy;
+	transaction->clk_priv = clk_priv;
+	transaction->rounded_rate = rounded_rate;
+
+	ret = ad9361_bbpll_rate_transaction_start(
+		clk_priv, rounded_rate, parent_rate,
+		&transaction->rate_transaction);
+	if (ret < 0) {
+		transaction->phy = NULL;
+		transaction->clk_priv = NULL;
+		return ret;
+	}
+	transaction->rate_transaction.retain_owner_on_terminal = true;
+
+	/* The old cached rate ceases to describe the RFIC as soon as this
+	 * transaction is accepted. Publish it again only after lock and readback. */
+	ad9361_invalidate_clock_rate_subtree(phy, BBPLL_CLK);
+	transaction->active = true;
+	transaction->terminal_status = -EINPROGRESS;
+	return 0;
+}
+
+static void ad9361_bbpll_clock_transaction_release_owner(
+	struct ad9361_bbpll_clock_transaction *transaction)
+{
+	if (transaction->phy &&
+	    transaction->phy->bbpll_rate_transaction ==
+	    &transaction->rate_transaction)
+		transaction->phy->bbpll_rate_transaction = NULL;
+}
+
+int32_t ad9361_bbpll_clock_transaction_poll(
+	struct ad9361_rf_phy *phy,
+	struct ad9361_bbpll_clock_transaction *transaction)
+{
+	uint32_t readback_rate;
+	int32_t ret;
+
+	if (!phy || !transaction)
+		return -EINVAL;
+	if (transaction->terminal)
+		return transaction->phy == phy ? transaction->terminal_status :
+		       -EINVAL;
+	if (!transaction->active || transaction->phy != phy ||
+	    !transaction->clk_priv || transaction->clk_priv->phy != phy ||
+	    transaction->clk_priv->source != BBPLL_CLK) {
+		if (transaction->rate_transaction.phy)
+			(void)ad9361_bbpll_rate_transaction_poll(
+				phy, &transaction->rate_transaction);
+		if (transaction->phy)
+			ad9361_clock_rate_update_failed(
+				transaction->phy, BBPLL_CLK, -EIO);
+		ad9361_bbpll_clock_transaction_release_owner(transaction);
+		transaction->active = false;
+		transaction->terminal = true;
+		transaction->terminal_status = -EIO;
+		return -EIO;
+	}
+
+	if (!transaction->verify_pending) {
+		ret = ad9361_bbpll_rate_transaction_poll(
+			phy, &transaction->rate_transaction);
+		if (ret == 1)
+			return 1;
+		if (ret < 0) {
+			transaction->active = false;
+			transaction->terminal = true;
+			transaction->terminal_status =
+				ad9361_clock_rate_update_failed(phy, BBPLL_CLK, ret);
+			ad9361_bbpll_clock_transaction_release_owner(transaction);
+			return transaction->terminal_status;
+		}
+		/* Keep the low-level owner while divider readback runs in its own
+		 * cooperative poll, so no other AD9361 user can interleave here. */
+		transaction->verify_pending = true;
+		return 1;
+	}
+
+	ret = ad9361_bbpll_recalc_rate_checked(
+		transaction->clk_priv,
+		phy->clks[transaction->clk_priv->parent_source]->rate,
+		&readback_rate);
+	if (ret < 0) {
+		transaction->active = false;
+		transaction->terminal = true;
+		transaction->terminal_status =
+			ad9361_clock_rate_update_failed(phy, BBPLL_CLK, ret);
+		ad9361_bbpll_clock_transaction_release_owner(transaction);
+		return transaction->terminal_status;
+	}
+
+	phy->clks[BBPLL_CLK]->rate = readback_rate;
+	phy->bbpll_initialized = true;
+	ad9361_bbpll_clock_transaction_release_owner(transaction);
+	transaction->active = false;
+	transaction->terminal = true;
+	transaction->terminal_status = 0;
+	return 0;
+}
+
+int32_t ad9361_bbpll_clock_set_rate(struct ad9361_rf_phy *phy,
+				   struct refclk_scale *clk_priv,
+				   uint32_t rate)
+{
+	struct ad9361_bbpll_clock_transaction transaction = {0};
+	int32_t ret;
+
+	ret = ad9361_bbpll_clock_transaction_start(
+		phy, clk_priv, rate, &transaction);
+	if (ret < 0)
+		return ret;
+
+	for (;;) {
+		struct no_os_time now;
+		uint64_t now_us, remaining_us;
+
+		ret = ad9361_bbpll_clock_transaction_poll(phy, &transaction);
+		if (ret != 1)
+			return ret;
+		if (!transaction.rate_transaction.wait_started)
+			continue;
+		now = no_os_get_time();
+		now_us = (uint64_t)now.s * 1000000ULL + now.us;
+		remaining_us =
+			transaction.rate_transaction.wait.poll_not_before_us > now_us ?
+			transaction.rate_transaction.wait.poll_not_before_us - now_us :
+			0;
+		if (remaining_us != 0)
+			no_os_udelay(remaining_us >
+				     transaction.rate_transaction.wait.poll_delay_us ?
+				     transaction.rate_transaction.wait.poll_delay_us :
+				     (uint32_t)remaining_us);
+	}
+}
+
+int32_t ad9361_rfpll_clock_transaction_start(
+	struct ad9361_rf_phy *phy, struct refclk_scale *clk_priv,
+	uint32_t rate, struct ad9361_rfpll_clock_transaction *transaction)
+{
+	struct refclk_scale *int_clk;
+	uint32_t parent_rate;
+	uint64_t requested_hz;
+	uint64_t min_hz;
+	uint8_t tx;
+	int32_t rounded_rate;
+	int32_t ret;
+
+	if (!phy || !phy->pdata || !clk_priv || !transaction || !rate ||
+	    clk_priv->phy != phy ||
+	    (clk_priv->source != RX_RFPLL && clk_priv->source != TX_RFPLL) ||
+	    !phy->clks[clk_priv->source])
+		return -EINVAL;
+	if (transaction->active || transaction->rate_transaction.active ||
+	    transaction->rate_transaction.wait.active)
+		return -EBUSY;
+	if (ad9361_calibration_state_unknown(phy))
+		return -EIO;
+	if (ad9361_operation_busy(phy))
+		return -EBUSY;
+
+	tx = clk_priv->source == TX_RFPLL;
+	if (tx ? phy->pdata->use_ext_tx_lo : phy->pdata->use_ext_rx_lo)
+		return -ENOTSUP;
+	requested_hz = ad9361_from_clk(rate);
+	min_hz = tx ? MIN_TX_CARRIER_FREQ_HZ : MIN_RX_CARRIER_FREQ_HZ;
+	if (requested_hz < min_hz || requested_hz > MAX_CARRIER_FREQ_HZ)
+		return -EINVAL;
+	int_clk = phy->ref_clk_scale[tx ? TX_RFPLL_INT : RX_RFPLL_INT];
+	if (!int_clk || int_clk->phy != phy ||
+	    int_clk->source != (tx ? TX_RFPLL_INT : RX_RFPLL_INT) ||
+	    (uint32_t)int_clk->parent_source >= NUM_AD9361_CLKS ||
+	    !phy->clks[int_clk->parent_source])
+		return -EINVAL;
+	parent_rate = phy->clks[int_clk->parent_source]->rate;
+	if (!parent_rate)
+		return -EINVAL;
+
+	/* The internal RFPLL round-rate path range-checks and preserves the
+	 * requested shifted rate, matching clk_set_rate()'s existing behavior. */
+	rounded_rate = ad9361_rfpll_int_round_rate(int_clk, rate,
+							 &parent_rate);
+	if (rounded_rate < 0 && rate <= INT32_MAX)
+		return rounded_rate;
+
+	memset(transaction, 0, sizeof(*transaction));
+	transaction->phy = phy;
+	transaction->clk_priv = clk_priv;
+	transaction->source = (uint8_t)clk_priv->source;
+	transaction->requested_rate = rate;
+	transaction->rounded_rate = (uint32_t)rounded_rate;
+	if (phy->rfpll_requested_valid[tx] &&
+	    phy->rfpll_requested[tx] == transaction->rounded_rate) {
+		transaction->terminal = true;
+		transaction->terminal_status = 0;
+		return 0;
+	}
+
+	phy->rfpll_requested_valid[tx] = false;
+	ret = ad9361_rfpll_rate_transaction_start(
+		int_clk, transaction->rounded_rate, parent_rate,
+		&transaction->rate_transaction);
+	if (ret < 0) {
+		transaction->terminal = true;
+		transaction->terminal_status =
+			ad9361_clock_rate_update_failed(phy, clk_priv->source, ret);
+		return transaction->terminal_status;
+	}
+	transaction->active = true;
+	return 0;
+}
+
+int32_t ad9361_rfpll_clock_transaction_poll(
+	struct ad9361_rf_phy *phy,
+	struct ad9361_rfpll_clock_transaction *transaction)
+{
+	uint8_t tx;
+	int32_t ret;
+
+	if (!phy || !transaction)
+		return -EINVAL;
+	if (transaction->terminal)
+		return transaction->phy == phy ? transaction->terminal_status :
+		       -EINVAL;
+	if (!transaction->active || transaction->phy != phy ||
+	    !transaction->clk_priv || transaction->clk_priv->phy != phy ||
+	    transaction->source != transaction->clk_priv->source ||
+	    (transaction->source != RX_RFPLL &&
+	     transaction->source != TX_RFPLL)) {
+		if (transaction->phy && transaction->source < NUM_AD9361_CLKS)
+			ad9361_clock_rate_update_failed(
+				transaction->phy, transaction->source, -EIO);
+		transaction->active = false;
+		transaction->terminal = true;
+		transaction->terminal_status = -EIO;
+		return -EIO;
+	}
+
+	ret = ad9361_rfpll_rate_transaction_poll(
+		phy, &transaction->rate_transaction);
+	if (ret == 1)
+		return 1;
+	if (ret < 0)
+		goto fail;
+
+	ret = ad9361_rfpll_recalc_rate_checked(
+		transaction->clk_priv,
+		&phy->clks[transaction->source]->rate);
+	if (ret < 0)
+		goto fail;
+	tx = transaction->source == TX_RFPLL;
+	phy->rfpll_requested[tx] = transaction->rounded_rate;
+	phy->rfpll_requested_valid[tx] = true;
+	transaction->active = false;
+	transaction->terminal = true;
+	transaction->terminal_status = 0;
+	return 0;
+
+fail:
+	transaction->active = false;
+	transaction->terminal = true;
+	transaction->terminal_status = ad9361_clock_rate_update_failed(
+		phy, transaction->source, ret);
+	return transaction->terminal_status;
+}
+
 /***************************************************************************//**
  * @brief clk_set_rate
 *******************************************************************************/
@@ -183,6 +491,10 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 	    (uint32_t)clk_priv->source >= NUM_AD9361_CLKS ||
 	    !phy->clks[clk_priv->source])
 		return -EINVAL;
+	if (ad9361_calibration_state_unknown(phy))
+		return -EIO;
+	if (ad9361_operation_busy(phy))
+		return -EBUSY;
 	if (!phy->clk_refin)
 		return -EINVAL;
 	for (i = BB_REFCLK; i < NUM_AD9361_CLKS; i++) {
@@ -302,23 +614,9 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 			phy->rfpll_requested_valid[source == TX_RFPLL] = true;
 			break;
 		case BBPLL_CLK:
-			if ((uint32_t)clk_priv->parent_source >= NUM_AD9361_CLKS ||
-			    !phy->clks[clk_priv->parent_source])
-				return -EINVAL;
-			round_rate = ad9361_bbpll_round_rate(clk_priv, rate,
-							     &phy->clks[clk_priv->parent_source]->rate);
-			if ((int32_t)round_rate < 0)
-				return (int32_t)round_rate;
-			ret = ad9361_bbpll_set_rate(clk_priv, round_rate,
-						     phy->clks[clk_priv->parent_source]->rate);
+			ret = ad9361_bbpll_clock_set_rate(phy, clk_priv, rate);
 			if (ret < 0)
-				return ad9361_clock_rate_update_failed(phy, source, ret);
-			ret = ad9361_bbpll_recalc_rate_checked(
-				clk_priv, phy->clks[clk_priv->parent_source]->rate,
-				&phy->clks[source]->rate);
-			if (ret < 0)
-				return ad9361_clock_rate_update_failed(phy, source, ret);
-			phy->bbpll_initialized = true;
+				return ret;
 			break;
 		case ADC_CLK:
 		case R2_CLK:
@@ -390,20 +688,9 @@ int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 		}
 	} else {
 		if ((source == BBPLL_CLK) && !phy->bbpll_initialized) {
-			round_rate = ad9361_bbpll_round_rate(clk_priv, rate,
-							     &phy->clks[clk_priv->parent_source]->rate);
-			if ((int32_t)round_rate < 0)
-				return (int32_t)round_rate;
-			ret = ad9361_bbpll_set_rate(clk_priv, round_rate,
-							     phy->clks[clk_priv->parent_source]->rate);
+			ret = ad9361_bbpll_clock_set_rate(phy, clk_priv, rate);
 			if (ret < 0)
-				return ad9361_clock_rate_update_failed(phy, source, ret);
-			ret = ad9361_bbpll_recalc_rate_checked(
-				clk_priv, phy->clks[clk_priv->parent_source]->rate,
-				&phy->clks[source]->rate);
-			if (ret < 0)
-				return ad9361_clock_rate_update_failed(phy, source, ret);
-			phy->bbpll_initialized = true;
+				return ret;
 		}
 	}
 

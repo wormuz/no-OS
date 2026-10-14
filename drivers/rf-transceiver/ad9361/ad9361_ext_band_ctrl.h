@@ -13,6 +13,8 @@
 
 /* Forward declaration — full definition in ad9361.h */
 struct ad9361_rf_phy;
+struct ad9361_ext_band_transaction;
+struct ad9361_ext_band_ctl;
 
 /* Constants */
 
@@ -21,6 +23,12 @@ struct ad9361_rf_phy;
 
 /** Maximum number of RX or TX band settings per controller. */
 #define AD9361_EXT_BAND_MAX_SETTINGS 64
+
+/** Maximum recursion depth accepted in a nested band-setting graph. */
+#define AD9361_EXT_BAND_MAX_SEQ_DEPTH 8
+
+/** Maximum expanded actions accepted during preflight validation. */
+#define AD9361_EXT_BAND_MAX_SEQ_NODES 1024
 
 /**
  * Sentinel value for rf_rx_input_sel / rf_tx_output_sel meaning
@@ -56,6 +64,10 @@ enum ad9361_ext_band_ctl_op {
  *   3. Switch the RX/TX port if rf_rx_input_sel / rf_tx_output_sel differ
  *      from the current selection.
  *   4. Execute any post_seq[] steps in order.
+ *
+ * pre_seq/post_seq arrays and their GPIO/name allocations are owned by this
+ * setting and must form an exclusive tree (no cycles or shared subtrees).
+ * ad9361_band_setting_free() releases that tree recursively.
  */
 struct ad9361_band_setting {
 	/** Human-readable identifier (optional, used for debug messages). */
@@ -102,6 +114,37 @@ struct ad9361_band_setting {
 	uint32_t post_seq_len;
 };
 
+struct ad9361_ext_band_transaction_frame {
+	const struct ad9361_band_setting *setting;
+	const struct ad9361_band_setting *current_setting;
+	uint64_t delay_deadline_us;
+	uint32_t index;
+	uint32_t gpio_index;
+	uint8_t phase;
+	uint8_t resume_phase;
+};
+
+/* Retained depth-first band switch. Zero-initialize the context before its
+ * first start. The setting tree, controller, GPIO descriptors, and any data
+ * they reference must remain alive and immutable until terminal poll. Each
+ * poll performs at most one GPIO operation or one RF-port operation; delays
+ * use a monotonic deadline. */
+struct ad9361_ext_band_transaction {
+	struct ad9361_rf_phy *phy;
+	struct ad9361_ext_band_ctl *ctl;
+	struct ad9361_band_setting *target_setting;
+	struct ad9361_ext_band_transaction_frame
+		stack[AD9361_EXT_BAND_MAX_SEQ_DEPTH];
+	uint64_t frequency_hz;
+	uint16_t depth;
+	uint16_t expanded_nodes;
+	uint8_t tx;
+	bool active;
+	bool terminal;
+	bool mutation_started;
+	int32_t terminal_status;
+};
+
 /* Controller descriptor */
 
 /**
@@ -128,6 +171,8 @@ struct ad9361_ext_band_ctl {
 	struct ad9361_band_setting *current_rx_setting;
 	/** Currently active TX setting (NULL if none applied yet). */
 	struct ad9361_band_setting *current_tx_setting;
+	struct ad9361_rf_phy *registered_phy;
+	struct ad9361_ext_band_transaction *active_transaction;
 };
 
 
@@ -152,6 +197,8 @@ void ad9361_band_setting_set_delay(struct ad9361_band_setting *s,
 struct ad9361_ext_band_ctl *ad9361_ext_band_ctl_alloc(void);
 void ad9361_ext_band_ctl_free(struct ad9361_ext_band_ctl *ctl);
 
+/* A successfully added setting transfers ownership to the controller; the
+ * same descriptor pointer may be registered only once across RX and TX. */
 int ad9361_ext_band_ctl_add_gpio(struct ad9361_ext_band_ctl *ctl,
 				 struct no_os_gpio_desc *gpio);
 
@@ -172,5 +219,14 @@ int32_t ad9361_adjust_rx_ext_band_settings(struct ad9361_rf_phy *phy,
 
 int32_t ad9361_adjust_tx_ext_band_settings(struct ad9361_rf_phy *phy,
 		uint64_t freq);
+
+int32_t ad9361_ext_band_transaction_start(struct ad9361_rf_phy *phy,
+		bool tx, uint64_t freq,
+	struct ad9361_ext_band_transaction *transaction);
+int32_t ad9361_ext_band_transaction_poll(
+		struct ad9361_rf_phy *phy,
+	struct ad9361_ext_band_transaction *transaction);
+uint32_t ad9361_ext_band_transaction_poll_delay_us(
+		const struct ad9361_ext_band_transaction *transaction);
 
 #endif /* AD9361_EXT_BAND_CTRL_H_ */

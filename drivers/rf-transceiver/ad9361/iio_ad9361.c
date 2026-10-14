@@ -86,6 +86,20 @@ static const char * const ad9361_agc_modes[] =
  */
 extern const char *ad9361_ensm_states[12];
 
+/* Cached IIO values must not look authoritative after an RFIC operation has
+ * failed ambiguously.  Keep static capability attributes available, but gate
+ * attributes that report the current configured/operating state.
+ */
+static int iio_require_known_phy(struct ad9361_rf_phy *phy)
+{
+	if (!phy)
+		return -EINVAL;
+	if (ad9361_calibration_state_unknown(phy))
+		return -EIO;
+
+	return 0;
+}
+
 static int parse_u32_attr(const char *buf, uint32_t *value)
 {
 	char *end;
@@ -301,6 +315,10 @@ static int get_sampling_frequency_available(void *device, char *buf,
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
 	int32_t int_dec;
 	uint32_t max;
+	int ret = iio_require_known_phy(ad9361_phy);
+
+	if (ret < 0)
+		return ret;
 
 	if (ad9361_phy->pdata->port_ctrl.pp_conf[2] & LVDS_MODE)
 		max = 61440000U;
@@ -458,6 +476,11 @@ static int get_gain_control_mode(void *device, char *buf, uint32_t len,
 				 intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
+	int ret = iio_require_known_phy(ad9361_phy);
+
+	if (ret < 0 || !channel || channel->ch_num > 1)
+		return ret < 0 ? ret : -EINVAL;
+
 	return (int) snprintf(buf, len, "%s",
 			      ad9361_agc_modes[ad9361_phy->agc_mode[channel->ch_num]]);
 }
@@ -620,6 +643,10 @@ static int get_powerdown(void *device, char *buf, uint32_t len,
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
 	uint64_t val = 0;
+	int ret = iio_require_known_phy(ad9361_phy);
+
+	if (ret < 0 || !channel || channel->ch_num > 1)
+		return ret < 0 ? ret : -EINVAL;
 
 	val = !!(ad9361_phy->cached_synth_pd[channel->ch_num ? 0 : 1] &
 		 RX_LO_POWER_DOWN);
@@ -698,6 +725,10 @@ static int get_external(void *device, char *buf, uint32_t len,
 			const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
+	int ret = iio_require_known_phy(ad9361_phy);
+
+	if (ret < 0 || !channel || channel->ch_num > 1)
+		return ret < 0 ? ret : -EINVAL;
 
 	if (channel->ch_num == 0)
 		return (int) snprintf(buf, len, "%"PRIi16"",
@@ -719,9 +750,17 @@ static int get_fastlock_recall(void *device, char *buf, uint32_t len,
 			       const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
+	int ret = iio_require_known_phy(ad9361_phy);
+	uint8_t profile;
+
+	if (ret < 0 || !channel || channel->ch_num > 1)
+		return ret < 0 ? ret : -EINVAL;
+	profile = ad9361_phy->fastlock.current_profile[channel->ch_num];
+	if (profile == 0xff)
+		return -EIO;
 
 	return snprintf(buf, len, "%"PRIi16"",
-			ad9361_phy->fastlock.current_profile[channel->ch_num]);
+			profile);
 }
 
 /**
@@ -882,6 +921,8 @@ static int set_rf_port_select(void *device, char *buf, uint32_t len,
 		    i != ad9361_phy->pdata->rf_tx_output_sel)
 			return -EINVAL;
 		ret = ad9361_set_tx_rf_port_output(ad9361_phy, i);
+		if (ret >= 0)
+			ret = ad9361_ensure_tx_quad_calib(ad9361_phy);
 		return (ret < 0) ? ret : (int)len;
 	} else {
 		for (i = 0; i < NO_OS_ARRAY_SIZE(ad9361_rf_rx_port); i++) {
@@ -1495,6 +1536,10 @@ static int get_dcxo_tune_coarse(void *device, char *buf, uint32_t len,
 				intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
+	int ret = iio_require_known_phy(ad9361_phy);
+
+	if (ret < 0)
+		return ret;
 
 	if (ad9361_phy->pdata->use_extclk)
 		return -ENOENT;
@@ -1606,6 +1651,10 @@ static int get_dcxo_tune_fine(void *device, char *buf, uint32_t len,
 			      const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
+	int ret = iio_require_known_phy(ad9361_phy);
+
+	if (ret < 0)
+		return ret;
 
 	if (ad9361_phy->pdata->use_extclk)
 		return -ENOENT;
@@ -1678,6 +1727,10 @@ static int get_rssi_gain_step_error(void *device, char *buf, uint32_t len,
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
 	struct ad9361_phy_platform_data *pd = ad9361_phy->pdata;
 	int n;
+	int ret = iio_require_known_phy(ad9361_phy);
+
+	if (ret < 0)
+		return ret;
 
 	n = snprintf(buf, len,
 		     "lna_error: %"PRIu32" %"PRIu32" %"PRIu32" %"PRIu32" "
@@ -1917,6 +1970,10 @@ static int get_filter_fir_config(void *device, char *buf, uint32_t len,
 				 intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
+	int ret = iio_require_known_phy(ad9361_phy);
+
+	if (ret < 0 || !ad9361_phy->fir_config_valid)
+		return ret < 0 ? ret : -EIO;
 
 	return snprintf(buf, len, "FIR Rx: %"PRIu8",%"PRIu8" Tx: %"PRIu8",%"PRIu8"",
 			ad9361_phy->rx_fir_ntaps, ad9361_phy->rx_fir_dec,
@@ -2049,6 +2106,8 @@ static int set_calib_mode(void *device, char *buf, uint32_t len,
 	int ret = 0;
 	uint32_t val = 0;
 
+	if (ad9361_calibration_state_unknown(ad9361_phy))
+		return -EIO;
 	if (ad9361_iio_ensm_sleep_guard(ad9361_phy))
 		return -EINVAL;
 
@@ -2218,6 +2277,8 @@ static int get_gpo(void *device, char *buf, uint32_t len,
 		   const struct iio_ch_info *channel, intptr_t priv)
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
+	if (ad9361_calibration_state_unknown(ad9361_phy))
+		return -EIO;
 	return snprintf(buf, len, "%"PRIu32,
 			ad9361_phy->pdata->gpo_ctrl.gpo_manual_mode_enable_mask);
 }
@@ -2236,6 +2297,9 @@ static int set_gpo(void *device, char *buf, uint32_t len,
 	uint32_t pin, val, mask, new_mask, new_state;
 	int32_t ret;
 	int32_t lna_reg;
+
+	if (ad9361_calibration_state_unknown(ad9361_phy))
+		return -EIO;
 
 	if (!ctrl->gpo_manual_mode_en)
 		return -EINVAL;
@@ -2267,8 +2331,10 @@ static int set_gpo(void *device, char *buf, uint32_t len,
 					(ctrl->gpo1_inactive_state_high_en << 1) |
 					(ctrl->gpo2_inactive_state_high_en << 2) |
 					(ctrl->gpo3_inactive_state_high_en << 3)));
-	if (ret < 0)
+	if (ret < 0) {
+		ad9361_mark_calibration_state_unknown(ad9361_phy);
 		return ret;
+	}
 	/* This register write has committed the new output mask. If the following
 	 * external-LNA selector read/write fails, a later partial pin update must
 	 * build on the mask already present in hardware, not the stale old cache. */
@@ -2276,13 +2342,17 @@ static int set_gpo(void *device, char *buf, uint32_t len,
 
 	/* Ensure GPO_MANUAL_SELECT is set in the external LNA control register */
 	lna_reg = ad9361_spi_read(ad9361_phy->spi, REG_EXTERNAL_LNA_CTRL);
-	if (lna_reg < 0)
+	if (lna_reg < 0) {
+		ad9361_mark_calibration_state_unknown(ad9361_phy);
 		return lna_reg;
+	}
 	if (!(lna_reg & GPO_MANUAL_SELECT)) {
 		ret = ad9361_spi_write(ad9361_phy->spi, REG_EXTERNAL_LNA_CTRL,
 				       lna_reg | GPO_MANUAL_SELECT);
-		if (ret < 0)
+		if (ret < 0) {
+			ad9361_mark_calibration_state_unknown(ad9361_phy);
 			return ret;
+		}
 	}
 	return (int)len;
 }
@@ -2318,6 +2388,10 @@ static int get_bist_timing_analysis(void *device, char *buf, uint32_t len,
 	 * simple integer so that the attribute round-trips symmetrically.
 	 */
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
+	int ret = iio_require_known_phy(ad9361_phy);
+
+	if (ret < 0 || !ad9361_phy->bist_config_valid)
+		return ret < 0 ? ret : -EIO;
 	return snprintf(buf, len, "%"PRIi32, ad9361_phy->bist_config);
 }
 
@@ -2474,6 +2548,8 @@ static int set_initialize(void *device, char *buf, uint32_t len,
 
 	if (val != 1)
 		return -EINVAL;
+	if (ad9361_calibration_state_unknown(ad9361_phy))
+		return -EIO;
 
 	ad9361_clear_state(ad9361_phy);
 	int32_t ret = ad9361_setup(ad9361_phy);

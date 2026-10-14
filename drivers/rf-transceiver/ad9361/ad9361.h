@@ -3342,6 +3342,21 @@ enum ad9361_bist_mode {
 
 struct ad9361_calibration_wait;
 struct ad9361_status_wait;
+struct ad9361_synth_cp_calibration_job;
+struct ad9361_ensm_transition_job;
+struct ad9361_bbpll_rate_transaction;
+struct ad9361_rfpll_rate_transaction;
+struct ad9361_rf_bandwidth_transaction;
+struct ad9361_rf_bandwidth_filter_transaction;
+struct ad9361_rfdc_calibration_job;
+struct ad9361_sample_rate_transaction;
+struct ad9361_tx_quad_calibration_transaction;
+struct ad9361_clock_chain_transaction;
+struct ad9361_setup_calibration_transaction;
+struct ad9361_setup_transaction;
+struct ad9361_gain_table_transaction;
+struct ad9361_ext_band_transaction;
+struct refclk_scale;
 
 enum synth_pd_ctrl {
 	LO_DONTCARE,
@@ -3367,11 +3382,36 @@ struct ad9361_rf_phy {
 	 * state, calibration callers must not issue cleanup/configuration SPI
 	 * writes; recovery requires a complete AD9361 reset and re-init. */
 	bool			calibration_state_unknown;
+	/* Persistent quarantine for an ambiguous started calibration. The wait
+	 * context itself may be stack-owned by a synchronous compatibility call,
+	 * so this PHY-owned bit—not a potentially expired context pointer—keeps
+	 * mutation and ordinary teardown blocked until confirmed RESETB recovery. */
+	bool			calibration_wait_quarantined;
 	/* Identity of the sole active resumable calibration wait. This prevents a
 	 * second context from observing or completing the first one's operation. */
 	struct ad9361_calibration_wait *calibration_wait;
 	/* Status-register jobs share the same single-owner boundary. */
 	struct ad9361_status_wait *status_wait;
+	struct ad9361_ensm_transition_job *ensm_transition_job;
+	/* Charge-pump setup owns the PHY while its ordered register sequence is
+	 * advanced across poll calls, before its child status wait is armed. */
+	struct ad9361_synth_cp_calibration_job *synth_cp_job;
+	/* Retained BBPLL programming owns the PHY from its first staged write
+	 * through lock confirmation, including intervals between poll calls. */
+	struct ad9361_bbpll_rate_transaction *bbpll_rate_transaction;
+	struct ad9361_rfpll_rate_transaction *rfpll_rate_transaction;
+	/* Retained RX gain-table row writer used as a child of RFPLL changes. */
+	struct ad9361_gain_table_transaction *gain_table_transaction;
+	/* Composite continuations retain PHY ownership between poll calls even
+	 * when their nested calibration wait has already completed. */
+	struct ad9361_rf_bandwidth_transaction *rf_bandwidth_transaction;
+	struct ad9361_rfdc_calibration_job *rfdc_transaction;
+	struct ad9361_rf_bandwidth_filter_transaction *rf_bandwidth_filter_transaction;
+	struct ad9361_sample_rate_transaction *sample_rate_transaction;
+	struct ad9361_tx_quad_calibration_transaction *tx_quad_transaction;
+	struct ad9361_clock_chain_transaction *clock_chain_transaction;
+	struct ad9361_setup_calibration_transaction *setup_calibration_transaction;
+	struct ad9361_setup_transaction *setup_transaction;
 	struct no_os_gpio_desc 	*gpio_desc_resetb;
 	struct no_os_gpio_desc 	*gpio_desc_sync;
 	struct no_os_gpio_desc 	*gpio_desc_cal_sw1;
@@ -3488,13 +3528,17 @@ struct ad9361_rf_phy {
 	uint32_t				bist_tone_mask;
 	bool			bbpll_initialized;
 	struct ad9361_ext_band_ctl	*ext_band_ctl;
+	struct ad9361_ext_band_transaction *ext_band_transaction;
 };
 
 /* Resumable wait state for a single AD9361 calibration engine operation.
- * start() performs the register write that starts calibration; poll() performs
- * one bounded status observation and never sleeps. The caller must retain
- * exclusive ownership of the PHY until poll() returns a terminal result. */
+ * Zero-initialize before first start and keep at a stable address. start()
+ * performs the register write that starts calibration; poll() performs one
+ * bounded status observation and never sleeps. An active context cannot be
+ * rebound to another PHY. The caller must retain exclusive ownership of the
+ * PHY until poll() returns a terminal result. */
 struct ad9361_calibration_wait {
+	struct ad9361_rf_phy *phy;
 	uint32_t mask;
 	uint32_t timeout_us;
 	uint32_t poll_delay_us;
@@ -3510,13 +3554,17 @@ struct ad9361_calibration_wait {
 };
 
 /* Resumable wait for a non-calibration status field (for example the RF
- * synthesizer charge-pump calibration-done bit). start() records the
- * monotonic deadline; poll() performs at most one register observation and
- * never delays. The caller retains exclusive PHY ownership until terminal. */
+ * synthesizer charge-pump calibration-done bit). Zero-initialize before first
+ * start and keep at a stable address. start() records the monotonic deadline;
+ * poll() performs at most one register observation and never delays. An active
+ * context cannot be rebound to another PHY. The caller retains exclusive PHY
+ * ownership until terminal. */
 struct ad9361_status_wait {
+	struct ad9361_rf_phy *phy;
 	uint32_t reg;
 	uint32_t mask;
 	uint32_t done_state;
+	uint16_t accepted_values;
 	uint32_t timeout_us;
 	uint32_t poll_delay_us;
 	uint64_t start_us;
@@ -3525,15 +3573,201 @@ struct ad9361_status_wait {
 	uint64_t polls;
 	bool active;
 	bool terminal;
+	bool match_value_set;
 	int32_t terminal_status;
 };
 
+/* Retained ENSM force/restore transaction. Zero-initialize before start and
+ * keep at a stable address until terminal. Each poll performs at most one
+ * complete register operation or one status observation. FORCE_ALERT is
+ * followed by an ALERT status wait before the target command, so ENSM FLUSH
+ * and WAIT→ALERT timing are confirmed by hardware state rather than guessed. */
+struct ad9361_ensm_transition_job {
+	struct ad9361_status_wait wait;
+	struct ad9361_rf_phy *phy;
+	uint32_t control_value;
+	uint8_t target_state;
+	uint8_t stage;
+	bool force;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
+
+#define AD9361_ENSM_TRANSITION_READ_STATE  0u
+#define AD9361_ENSM_TRANSITION_WAIT_STABLE 1u
+#define AD9361_ENSM_TRANSITION_READ_CONFIG 2u
+#define AD9361_ENSM_TRANSITION_FORCE_ALERT 3u
+#define AD9361_ENSM_TRANSITION_WAIT_ALERT  4u
+#define AD9361_ENSM_TRANSITION_WRITE_STATE 5u
+#define AD9361_ENSM_TRANSITION_PINCTRL     6u
+#define AD9361_ENSM_TRANSITION_WAIT_TARGET 7u
+
+/* Retained BBPLL rate change. Each poll writes at most one setup register;
+ * after the ordered programming sequence it performs one BBPLL-lock status
+ * observation per call. Keep the job at a stable address. By default owner
+ * releases at terminal; the clock-framework wrapper can retain it through
+ * its separate divider-readback/cache-commit phase. */
+struct ad9361_bbpll_rate_transaction {
+	struct ad9361_rf_phy *phy;
+	struct refclk_scale *clk_priv;
+	struct ad9361_status_wait wait;
+	uint32_t write_reg[15];
+	uint8_t write_value[15];
+	uint8_t write_count;
+	uint8_t write_index;
+	bool wait_started;
+	bool retain_owner_on_terminal;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
+
+/* Retained internal RFPLL rate change. Zero-initialize before first start and
+ * keep at a stable address until terminal. A live context cannot be rebound to
+ * another PHY/request. Each programming poll performs one bounded VCO-table/
+ * synth-register phase; lock polling is a separate status observation. The
+ * target LO cache remains invalid until lock, any required paired-FDD fixup,
+ * and temporary-control restoration all succeed. */
+struct ad9361_rfpll_rate_transaction {
+	struct ad9361_rf_phy *phy;
+	struct refclk_scale *clk_priv;
+	struct ad9361_status_wait wait;
+	uint64_t vco;
+	uint64_t tx_lo_freq;
+	uint64_t rx_lo_freq;
+	uint32_t rate;
+	uint32_t parent_rate;
+	uint32_t reg;
+	uint32_t div_mask;
+	uint32_t lock_reg;
+	uint32_t fract;
+	uint32_t integer;
+	uint32_t vco_div;
+	uint32_t target_vco_div;
+	uint8_t stage;
+	uint8_t fixup_passes;
+	bool tx;
+	bool tx_use_tdd_table;
+	bool rx_use_tdd_table;
+	bool vco_cal_control_touched;
+	bool wait_started;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
+
+/* Retained gain-table load. Each poll performs at most one SPI helper (or one
+ * platform row callback); direct-SPI row settling is represented by a
+ * deadline between polls. Keep the object at a stable address to terminal. */
+struct ad9361_gain_table_transaction {
+	struct ad9361_rf_phy *phy;
+	uint64_t frequency_hz;
+	uint64_t delay_until_us;
+	uint32_t dest;
+	uint32_t band;
+	uint32_t index_max;
+	uint32_t row;
+	uint32_t rx1_gain_index;
+	uint32_t rx2_gain_index;
+	uint32_t lna;
+	uint32_t lpf_tia_mask;
+	int32_t rx1_gain;
+	int32_t rx2_gain;
+	int32_t tx_quad_lpf_tia_match;
+	uint8_t stage;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
+
+#define AD9361_GAIN_TABLE_ENABLE_FULL 0u
+#define AD9361_GAIN_TABLE_MAX_INDEX   1u
+#define AD9361_GAIN_TABLE_READ_RX1    2u
+#define AD9361_GAIN_TABLE_READ_RX2    3u
+#define AD9361_GAIN_TABLE_START       4u
+#define AD9361_GAIN_TABLE_ROW_ADDR    5u
+#define AD9361_GAIN_TABLE_ROW_DATA1   6u
+#define AD9361_GAIN_TABLE_ROW_DATA2   7u
+#define AD9361_GAIN_TABLE_ROW_DATA3   8u
+#define AD9361_GAIN_TABLE_ROW_COMMIT  9u
+#define AD9361_GAIN_TABLE_ROW_DELAY   10u
+#define AD9361_GAIN_TABLE_FINAL_CLOCK 11u
+#define AD9361_GAIN_TABLE_FINAL_DELAY 12u
+#define AD9361_GAIN_TABLE_STOP        13u
+#define AD9361_GAIN_TABLE_RX1_INDEX   14u
+#define AD9361_GAIN_TABLE_RX2_INDEX   15u
+
+int32_t ad9361_gain_table_transaction_start(
+	struct ad9361_rf_phy *phy, uint64_t frequency_hz, uint32_t dest,
+	struct ad9361_gain_table_transaction *transaction);
+int32_t ad9361_gain_table_transaction_poll(
+	struct ad9361_rf_phy *phy,
+	struct ad9361_gain_table_transaction *transaction);
+uint32_t ad9361_gain_table_transaction_poll_delay_us(
+	const struct ad9361_gain_table_transaction *transaction);
+
+#define AD9361_RFPLL_TRANSACTION_PROGRAM  0u
+#define AD9361_RFPLL_TRANSACTION_WAIT    1u
+#define AD9361_RFPLL_TRANSACTION_RESTORE 2u
+
+/* Clock-framework BBPLL update and retained RX/TX clock-chain mutation. */
+struct ad9361_bbpll_clock_transaction {
+	struct ad9361_bbpll_rate_transaction rate_transaction;
+	struct ad9361_rf_phy *phy;
+	struct refclk_scale *clk_priv;
+	uint32_t rounded_rate;
+	bool verify_pending;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
+
+struct ad9361_clock_chain_transaction {
+	struct ad9361_bbpll_clock_transaction bbpll_job;
+	struct ad9361_rf_phy *phy;
+	uint32_t rx_path_clks[NUM_RX_CLOCKS];
+	uint32_t tx_path_clks[NUM_TX_CLOCKS];
+	uint8_t stage;
+	uint8_t divider_index;
+	uint8_t filter_index;
+	uint8_t post_change_stage;
+	uint16_t post_change_cursor;
+	uint32_t post_change_bbpll_freq;
+	bool tx_divider_pending;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
+
+#define AD9361_CLOCK_CHAIN_TRANSACTION_BBPLL       0u
+#define AD9361_CLOCK_CHAIN_TRANSACTION_DIVIDERS    1u
+#define AD9361_CLOCK_CHAIN_TRANSACTION_FILTERS     2u
+#define AD9361_CLOCK_CHAIN_TRANSACTION_POST_CHANGE 3u
+
+#define AD9361_CLOCK_CHAIN_POST_CHANGE_GC_UPDATE 0u
+#define AD9361_CLOCK_CHAIN_POST_CHANGE_RSSI       1u
+#define AD9361_CLOCK_CHAIN_POST_CHANGE_AUXADC     2u
+#define AD9361_CLOCK_CHAIN_POST_CHANGE_DIG_TUNE   3u
+#define AD9361_CLOCK_CHAIN_POST_CHANGE_DONE       4u
+
 /* One RF synthesizer charge-pump calibration. Zero-initialize before first
- * start. Start configures the selected synthesizer and begins calibration;
- * poll observes its documented status bit without sleeping. Retain this
- * object and exclusive PHY ownership through its terminal result. */
+ * start. Start only captures the ordered register sequence; each poll applies
+ * at most one complete SPI operation until it arms the completion wait, then
+ * observes the documented status bit without sleeping. Retain this object and
+ * exclusive PHY ownership through its terminal result. */
 struct ad9361_synth_cp_calibration_job {
 	struct ad9361_status_wait wait;
+	struct ad9361_rf_phy *phy;
+	uint32_t write_reg[13];
+	uint8_t write_value[13];
+	uint8_t write_is_field[13];
+	uint8_t write_count;
+	uint8_t write_index;
+	uint64_t trigger_time_us;
+	bool tx;
+	bool trigger_observed;
+	bool wait_started;
 	bool active;
 	bool terminal;
 	int32_t terminal_status;
@@ -3595,6 +3829,45 @@ struct ad9361_tx_quad_phase_search {
 #define AD9361_TX_QUAD_PHASE_SEARCH_SWEEP   0u
 #define AD9361_TX_QUAD_PHASE_SEARCH_VERIFY  1u
 
+/* Internal filter-only child used by bandwidth and TXQ transactions. The
+ * enclosing transaction must retain logical RFIC ownership, disable tracking,
+ * and put ENSM in ALERT; it hands the visible PHY owner marker to this child
+ * while polling. This excludes recursive TXQ composition and leaves final
+ * state/cache policy with the enclosing job. */
+struct ad9361_rf_bandwidth_filter_transaction {
+	struct ad9361_bbf_calibration_job rx_bbf_job;
+	struct ad9361_bbf_calibration_job tx_bbf_job;
+	struct ad9361_rf_phy *phy;
+	uint32_t rx_bw;
+	uint32_t tx_bw;
+	uint32_t bbpll_freq;
+	uint32_t adc_freq;
+	uint8_t tia_read_values[3];
+	uint8_t tia_write_values[5];
+	uint8_t tia_index;
+	uint8_t tx_second_values[3];
+	uint8_t tx_second_index;
+	uint8_t adc_filter_values[3];
+	uint8_t adc_values[40];
+	uint8_t adc_index;
+	uint8_t stage;
+	int32_t status;
+	bool adc_freq_valid;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
+
+#define AD9361_RF_BANDWIDTH_FILTER_RX_BBF_START  0u
+#define AD9361_RF_BANDWIDTH_FILTER_RX_BBF_WAIT   1u
+#define AD9361_RF_BANDWIDTH_FILTER_TX_BBF_START  2u
+#define AD9361_RF_BANDWIDTH_FILTER_TX_BBF_WAIT   3u
+#define AD9361_RF_BANDWIDTH_FILTER_TIA_READ      4u
+#define AD9361_RF_BANDWIDTH_FILTER_TIA_WRITE     5u
+#define AD9361_RF_BANDWIDTH_FILTER_TX_SECOND     6u
+#define AD9361_RF_BANDWIDTH_FILTER_ADC_READ      7u
+#define AD9361_RF_BANDWIDTH_FILTER_ADC_WRITE     8u
+
 /* Full TX quadrature setup/attempt/search/restore transaction. This API
  * retains the temporary RFIC state across poll calls; the caller must keep
  * this object at a stable address and retain exclusive PHY ownership until a
@@ -3602,6 +3875,7 @@ struct ad9361_tx_quad_phase_search {
 struct ad9361_tx_quad_calibration_job {
 	struct ad9361_tx_quad_calibration_attempt attempt;
 	struct ad9361_tx_quad_phase_search phase_search;
+	struct ad9361_rf_bandwidth_filter_transaction bandwidth_job;
 	uint32_t bw_rx;
 	uint32_t bw_tx;
 	/* Full RF bandwidths to restore after the temporary TXQ observation
@@ -3610,6 +3884,7 @@ struct ad9361_tx_quad_calibration_job {
 	uint32_t restore_bw_rx;
 	uint32_t restore_bw_tx;
 	uint32_t rxnco_word;
+	uint32_t txnco_word;
 	uint32_t txnco_freq;
 	int32_t rx_phase;
 	int32_t status;
@@ -3620,6 +3895,9 @@ struct ad9361_tx_quad_calibration_job {
 	uint8_t selected_phase;
 	uint8_t original_phase;
 	uint8_t stage;
+	bool bandwidth_restore_complete;
+	bool phase_inversion_restored;
+	bool power_override_restored;
 	bool phase_inversion_touched;
 	bool reg_inv_bits_valid;
 	bool bandwidth_changed;
@@ -3634,48 +3912,68 @@ struct ad9361_tx_quad_calibration_job {
 #define AD9361_TX_QUAD_JOB_CACHED   1u
 #define AD9361_TX_QUAD_JOB_SEARCH   2u
 #define AD9361_TX_QUAD_JOB_CLEANUP  3u
+#define AD9361_TX_QUAD_JOB_BANDWIDTH_SETUP 4u
+#define AD9361_TX_QUAD_JOB_BANDWIDTH_RESTORE 5u
 
-/* Full TXQ transaction including tracking/ENSM ownership and history commit. */
+/* Full TXQ transaction including tracking/ENSM ownership and history commit.
+ * The PHY remains reserved between polls, including after TXQ completion and
+ * before restoration. Keep this object at a stable address to terminal. */
 struct ad9361_tx_quad_calibration_transaction {
+	struct ad9361_ensm_transition_job ensm_job;
 	struct ad9361_tx_quad_calibration_job job;
+	struct ad9361_rf_phy *phy;
 	uint8_t stage;
 	int32_t status;
+	int32_t cleanup_status;
 	bool active;
 	bool terminal;
 	int32_t terminal_status;
 };
 
 #define AD9361_TX_QUAD_TRANSACTION_CALIBRATE  0u
-#define AD9361_TX_QUAD_TRANSACTION_RESTORE    1u
+#define AD9361_TX_QUAD_TRANSACTION_ENSM_ALERT 1u
+#define AD9361_TX_QUAD_TRANSACTION_RESTORE    2u
+#define AD9361_TX_QUAD_TRANSACTION_ENSM_RESTORE 3u
 
 /* Full RX/TX bandwidth update. The job holds tracking disabled and ENSM in
  * ALERT while TXQ is polled. Keep it at a stable address and retain exclusive
  * PHY ownership until poll() returns a terminal result. */
 struct ad9361_rf_bandwidth_transaction {
+	struct ad9361_ensm_transition_job ensm_job;
+	struct ad9361_rf_bandwidth_filter_transaction filter_job;
 	struct ad9361_tx_quad_calibration_job tx_quad_job;
+	struct ad9361_rf_phy *phy;
 	uint32_t rx_bw;
 	uint32_t tx_bw;
 	uint8_t stage;
 	int32_t status;
+	int32_t tracking_restore_status;
 	bool tx_quad_started;
 	bool tx_quad_complete;
+	bool ensm_alert_started;
 	bool active;
 	bool terminal;
 	int32_t terminal_status;
 };
 
-#define AD9361_RF_BANDWIDTH_TRANSACTION_TX_QUAD  0u
-#define AD9361_RF_BANDWIDTH_TRANSACTION_RESTORE  1u
+#define AD9361_RF_BANDWIDTH_TRANSACTION_ENSM_ALERT   0u
+#define AD9361_RF_BANDWIDTH_TRANSACTION_FILTER_START 1u
+#define AD9361_RF_BANDWIDTH_TRANSACTION_FILTER       2u
+#define AD9361_RF_BANDWIDTH_TRANSACTION_TX_QUAD_START 3u
+#define AD9361_RF_BANDWIDTH_TRANSACTION_TX_QUAD       4u
+#define AD9361_RF_BANDWIDTH_TRANSACTION_RESTORE       5u
+#define AD9361_RF_BANDWIDTH_TRANSACTION_ENSM_RESTORE  6u
 
-/* Shared RX/TX sample-rate change with asynchronous RF-bandwidth/TXQ
- * completion. Zero-initialize before first start; retain this object at a
- * stable address and exclusive PHY ownership until terminal poll. A second
- * start on an active object returns -EBUSY. Failed new plans are rolled back
- * through a second bandwidth job. */
+/* Shared RX/TX sample-rate change with retained clock-chain and
+ * RF-bandwidth/TXQ child jobs. Retain at a stable address until terminal. */
 struct ad9361_sample_rate_transaction {
+	struct ad9361_clock_chain_transaction clock_chain_job;
 	struct ad9361_rf_bandwidth_transaction bandwidth_job;
+	struct ad9361_rf_phy *phy;
 	uint32_t old_rx_path_clks[NUM_RX_CLOCKS];
 	uint32_t old_tx_path_clks[NUM_TX_CLOCKS];
+	uint32_t new_rx_path_clks[NUM_RX_CLOCKS];
+	uint32_t new_tx_path_clks[NUM_TX_CLOCKS];
 	uint32_t old_rx_bw;
 	uint32_t old_tx_bw;
 	uint32_t requested_rate;
@@ -3683,24 +3981,197 @@ struct ad9361_sample_rate_transaction {
 	bool tx;
 	bool active;
 	bool terminal;
+	bool rollback_clock_started;
 	bool rollback_complete;
 	int32_t status;
 	int32_t terminal_status;
 };
 
-#define AD9361_SAMPLE_RATE_TRANSACTION_NEW_BANDWIDTH  0u
-#define AD9361_SAMPLE_RATE_TRANSACTION_ROLLBACK_CLOCK 1u
-#define AD9361_SAMPLE_RATE_TRANSACTION_ROLLBACK_BW    2u
+#define AD9361_SAMPLE_RATE_TRANSACTION_NEW_CLOCK      0u
+#define AD9361_SAMPLE_RATE_TRANSACTION_NEW_BANDWIDTH  1u
+#define AD9361_SAMPLE_RATE_TRANSACTION_ROLLBACK_CLOCK 2u
+#define AD9361_SAMPLE_RATE_TRANSACTION_ROLLBACK_BW    3u
 
-/* Resumable high-level RX RF DC calibration. The job owns the PHY in ALERT
- * with tracking disabled until poll() reaches a terminal result and restores
- * both. Keep the job at a stable address until that result is returned. */
+/* Resumable high-level RX RF DC calibration. The job retains PHY ownership
+ * while it enters ALERT, runs the RFDC sequencer, and restores tracking/ENSM.
+ * Keep the zero-initialized job at a stable address through terminal poll. */
 struct ad9361_rfdc_calibration_job {
+	struct ad9361_ensm_transition_job ensm_job;
 	struct ad9361_calibration_wait wait;
+	struct ad9361_rf_phy *phy;
+	uint32_t timeout_us;
+	uint8_t stage;
+	int32_t status;
+	int32_t cleanup_status;
 	bool active;
 	bool terminal;
 	int32_t terminal_status;
 };
+
+#define AD9361_RFDC_JOB_ENSM_ALERT       0u
+#define AD9361_RFDC_JOB_CALIBRATION_START 1u
+#define AD9361_RFDC_JOB_CALIBRATION_WAIT  2u
+#define AD9361_RFDC_JOB_RESTORE_TRACKING  3u
+#define AD9361_RFDC_JOB_ENSM_RESTORE      4u
+
+/* Retained calibration section of AD9361 setup. The transaction preserves
+ * the driver's order: analog filters/TIA/ADC, BBDC, RFDC, TXQ, then tracking
+ * restore. The caller must complete the preceding clock/LO/port setup and
+ * retain this object at a stable address until terminal poll. Start disables
+ * tracking and enters ALERT. Errors after mutation poison the PHY; there is no
+ * cancellation path, so poll to terminal or recover by full reset/re-init. */
+struct ad9361_setup_calibration_transaction {
+	struct ad9361_ensm_transition_job ensm_job;
+	struct ad9361_rf_bandwidth_filter_transaction filter_job;
+	struct ad9361_bbdc_calibration_job bbdc_job;
+	struct ad9361_rfdc_calibration_job rfdc_job;
+	struct ad9361_tx_quad_calibration_transaction tx_quad_job;
+	struct ad9361_rf_phy *phy;
+	uint32_t rx_bw;
+	uint32_t tx_bw;
+	uint8_t stage;
+	int32_t status;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
+
+enum ad9361_setup_transaction_stage {
+	AD9361_SETUP_TRANSACTION_PRE_AUXDAC = 0,
+	AD9361_SETUP_TRANSACTION_PRE_GPO,
+	AD9361_SETUP_TRANSACTION_PRE_CTRL,
+	AD9361_SETUP_TRANSACTION_PRE_BANDGAP0,
+	AD9361_SETUP_TRANSACTION_PRE_BANDGAP1,
+	AD9361_SETUP_TRANSACTION_PRE_DCXO,
+	AD9361_SETUP_TRANSACTION_PRE_RX_REF_DIV,
+	AD9361_SETUP_TRANSACTION_PRE_TX_REF_DIV,
+	AD9361_SETUP_TRANSACTION_PRE_TX_REF_DELAY,
+	AD9361_SETUP_TRANSACTION_PRE_RX_REF_DELAY,
+	AD9361_SETUP_TRANSACTION_PRE_CLOCK_ENABLE,
+	AD9361_SETUP_TRANSACTION_PRE_BB_REF_RATE,
+	AD9361_SETUP_TRANSACTION_PRE_BB_REF_READBACK,
+	AD9361_SETUP_TRANSACTION_PRE_BB_REF_ENABLE,
+	AD9361_SETUP_TRANSACTION_PRE_BBPLL_SEED_2,
+	AD9361_SETUP_TRANSACTION_PRE_BBPLL_SEED_3,
+	AD9361_SETUP_TRANSACTION_CLOCK_CHAIN_START,
+	AD9361_SETUP_TRANSACTION_CLOCK_CHAIN_WAIT,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_CHAIN_SETUP,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_RX_CHANNEL,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_RF_PORT,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_PP_PORT,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_BBPLL_RATE,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_AUXADC,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_CTRL_OUT_POINTER,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_CTRL_OUT_ENABLE,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_REF_CYCLES,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_ELNA_1,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_ELNA_2,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_ELNA_HIGH_GAIN,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_ELNA_LOW_GAIN,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_SYNTH_REF_SELECT,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_SYNTH_REF_RX,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_SYNTH_REF_RX_WRITE_MSB,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_SYNTH_REF_RX_WRITE_LSB,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_SYNTH_REF_RX_READ_MSB,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_SYNTH_REF_RX_READ_LSB,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_SYNTH_REF_TX,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_SYNTH_REF_TX_WRITE,
+	AD9361_SETUP_TRANSACTION_POST_CLOCK_SYNTH_REF_TX_READBACK,
+	AD9361_SETUP_TRANSACTION_RX_CP_START,
+	AD9361_SETUP_TRANSACTION_RX_CP_WAIT,
+	AD9361_SETUP_TRANSACTION_TX_CP_START,
+	AD9361_SETUP_TRANSACTION_TX_CP_WAIT,
+	AD9361_SETUP_TRANSACTION_POST_CP_BEGIN,
+	AD9361_SETUP_TRANSACTION_POST_CP_RX_RFPLL_START,
+	AD9361_SETUP_TRANSACTION_POST_CP_RX_RFPLL_WAIT,
+	AD9361_SETUP_TRANSACTION_POST_CP_RX_GAIN_START,
+	AD9361_SETUP_TRANSACTION_POST_CP_RX_GAIN_WAIT,
+	AD9361_SETUP_TRANSACTION_POST_CP_RX_BAND,
+	AD9361_SETUP_TRANSACTION_POST_CP_RX_BAND_WAIT,
+	AD9361_SETUP_TRANSACTION_POST_CP_RX_READBACK,
+	AD9361_SETUP_TRANSACTION_POST_CP_RX_REF_ENABLE,
+	AD9361_SETUP_TRANSACTION_POST_CP_RX_PLL_ENABLE,
+	AD9361_SETUP_TRANSACTION_POST_CP_TX_RFPLL_START,
+	AD9361_SETUP_TRANSACTION_POST_CP_TX_RFPLL_WAIT,
+	AD9361_SETUP_TRANSACTION_POST_CP_TX_BAND,
+	AD9361_SETUP_TRANSACTION_POST_CP_TX_BAND_WAIT,
+	AD9361_SETUP_TRANSACTION_POST_CP_TX_READBACK,
+	AD9361_SETUP_TRANSACTION_POST_CP_TX_REF_ENABLE,
+	AD9361_SETUP_TRANSACTION_POST_CP_TX_PLL_ENABLE,
+	AD9361_SETUP_TRANSACTION_POST_CP_RESTORE_LO_POLICY,
+	AD9361_SETUP_TRANSACTION_POST_CP_RX_MUX,
+	AD9361_SETUP_TRANSACTION_POST_CP_TX_MUX,
+	AD9361_SETUP_TRANSACTION_GM_START,
+	AD9361_SETUP_TRANSACTION_GM_ADDRESS,
+	AD9361_SETUP_TRANSACTION_GM_BIAS,
+	AD9361_SETUP_TRANSACTION_GM_GAIN,
+	AD9361_SETUP_TRANSACTION_GM_CTRL,
+	AD9361_SETUP_TRANSACTION_GM_COMMIT,
+	AD9361_SETUP_TRANSACTION_GM_ROW_WAIT,
+	AD9361_SETUP_TRANSACTION_GM_CLEAR,
+	AD9361_SETUP_TRANSACTION_GM_CLEAR_WAIT,
+	AD9361_SETUP_TRANSACTION_GM_STOP,
+	AD9361_SETUP_TRANSACTION_GC_SETUP,
+	AD9361_SETUP_TRANSACTION_GC_UPDATE,
+	AD9361_SETUP_TRANSACTION_CALIBRATION_START,
+	AD9361_SETUP_TRANSACTION_CALIBRATION,
+	AD9361_SETUP_TRANSACTION_GM_ABORT_STOP,
+};
+
+/* Retained cold-setup owner. Pre-clock, post-clock, post-CP RFPLL, and gain
+ * table and LO-mux phases advance here in ADI order. External-band callbacks
+ * still contain synchronous configured sequences and are not yet suitable as
+ * bounded NIOS poll steps. Keep this at a stable address through terminal
+ * poll; no cancellation. */
+struct ad9361_setup_transaction {
+	struct ad9361_setup_calibration_transaction calibration_job;
+	struct ad9361_clock_chain_transaction clock_chain_job;
+	struct ad9361_synth_cp_calibration_job synth_cp_job;
+	struct ad9361_rfpll_rate_transaction post_cp_rfpll_job;
+	struct ad9361_gain_table_transaction post_cp_gain_table_job;
+	struct ad9361_ext_band_transaction post_cp_rx_band_job;
+	struct ad9361_ext_band_transaction post_cp_tx_band_job;
+	struct ad9361_ensm_transition_job post_cp_ensm_job;
+	struct ad9361_rf_phy *phy;
+	uint64_t phase_deadline_us;
+	uint64_t post_cp_mux_rate_hz;
+	uint32_t synth_ref_freq_hz;
+	uint32_t bb_ref_freq_hz;
+	uint32_t bb_ref_scaled_rate_hz;
+	uint32_t bbpll_freq_hz;
+	uint32_t refclk_round_rate_hz;
+	uint32_t post_cp_rate_hz;
+	uint8_t refclk_readback_msb;
+	uint8_t post_cp_mux_mcs_rf_enable;
+	uint8_t post_cp_mux_synth_pd;
+	uint16_t gc_cursor;
+	uint16_t pp_cursor;
+	uint16_t auxadc_cursor;
+	uint8_t prefix_cursor;
+	uint8_t gm_row;
+	uint8_t stage;
+	int32_t status;
+	int32_t cleanup_status;
+	bool active;
+	bool terminal;
+	bool use_ext_rx_lo;
+	bool use_ext_tx_lo;
+	bool clock_rate_update_active;
+	enum ad9361_clocks clock_rate_source;
+	int32_t terminal_status;
+};
+
+
+#define AD9361_SETUP_CAL_ENSM_ALERT  0u
+#define AD9361_SETUP_CAL_FILTER_START 1u
+#define AD9361_SETUP_CAL_FILTER      2u
+#define AD9361_SETUP_CAL_BBDC_START  3u
+#define AD9361_SETUP_CAL_BBDC_WAIT   4u
+#define AD9361_SETUP_CAL_RFDC_START  5u
+#define AD9361_SETUP_CAL_RFDC_WAIT   6u
+#define AD9361_SETUP_CAL_TXQ_START   7u
+#define AD9361_SETUP_CAL_TXQ_WAIT    8u
+#define AD9361_SETUP_CAL_TRACKING    9u
 
 struct refclk_scale {
 	struct no_os_spi_desc	*spi;
@@ -3711,6 +4182,10 @@ struct refclk_scale {
 	enum ad9361_clocks 	parent_source;
 };
 
+/* Retained RX/TX baseband clock-tree update. The BBPLL transaction and each
+ * downstream divider are advanced in separate poll calls. Keep this object at
+ * a stable address until terminal status; the transaction owns the PHY across
+ * poll boundaries. */
 enum debugfs_cmd {
 	DBGFS_NONE,
 	DBGFS_INIT,
@@ -3737,6 +4212,25 @@ int32_t ad9361_unregister_clocks(struct ad9361_rf_phy *phy);
 uint32_t ad9361_gt(struct ad9361_rf_phy *phy);
 int32_t ad9361_init_gain_tables(struct ad9361_rf_phy *phy);
 int32_t ad9361_setup(struct ad9361_rf_phy *phy);
+/* Start performs the current ordered setup prefix synchronously, then returns
+ * with the retained calibration chain active. Poll returns 1 while pending,
+ * 0 on success, or a negative terminal error. The prefix is still a known
+ * synchronous portion and must be converted before claiming bounded NIOS
+ * INIT latency. */
+int32_t ad9361_setup_transaction_start(
+		struct ad9361_rf_phy *phy,
+		struct ad9361_setup_transaction *transaction);
+int32_t ad9361_setup_transaction_poll(
+		struct ad9361_rf_phy *phy,
+		struct ad9361_setup_transaction *transaction);
+uint32_t ad9361_setup_transaction_poll_delay_us(
+		const struct ad9361_setup_transaction *transaction);
+int32_t ad9361_setup_calibration_transaction_start(
+		struct ad9361_rf_phy *phy,
+		struct ad9361_setup_calibration_transaction *transaction);
+int32_t ad9361_setup_calibration_transaction_poll(
+		struct ad9361_rf_phy *phy,
+		struct ad9361_setup_calibration_transaction *transaction);
 int32_t ad9361_post_setup(struct ad9361_rf_phy *phy);
 int32_t ad9361_set_ensm_mode(struct ad9361_rf_phy *phy, bool fdd, bool pinctrl);
 int32_t ad9361_ensm_set_state(struct ad9361_rf_phy *phy, uint8_t ensm_state,
@@ -3753,8 +4247,15 @@ int32_t ad9361_calculate_rf_clock_chain(struct ad9361_rf_phy *phy,
 					uint32_t *rx_path_clks,
 					uint32_t *tx_path_clks);
 int32_t ad9361_set_trx_clock_chain(struct ad9361_rf_phy *phy,
-				   uint32_t *rx_path_clks,
-				   uint32_t *tx_path_clks);
+				   const uint32_t *rx_path_clks,
+				   const uint32_t *tx_path_clks);
+int32_t ad9361_clock_chain_transaction_start(
+	struct ad9361_rf_phy *phy, const uint32_t *rx_path_clks,
+	const uint32_t *tx_path_clks,
+	struct ad9361_clock_chain_transaction *transaction);
+int32_t ad9361_clock_chain_transaction_poll(
+	struct ad9361_rf_phy *phy,
+	struct ad9361_clock_chain_transaction *transaction);
 int32_t ad9361_get_trx_clock_chain(struct ad9361_rf_phy *phy,
 				   uint32_t *rx_path_clks,
 				   uint32_t *tx_path_clks);
@@ -3780,6 +4281,8 @@ int32_t ad9361_clk_factor_round_rate(struct refclk_scale *clk_priv,
 				     uint32_t *prate);
 int32_t ad9361_clk_factor_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 				   uint32_t parent_rate);
+void ad9361_clock_rate_invalidate(struct ad9361_rf_phy *phy,
+				 uint32_t source);
 uint32_t ad9361_bbpll_recalc_rate(struct refclk_scale *clk_priv,
 				  uint32_t parent_rate);
 int32_t ad9361_bbpll_recalc_rate_checked(struct refclk_scale *clk_priv,
@@ -3789,6 +4292,12 @@ int32_t ad9361_bbpll_round_rate(struct refclk_scale *clk_priv, uint32_t rate,
 				uint32_t *prate);
 int32_t ad9361_bbpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 			      uint32_t parent_rate);
+int32_t ad9361_bbpll_rate_transaction_start(
+	struct refclk_scale *clk_priv, uint32_t rate, uint32_t parent_rate,
+	struct ad9361_bbpll_rate_transaction *transaction);
+int32_t ad9361_bbpll_rate_transaction_poll(
+	struct ad9361_rf_phy *phy,
+	struct ad9361_bbpll_rate_transaction *transaction);
 uint32_t ad9361_rfpll_int_recalc_rate(struct refclk_scale *clk_priv,
 				      uint32_t parent_rate);
 int32_t ad9361_rfpll_int_recalc_rate_checked(struct refclk_scale *clk_priv,
@@ -3799,6 +4308,12 @@ int32_t ad9361_rfpll_int_round_rate(struct refclk_scale *clk_priv,
 				    uint32_t *prate);
 int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 				  uint32_t parent_rate);
+int32_t ad9361_rfpll_rate_transaction_start(
+	struct refclk_scale *clk_priv, uint32_t rate, uint32_t parent_rate,
+	struct ad9361_rfpll_rate_transaction *transaction);
+int32_t ad9361_rfpll_rate_transaction_poll(
+	struct ad9361_rf_phy *phy,
+	struct ad9361_rfpll_rate_transaction *transaction);
 uint32_t ad9361_rfpll_dummy_recalc_rate(struct refclk_scale *clk_priv);
 int32_t ad9361_rfpll_dummy_set_rate(struct refclk_scale *clk_priv,
 				    uint32_t rate);
@@ -3827,6 +4342,7 @@ int32_t ad9361_mcs(struct ad9361_rf_phy *phy, int32_t step);
 int32_t ad9361_do_calib_run(struct ad9361_rf_phy *phy, uint32_t cal,
 			    int32_t arg);
 bool ad9361_calibration_state_unknown(const struct ad9361_rf_phy *phy);
+bool ad9361_operation_busy(const struct ad9361_rf_phy *phy);
 void ad9361_mark_calibration_state_unknown(struct ad9361_rf_phy *phy);
 int32_t ad9361_do_calib_timeout(struct ad9361_rf_phy *phy, uint32_t cal,
 				int32_t arg, uint32_t timeout_us);
@@ -3853,6 +4369,15 @@ int32_t ad9361_status_wait_start(struct ad9361_rf_phy *phy,
  * latches the PHY unknown so callers cannot start another mutation. */
 int32_t ad9361_status_wait_poll(struct ad9361_rf_phy *phy,
 		struct ad9361_status_wait *wait);
+int32_t ad9361_status_wait_start_values(struct ad9361_rf_phy *phy,
+		uint32_t reg, uint32_t mask, uint16_t accepted_values,
+		uint32_t timeout_us, uint32_t poll_delay_us,
+		struct ad9361_status_wait *wait);
+int32_t ad9361_ensm_transition_start(struct ad9361_rf_phy *phy,
+		uint8_t ensm_state, bool force,
+		struct ad9361_ensm_transition_job *job);
+int32_t ad9361_ensm_transition_poll(struct ad9361_rf_phy *phy,
+		struct ad9361_ensm_transition_job *job);
 int32_t ad9361_synth_cp_calibration_start(struct ad9361_rf_phy *phy,
 		uint32_t scaled_ref_clk_hz, bool tx,
 		struct ad9361_synth_cp_calibration_job *job);
@@ -3867,6 +4392,21 @@ int32_t ad9361_bbf_calibration_start(struct ad9361_rf_phy *phy,
 /* Returns 1 while pending, 0 after tune-circuit cleanup, or a latched error. */
 int32_t ad9361_bbf_calibration_poll(struct ad9361_rf_phy *phy,
 		struct ad9361_bbf_calibration_job *job);
+/* Retained filter-programming child used to compose larger RF bandwidth
+ * operations. The caller must serialize admission, disable tracking, and
+ * place ENSM in ALERT before start. Start installs this object as the PHY's
+ * active filter owner; keep it at a stable address and do not abandon it
+ * before terminal poll. Poll returns 1 while work remains, 0 on completion,
+ * or a terminal negative errno. This child does not commit bandwidth cache
+ * state or restore tracking/ENSM; the enclosing transaction owns those
+ * policies. It has no cancellation operation: an abandoned child remains a
+ * fail-closed owner and requires full PHY recovery. */
+int32_t ad9361_rf_bandwidth_filter_transaction_start(
+		struct ad9361_rf_phy *phy, uint32_t rf_rx_bw, uint32_t rf_tx_bw,
+		struct ad9361_rf_bandwidth_filter_transaction *transaction);
+int32_t ad9361_rf_bandwidth_filter_transaction_poll(
+		struct ad9361_rf_phy *phy,
+		struct ad9361_rf_bandwidth_filter_transaction *transaction);
 int32_t ad9361_bbdc_calibration_start(struct ad9361_rf_phy *phy,
 		struct ad9361_bbdc_calibration_job *job);
 /* Returns 1 while pending, 0 on completion, or a latched negative error. */
@@ -3911,8 +4451,9 @@ int32_t ad9361_tx_quad_calibration_transaction_poll(
 int32_t ad9361_rf_bandwidth_transaction_start(
 		struct ad9361_rf_phy *phy, uint32_t rf_rx_bw, uint32_t rf_tx_bw,
 		struct ad9361_rf_bandwidth_transaction *transaction);
-/* Returns 1 while TXQ is active, 0 after bandwidth/cache/tracking/ENSM commit,
- * or a terminal error. */
+/* Returns 1 while ENSM, filter, TXQ, or restoration children remain, 0 after
+ * bandwidth/cache/tracking/ENSM commit, or a terminal error. start() retains
+ * ENSM force-to-ALERT instead of blocking on the state transition. */
 int32_t ad9361_rf_bandwidth_transaction_poll(
 		struct ad9361_rf_phy *phy,
 		struct ad9361_rf_bandwidth_transaction *transaction);

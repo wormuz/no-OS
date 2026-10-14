@@ -44,7 +44,15 @@
 #define CLK_IGNORE_UNUSED						NO_OS_BIT(3)
 #define CLK_GET_RATE_NOCACHE					NO_OS_BIT(6)
 
-#if defined(HAVE_VERBOSE_MESSAGES)
+#if defined(BLADERF_NIOS_BUILD)
+/* Console output can block the sole NIOS RFIC worker on the reduced JTAG-UART
+ * driver when its TX FIFO is full. Errors are returned through the NIOS
+ * command result; diagnostic macros must therefore be inert in this build. */
+#define dev_err(dev, format, ...) ({ (void)0; })
+#define dev_warn(dev, format, ...) ({ (void)0; })
+#define dev_dbg(dev, format, ...) ({ (void)0; })
+#define printk(format, ...) ({ (void)0; })
+#elif defined(HAVE_VERBOSE_MESSAGES)
 #define dev_err(dev, format, ...)		({printf(format, ## __VA_ARGS__);printf("\n"); })
 #define dev_warn(dev, format, ...)		({printf(format, ## __VA_ARGS__);printf("\n"); })
 #if defined(HAVE_DEBUG_MESSAGES)
@@ -100,6 +108,40 @@ uint32_t clk_get_rate(struct ad9361_rf_phy *phy,
 int32_t clk_set_rate(struct ad9361_rf_phy *phy,
 		     struct refclk_scale *clk_priv,
 		     uint32_t rate);
+int32_t ad9361_bbpll_clock_transaction_start(
+	struct ad9361_rf_phy *phy, struct refclk_scale *clk_priv,
+	uint32_t rate, struct ad9361_bbpll_clock_transaction *transaction);
+int32_t ad9361_bbpll_clock_transaction_poll(
+	struct ad9361_rf_phy *phy,
+	struct ad9361_bbpll_clock_transaction *transaction);
+int32_t ad9361_bbpll_clock_set_rate(struct ad9361_rf_phy *phy,
+				   struct refclk_scale *clk_priv,
+				   uint32_t rate);
+
+/* Retained internal RX/TX RFPLL clock-framework update. Callers must
+ * zero-initialize the context and retain it at a stable address through its
+ * terminal poll. This composes the
+ * low-level VCO job with achieved-rate readback and requested-rate cache
+ * publication so cooperative callers do not enter clk_set_rate()'s blocking
+ * compatibility pump. External-LO callbacks are not supported by this job. */
+struct ad9361_rfpll_clock_transaction {
+	struct ad9361_rfpll_rate_transaction rate_transaction;
+	struct ad9361_rf_phy *phy;
+	struct refclk_scale *clk_priv;
+	uint32_t requested_rate;
+	uint32_t rounded_rate;
+	uint8_t source;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
+
+int32_t ad9361_rfpll_clock_transaction_start(
+	struct ad9361_rf_phy *phy, struct refclk_scale *clk_priv,
+	uint32_t rate, struct ad9361_rfpll_clock_transaction *transaction);
+int32_t ad9361_rfpll_clock_transaction_poll(
+	struct ad9361_rf_phy *phy,
+	struct ad9361_rfpll_clock_transaction *transaction);
 uint32_t int_sqrt(uint32_t x);
 int32_t ilog2(int32_t x);
 uint32_t find_first_bit(uint32_t word);
