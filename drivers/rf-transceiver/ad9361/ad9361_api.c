@@ -2066,14 +2066,17 @@ int32_t ad9361_set_rx_fir_config(struct ad9361_rf_phy *phy,
  * @param fir_cfg FIR filter configuration output file.
  * @return 0 in case of success, negative error code otherwise.
  */
-int32_t ad9361_get_rx_fir_config(struct ad9361_rf_phy *phy, uint8_t rx_ch,
-				 AD9361_RXFIRConfig *fir_cfg)
+int32_t ad9361_get_rx_fir_config_with_cleanup(
+		struct ad9361_rf_phy *phy, uint8_t rx_ch,
+		AD9361_RXFIRConfig *fir_cfg, int32_t *cleanup_status)
 {
 	int32_t ret;
 	uint32_t fir_conf;
 	uint32_t original_fir_conf;
 	uint8_t index;
 	AD9361_RXFIRConfig result = {0};
+	if (cleanup_status)
+		*cleanup_status = 0;
 	if (!phy || !phy->spi || !fir_cfg || rx_ch > 1)
 		return -EINVAL;
 	if (ad9361_calibration_state_unknown(phy))
@@ -2129,6 +2132,8 @@ int32_t ad9361_get_rx_fir_config(struct ad9361_rf_phy *phy, uint8_t rx_ch,
 						       REG_RX_FILTER_CONFIG,
 						       original_fir_conf & ~FIR_START_CLK);
 		if (restore_ret < 0) {
+			if (cleanup_status)
+				*cleanup_status = restore_ret;
 			ad9361_mark_calibration_state_unknown(phy);
 			if (ret >= 0)
 				ret = restore_ret;
@@ -2141,6 +2146,13 @@ int32_t ad9361_get_rx_fir_config(struct ad9361_rf_phy *phy, uint8_t rx_ch,
 	*fir_cfg = result;
 
 	return 0;
+}
+
+int32_t ad9361_get_rx_fir_config(struct ad9361_rf_phy *phy, uint8_t rx_ch,
+				 AD9361_RXFIRConfig *fir_cfg)
+{
+	return ad9361_get_rx_fir_config_with_cleanup(
+		phy, rx_ch, fir_cfg, NULL);
 }
 
 /**
@@ -2897,14 +2909,17 @@ int32_t ad9361_set_tx_fir_config(struct ad9361_rf_phy *phy,
  * @param fir_cfg FIR filter configuration output file.
  * @return 0 in case of success, negative error code otherwise.
  */
-int32_t ad9361_get_tx_fir_config(struct ad9361_rf_phy *phy, uint8_t tx_ch,
-				 AD9361_TXFIRConfig *fir_cfg)
+int32_t ad9361_get_tx_fir_config_with_cleanup(
+		struct ad9361_rf_phy *phy, uint8_t tx_ch,
+		AD9361_TXFIRConfig *fir_cfg, int32_t *cleanup_status)
 {
 	int32_t ret;
 	uint32_t fir_conf;
 	uint32_t original_fir_conf;
 	uint8_t index;
 	AD9361_TXFIRConfig result = {0};
+	if (cleanup_status)
+		*cleanup_status = 0;
 	if (!phy || !phy->spi || !fir_cfg || tx_ch > 1)
 		return -EINVAL;
 	if (ad9361_calibration_state_unknown(phy))
@@ -2955,6 +2970,8 @@ int32_t ad9361_get_tx_fir_config(struct ad9361_rf_phy *phy, uint8_t tx_ch,
 						       REG_TX_FILTER_CONF,
 						       original_fir_conf & ~FIR_START_CLK);
 		if (restore_ret < 0) {
+			if (cleanup_status)
+				*cleanup_status = restore_ret;
 			ad9361_mark_calibration_state_unknown(phy);
 			if (ret >= 0)
 				ret = restore_ret;
@@ -2967,6 +2984,13 @@ int32_t ad9361_get_tx_fir_config(struct ad9361_rf_phy *phy, uint8_t tx_ch,
 	*fir_cfg = result;
 
 	return 0;
+}
+
+int32_t ad9361_get_tx_fir_config(struct ad9361_rf_phy *phy, uint8_t tx_ch,
+				 AD9361_TXFIRConfig *fir_cfg)
+{
+	return ad9361_get_tx_fir_config_with_cleanup(
+		phy, tx_ch, fir_cfg, NULL);
 }
 
 /**
