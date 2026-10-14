@@ -14027,12 +14027,24 @@ calculate:
 int32_t ad9361_rx_fastlock_get_freq(struct ad9361_rf_phy *phy,
 				    uint32_t profile, uint64_t *freq_hz)
 {
+	if (!phy || !phy->spi || !freq_hz || profile >= 8)
+		return -EINVAL;
+	if (ad9361_calibration_state_unknown(phy))
+		return -EIO;
+	if (ad9361_operation_busy(phy))
+		return -EBUSY;
 	return ad9361_fastlock_get_freq(phy, false, profile, freq_hz, NULL);
 }
 
 int32_t ad9361_tx_fastlock_get_freq(struct ad9361_rf_phy *phy,
 				    uint32_t profile, uint64_t *freq_hz)
 {
+	if (!phy || !phy->spi || !freq_hz || profile >= 8)
+		return -EINVAL;
+	if (ad9361_calibration_state_unknown(phy))
+		return -EIO;
+	if (ad9361_operation_busy(phy))
+		return -EBUSY;
 	return ad9361_fastlock_get_freq(phy, true, profile, freq_hz, NULL);
 }
 
