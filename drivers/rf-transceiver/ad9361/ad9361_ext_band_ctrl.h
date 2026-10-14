@@ -222,6 +222,9 @@ int32_t ad9361_adjust_rx_ext_band_settings(struct ad9361_rf_phy *phy,
 int32_t ad9361_adjust_tx_ext_band_settings(struct ad9361_rf_phy *phy,
 		uint64_t freq);
 
+/* Start claims the retained owner and seeds graph validation. Graph errors
+ * are reported as terminal poll results; no GPIO/RF-port action occurs before
+ * full graph validation. */
 int32_t ad9361_ext_band_transaction_start(struct ad9361_rf_phy *phy,
 		bool tx, uint64_t freq,
 	struct ad9361_ext_band_transaction *transaction);
