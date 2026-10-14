@@ -797,8 +797,8 @@ int32_t ad9361_init_transaction_poll(
 		return 1;
 
 	case AD9361_INIT_TXN_SETUP_START:
-		/* This call still has a large synchronous setup prefix. Keep it a
-		 * visible phase until that prefix is decomposed into retained jobs. */
+		/* start() performs validation and initializes the retained setup
+		 * context; hardware setup advances only in SETUP_POLL. */
 		ret = ad9361_setup_transaction_start(phy, &transaction->setup_job);
 		if (ret < 0)
 			goto fail;
