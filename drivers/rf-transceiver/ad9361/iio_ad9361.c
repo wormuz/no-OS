@@ -1010,6 +1010,7 @@ static int set_rf_bandwidth(void *device, char *buf, uint32_t len,
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
 	int ret = 0;
+	int32_t cleanup_status = 0;
 	uint32_t rf_bandwidth;
 
 	ret = parse_u32_attr(buf, &rf_bandwidth);
@@ -1020,14 +1021,20 @@ static int set_rf_bandwidth(void *device, char *buf, uint32_t len,
 	if (channel->ch_out) {
 		if (!ad9361_phy->current_bw_valid ||
 		    ad9361_phy->current_tx_bw_Hz != rf_bandwidth)
-			ret = ad9361_update_rf_bandwidth(ad9361_phy, ad9361_phy->current_rx_bw_Hz,
-							 rf_bandwidth);
+			ret = ad9361_update_rf_bandwidth_with_cleanup(
+				ad9361_phy, ad9361_phy->current_rx_bw_Hz,
+				rf_bandwidth, &cleanup_status);
 	} else {
 		if (!ad9361_phy->current_bw_valid ||
 		    ad9361_phy->current_rx_bw_Hz != rf_bandwidth)
-			ret = ad9361_update_rf_bandwidth(ad9361_phy, rf_bandwidth,
-							 ad9361_phy->current_tx_bw_Hz);
+			ret = ad9361_update_rf_bandwidth_with_cleanup(
+				ad9361_phy, rf_bandwidth,
+				ad9361_phy->current_tx_bw_Hz, &cleanup_status);
 	}
+	if (cleanup_status < 0 && ad9361_phy && ad9361_phy->spi)
+		dev_err(&ad9361_phy->spi->dev,
+			"RF bandwidth update primary=%d cleanup=%"PRId32,
+			ret, cleanup_status);
 	if (ret < 0)
 		return ret;
 
@@ -1123,10 +1130,16 @@ static int set_sampling_frequency(void *device, char *buf, uint32_t len,
 {
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
 	uint32_t sampling_freq_hz;
+	int32_t cleanup_status = 0;
 	int ret = parse_u32_attr(buf, &sampling_freq_hz);
 	if (ret < 0)
 		return ret;
-	ret = ad9361_set_rx_sampling_freq(ad9361_phy, sampling_freq_hz);
+	ret = ad9361_set_rx_sampling_freq_with_cleanup(
+		ad9361_phy, sampling_freq_hz, &cleanup_status);
+	if (cleanup_status < 0 && ad9361_phy && ad9361_phy->spi)
+		dev_err(&ad9361_phy->spi->dev,
+			"RX sample-rate update primary=%d cleanup=%"PRId32,
+			ret, cleanup_status);
 
 	if (ret < 0)
 		return ret;
@@ -2532,8 +2545,14 @@ static int set_digital_tune(void *device, char *buf, uint32_t len,
 	if (!max_freq)
 		max_freq = 61440000;
 
-	int32_t ret = ad9361_dig_tune(ad9361_phy, max_freq,
-				      (enum dig_tune_flags)flags);
+	int32_t cleanup_status = 0;
+	int32_t ret = ad9361_dig_tune_with_cleanup(
+		ad9361_phy, max_freq, (enum dig_tune_flags)flags,
+		&cleanup_status);
+	if (cleanup_status < 0 && ad9361_phy && ad9361_phy->spi)
+		dev_err(&ad9361_phy->spi->dev,
+			"Digital tune primary=%"PRId32" cleanup=%"PRId32,
+			ret, cleanup_status);
 	return (ret < 0) ? ret : (int)len;
 #else
 	return -ENODEV;
@@ -3074,10 +3093,16 @@ static int set_out_voltage_sampling_frequency(void *dev, char *buf,
 {
 	struct ad9361_rf_phy *phy = (struct ad9361_rf_phy *)dev;
 	uint32_t rate;
+	int32_t cleanup_status = 0;
 	int parse_ret = parse_u32_attr(buf, &rate);
 	if (parse_ret < 0)
 		return parse_ret;
-	int ret = ad9361_set_tx_sampling_freq(phy, rate);
+	int ret = ad9361_set_tx_sampling_freq_with_cleanup(
+		phy, rate, &cleanup_status);
+	if (cleanup_status < 0 && phy && phy->spi)
+		dev_err(&phy->spi->dev,
+			"TX sample-rate update primary=%d cleanup=%"PRId32,
+			ret, cleanup_status);
 	if (ret < 0)
 		return ret;
 	return (int)len;
