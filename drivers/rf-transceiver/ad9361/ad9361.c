@@ -8089,6 +8089,11 @@ int32_t ad9361_get_trx_clock_chain(struct ad9361_rf_phy *phy,
 		return -EINVAL;
 	if (ad9361_calibration_state_unknown(phy))
 		return -EIO;
+	/* This reader fills caller buffers incrementally from the live clock tree.
+	 * Refuse before publishing even the BBPLL field while a retained transaction
+	 * may have committed only part of the new divider plan. */
+	if (ad9361_operation_busy(phy))
+		return -EBUSY;
 
 	bbpll_freq = phy->clks[BBPLL_CLK]->rate;
 	if (!bbpll_freq)
