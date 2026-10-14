@@ -4521,6 +4521,9 @@ int32_t ad9361_ensm_restore_state_checked(struct ad9361_rf_phy *phy,
 int32_t ad9361_ensm_restore_prev_state_checked(struct ad9361_rf_phy *phy);
 int32_t ad9361_set_trx_clock_chain_freq(struct ad9361_rf_phy *phy,
 					uint32_t freq);
+int32_t ad9361_set_trx_clock_chain_freq_with_cleanup(
+		struct ad9361_rf_phy *phy, uint32_t freq,
+		int32_t *cleanup_status);
 int32_t ad9361_find_opt(uint8_t *field, uint32_t size, uint32_t *ret_start);
 int32_t ad9361_hdl_loopback(struct ad9361_rf_phy *phy, bool enable);
 #define AD9361_TIMING_ANALYSIS_BUFFER_SIZE 640

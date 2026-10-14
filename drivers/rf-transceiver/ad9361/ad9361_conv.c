@@ -582,14 +582,15 @@ cleanup:
  * @return 0 in case of success, negative error code otherwise.
  */
 static int32_t ad9361_dig_tune_delay(struct ad9361_rf_phy *phy,
-				     uint32_t max_freq, enum dig_tune_flags flags, bool tx)
+				     uint32_t max_freq, enum dig_tune_flags flags,
+				     bool tx, int32_t *cleanup_status)
 {
 	static const uint32_t rates[3] = {25000000U, 40000000U, 61440000U};
 	uint32_t s0, s1, c0, c1;
 	uint32_t i, j, r;
 	bool half_data_rate;
 	uint8_t field[2][16];
-	int32_t ret;
+	int32_t ret, child_cleanup_status;
 
 	if (((phy->pdata->port_ctrl.pp_conf[2] & LVDS_MODE) ||
 	     !phy->pdata->rx2tx2))
@@ -600,8 +601,13 @@ static int32_t ad9361_dig_tune_delay(struct ad9361_rf_phy *phy,
 	memset(field, 0, 32);
 	for (r = 0; r < (max_freq ? NO_OS_ARRAY_SIZE(rates) : 1); r++) {
 		if (max_freq) {
-			ret = ad9361_set_trx_clock_chain_freq(phy,
-						      half_data_rate ? rates[r] / 2 : rates[r]);
+			child_cleanup_status = 0;
+			ret = ad9361_set_trx_clock_chain_freq_with_cleanup(
+				phy, half_data_rate ? rates[r] / 2 : rates[r],
+				&child_cleanup_status);
+			if (cleanup_status && *cleanup_status == 0 &&
+			    child_cleanup_status < 0)
+				*cleanup_status = child_cleanup_status;
 			if (ret < 0)
 				return ret;
 		}
@@ -659,7 +665,8 @@ static int32_t ad9361_dig_tune_delay(struct ad9361_rf_phy *phy,
  * @return 0 in case of success, negative error code otherwise.
  */
 static int32_t ad9361_dig_tune_rx(struct ad9361_rf_phy *phy, uint32_t max_freq,
-				  enum dig_tune_flags flags)
+				  enum dig_tune_flags flags,
+				  int32_t *cleanup_status)
 {
 	struct axi_adc *rx_adc = phy->rx_adc;
 	int32_t ret, cleanup_ret;
@@ -682,7 +689,8 @@ static int32_t ad9361_dig_tune_rx(struct ad9361_rf_phy *phy, uint32_t max_freq,
 	if (ret < 0)
 		return ret;
 
-	ret = ad9361_dig_tune_delay(phy, max_freq, flags, false);
+	ret = ad9361_dig_tune_delay(
+		phy, max_freq, flags, false, cleanup_status);
 	if (ret >= 0 && (flags & DO_IDELAY))
 		ret = ad9361_dig_tune_iodelay(phy, false);
 
@@ -703,7 +711,8 @@ static int32_t ad9361_dig_tune_rx(struct ad9361_rf_phy *phy, uint32_t max_freq,
  * @return 0 in case of success, negative error code otherwise.
  */
 static int32_t ad9361_dig_tune_tx(struct ad9361_rf_phy *phy, uint32_t max_freq,
-				  enum dig_tune_flags flags)
+				  enum dig_tune_flags flags,
+				  int32_t *cleanup_status)
 {
 	struct axiadc_converter *conv = phy->adc_conv;
 	struct axi_adc *rx_adc = phy->rx_adc;
@@ -797,7 +806,8 @@ static int32_t ad9361_dig_tune_tx(struct ad9361_rf_phy *phy, uint32_t max_freq,
 			goto tx_cleanup;
 	}
 
-	ret = ad9361_dig_tune_delay(phy, max_freq, flags, true);
+	ret = ad9361_dig_tune_delay(
+		phy, max_freq, flags, true, cleanup_status);
 	if (ret >= 0 && (flags & DO_ODELAY))
 		ret = ad9361_dig_tune_iodelay(phy, true);
 
@@ -921,9 +931,11 @@ int32_t ad9361_dig_tune_with_cleanup(
 				goto tune_cleanup;
 		}
 
-		ret = ad9361_dig_tune_rx(phy, max_freq, flags);
+		ret = ad9361_dig_tune_rx(phy, max_freq, flags,
+					 &cleanup_status);
 		if (ret == 0 && !phy->pdata->dig_interface_tune_skipmode)
-			ret = ad9361_dig_tune_tx(phy, max_freq, flags);
+			ret = ad9361_dig_tune_tx(phy, max_freq, flags,
+						 &cleanup_status);
 
 	tune_cleanup:
 		TUNE_CLEANUP(ad9361_bist_loopback(phy, loopback));

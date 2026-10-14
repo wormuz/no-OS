@@ -8257,9 +8257,17 @@ int32_t ad9361_calculate_rf_clock_chain(struct ad9361_rf_phy *phy,
 int32_t ad9361_set_trx_clock_chain_freq(struct ad9361_rf_phy *phy,
 					uint32_t freq)
 {
+	return ad9361_set_trx_clock_chain_freq_with_cleanup(phy, freq, NULL);
+}
+
+int32_t ad9361_set_trx_clock_chain_freq_with_cleanup(
+	struct ad9361_rf_phy *phy, uint32_t freq, int32_t *cleanup_status)
+{
 	uint32_t rx[6], tx[6];
 	int32_t ret;
 
+	if (cleanup_status)
+		*cleanup_status = 0;
 	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 
@@ -8267,7 +8275,8 @@ int32_t ad9361_set_trx_clock_chain_freq(struct ad9361_rf_phy *phy,
 					      phy->rate_governor, rx, tx);
 	if (ret < 0)
 		return ret;
-	return ad9361_set_trx_clock_chain(phy, rx, tx);
+	return ad9361_set_trx_clock_chain_with_cleanup(
+		phy, rx, tx, cleanup_status);
 }
 
 /**
