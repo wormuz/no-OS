@@ -651,6 +651,9 @@ int32_t ad9361_get_tx_lo_power(struct ad9361_rf_phy *phy, uint8_t *option);
 /* Set the RX and TX path rates. */
 int32_t ad9361_set_trx_path_clks(struct ad9361_rf_phy *phy,
 				 uint32_t *rx_path_clks, uint32_t *tx_path_clks);
+int32_t ad9361_set_trx_path_clks_with_cleanup(
+		struct ad9361_rf_phy *phy, uint32_t *rx_path_clks,
+		uint32_t *tx_path_clks, int32_t *cleanup_status);
 /* Get the RX and TX path rates. */
 int32_t ad9361_get_trx_path_clks(struct ad9361_rf_phy *phy,
 				 uint32_t *rx_path_clks, uint32_t *tx_path_clks);

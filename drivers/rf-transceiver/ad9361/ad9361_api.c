@@ -1314,11 +1314,16 @@ int32_t ad9361_get_rx_rf_bandwidth(struct ad9361_rf_phy *phy,
  * writes here. */
 static int32_t ad9361_restore_clock_chain_after_update_failure(
 	struct ad9361_rf_phy *phy, const uint32_t old_rx[6],
-	const uint32_t old_tx[6], uint32_t old_rx_bw, uint32_t old_tx_bw)
+	const uint32_t old_tx[6], uint32_t old_rx_bw, uint32_t old_tx_bw,
+	int32_t *cleanup_status_out)
 {
 	uint32_t restore_rx[6], restore_tx[6], check_rx[6], check_tx[6];
 	int32_t chain_ret, read_ret, bandwidth_ret;
+	int32_t cleanup_status = 0, child_cleanup_status = 0;
 	bool clock_chain_restored;
+
+	if (cleanup_status_out)
+		*cleanup_status_out = 0;
 
 	if (ad9361_calibration_state_unknown(phy)) {
 		/* A clock rollback is another AD9361 mutation. When calibration may
@@ -1331,7 +1336,10 @@ static int32_t ad9361_restore_clock_chain_after_update_failure(
 
 	memcpy(restore_rx, old_rx, sizeof(restore_rx));
 	memcpy(restore_tx, old_tx, sizeof(restore_tx));
-	chain_ret = ad9361_set_trx_clock_chain(phy, restore_rx, restore_tx);
+	chain_ret = ad9361_set_trx_clock_chain_with_cleanup(
+		phy, restore_rx, restore_tx, &child_cleanup_status);
+	if (child_cleanup_status < 0)
+		cleanup_status = child_cleanup_status;
 	read_ret = ad9361_get_trx_clock_chain(phy, check_rx, check_tx);
 	clock_chain_restored = read_ret == 0 &&
 		!memcmp(old_rx, check_rx, sizeof(check_rx)) &&
@@ -1339,9 +1347,15 @@ static int32_t ad9361_restore_clock_chain_after_update_failure(
 
 	/* Even if the clock-change hook reported an error, the actual dividers may
 	 * have been restored. Verify them before recalibrating the old bandwidth. */
+	child_cleanup_status = 0;
 	bandwidth_ret = clock_chain_restored
-		? ad9361_update_rf_bandwidth(phy, old_rx_bw, old_tx_bw)
+		? ad9361_update_rf_bandwidth_with_cleanup(
+			phy, old_rx_bw, old_tx_bw, &child_cleanup_status)
 		: -EIO;
+	if (cleanup_status == 0 && child_cleanup_status < 0)
+		cleanup_status = child_cleanup_status;
+	if (cleanup_status_out)
+		*cleanup_status_out = cleanup_status;
 	if (!clock_chain_restored || bandwidth_ret < 0) {
 		phy->current_bw_valid = false;
 		dev_err(&phy->spi->dev,
@@ -3307,13 +3321,16 @@ int32_t ad9361_get_tx_lo_power(struct ad9361_rf_phy *phy, uint8_t *option)
  *
  * Note: This function will/may affect the data path.
  */
-int32_t ad9361_set_trx_path_clks(struct ad9361_rf_phy *phy,
-				 uint32_t *rx_path_clks,
-				 uint32_t *tx_path_clks)
+int32_t ad9361_set_trx_path_clks_with_cleanup(
+	struct ad9361_rf_phy *phy, uint32_t *rx_path_clks,
+	uint32_t *tx_path_clks, int32_t *cleanup_status_out)
 {
 	uint32_t old_rx[6], old_tx[6];
 	uint32_t old_rx_bw, old_tx_bw;
-	int32_t ret, rollback_ret;
+	int32_t ret, rollback_ret, cleanup_status = 0, child_cleanup_status;
+
+	if (cleanup_status_out)
+		*cleanup_status_out = 0;
 
 	if (!phy || !phy->spi || !phy->pdata || !rx_path_clks || !tx_path_clks)
 		return -EINVAL;
@@ -3333,19 +3350,46 @@ int32_t ad9361_set_trx_path_clks(struct ad9361_rf_phy *phy,
 	old_rx_bw = phy->current_rx_bw_Hz;
 	old_tx_bw = phy->current_tx_bw_Hz;
 
-	ret = ad9361_set_trx_clock_chain(phy, rx_path_clks, tx_path_clks);
+	child_cleanup_status = 0;
+	ret = ad9361_set_trx_clock_chain_with_cleanup(
+		phy, rx_path_clks, tx_path_clks, &child_cleanup_status);
+	if (child_cleanup_status < 0)
+		cleanup_status = child_cleanup_status;
 	if (ret < 0)
-		return ret;
+		goto out;
 
-	ret = ad9361_update_rf_bandwidth(phy, phy->current_rx_bw_Hz,
-					 phy->current_tx_bw_Hz);
+	child_cleanup_status = 0;
+	ret = ad9361_update_rf_bandwidth_with_cleanup(
+		phy, phy->current_rx_bw_Hz, phy->current_tx_bw_Hz,
+		&child_cleanup_status);
+	if (cleanup_status == 0 && child_cleanup_status < 0)
+		cleanup_status = child_cleanup_status;
 	if (ret < 0) {
 		rollback_ret = ad9361_restore_clock_chain_after_update_failure(
-			phy, old_rx, old_tx, old_rx_bw, old_tx_bw);
-		return rollback_ret < 0 ? rollback_ret : ret;
+			phy, old_rx, old_tx, old_rx_bw, old_tx_bw,
+			&child_cleanup_status);
+		if (cleanup_status == 0 && child_cleanup_status < 0)
+			cleanup_status = child_cleanup_status;
+		if (rollback_ret < 0 && cleanup_status == 0)
+			cleanup_status = rollback_ret;
 	}
 
-	return 0;
+out:
+	if (cleanup_status < 0)
+		ad9361_mark_calibration_state_unknown(phy);
+	if (cleanup_status_out)
+		*cleanup_status_out = cleanup_status;
+	if (ret >= 0 && cleanup_status < 0)
+		ret = cleanup_status;
+	return ret;
+}
+
+int32_t ad9361_set_trx_path_clks(struct ad9361_rf_phy *phy,
+				 uint32_t *rx_path_clks,
+				 uint32_t *tx_path_clks)
+{
+	return ad9361_set_trx_path_clks_with_cleanup(
+		phy, rx_path_clks, tx_path_clks, NULL);
 }
 
 /**
