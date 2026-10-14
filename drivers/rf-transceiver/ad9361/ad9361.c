@@ -8030,26 +8030,43 @@ state_error:
 	return ad9361_clock_chain_transaction_finish(transaction, -EIO);
 }
 
-int32_t ad9361_set_trx_clock_chain(struct ad9361_rf_phy *phy,
-				   const uint32_t *rx_path_clks,
-				   const uint32_t *tx_path_clks)
+int32_t ad9361_set_trx_clock_chain_with_cleanup(
+		struct ad9361_rf_phy *phy, const uint32_t *rx_path_clks,
+		const uint32_t *tx_path_clks, int32_t *cleanup_status)
 {
 	struct ad9361_clock_chain_transaction transaction = {0};
 	int32_t ret;
 
+	if (cleanup_status)
+		*cleanup_status = 0;
+
 	ret = ad9361_clock_chain_transaction_start(
 		phy, rx_path_clks, tx_path_clks, &transaction);
-	if (ret < 0)
+	if (ret < 0) {
+		if (cleanup_status)
+			*cleanup_status = transaction.cleanup_status;
 		return ret;
+	}
 	for (;;) {
 		ret = ad9361_clock_chain_transaction_poll(phy, &transaction);
-		if (ret != 1)
+		if (ret != 1) {
+			if (cleanup_status)
+				*cleanup_status = transaction.cleanup_status;
 			return ret;
+		}
 		if (transaction.stage == AD9361_CLOCK_CHAIN_TRANSACTION_BBPLL &&
 		    transaction.bbpll_job.rate_transaction.wait_started)
 			no_os_udelay(transaction.bbpll_job.rate_transaction.
 				     wait.poll_delay_us);
 	}
+}
+
+int32_t ad9361_set_trx_clock_chain(struct ad9361_rf_phy *phy,
+				   const uint32_t *rx_path_clks,
+				   const uint32_t *tx_path_clks)
+{
+	return ad9361_set_trx_clock_chain_with_cleanup(
+		phy, rx_path_clks, tx_path_clks, NULL);
 }
 
 /**

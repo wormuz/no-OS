@@ -674,7 +674,7 @@ int32_t ad9361_init_transaction_poll(
 	static const uint8_t lock_config_required = 0x0a;
 	struct ad9361_rf_phy *phy;
 	AD9361_InitParam *init_param;
-	int32_t value;
+	int32_t value, post_setup_cleanup_status;
 	int32_t ret;
 
 	if (!transaction)
@@ -857,7 +857,12 @@ int32_t ad9361_init_transaction_poll(
 			goto fail;
 
 	/* platform specific wrapper to call ad9361_post_setup() */
-	ret = ad9361_post_setup(phy);
+	post_setup_cleanup_status = 0;
+	ret = ad9361_post_setup_with_cleanup(
+		phy, &post_setup_cleanup_status);
+	if (transaction->cleanup_status >= 0 &&
+	    post_setup_cleanup_status < 0)
+		transaction->cleanup_status = post_setup_cleanup_status;
 	if (ret < 0)
 		goto fail;
 #endif
@@ -898,26 +903,41 @@ uint32_t ad9361_init_transaction_poll_delay_us(
 		&transaction->setup_job);
 }
 
-int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
-		    AD9361_InitParam *init_param)
+int32_t ad9361_init_with_cleanup(struct ad9361_rf_phy **ad9361_phy,
+		AD9361_InitParam *init_param, int32_t *cleanup_status)
 {
 	struct ad9361_init_transaction transaction = {0};
 	int32_t ret;
 
+	if (cleanup_status)
+		*cleanup_status = 0;
+
 	ret = ad9361_init_transaction_start(
 		&transaction, ad9361_phy, init_param);
-	if (ret < 0)
+	if (ret < 0) {
+		if (cleanup_status)
+			*cleanup_status = transaction.cleanup_status;
 		return ret;
+	}
 	for (;;) {
 		uint32_t delay_us;
 
 		ret = ad9361_init_transaction_poll(&transaction);
-		if (ret != 1)
+		if (ret != 1) {
+			if (cleanup_status)
+				*cleanup_status = transaction.cleanup_status;
 			return ret;
+		}
 		delay_us = ad9361_init_transaction_poll_delay_us(&transaction);
 		if (delay_us)
 			no_os_udelay(delay_us);
 	}
+}
+
+int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
+		    AD9361_InitParam *init_param)
+{
+	return ad9361_init_with_cleanup(ad9361_phy, init_param, NULL);
 }
 
 /**

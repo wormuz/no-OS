@@ -4239,6 +4239,8 @@ int32_t ad9361_setup_calibration_transaction_poll(
 		struct ad9361_rf_phy *phy,
 		struct ad9361_setup_calibration_transaction *transaction);
 int32_t ad9361_post_setup(struct ad9361_rf_phy *phy);
+int32_t ad9361_post_setup_with_cleanup(
+		struct ad9361_rf_phy *phy, int32_t *cleanup_status);
 int32_t ad9361_set_ensm_mode(struct ad9361_rf_phy *phy, bool fdd, bool pinctrl);
 int32_t ad9361_ensm_set_state(struct ad9361_rf_phy *phy, uint8_t ensm_state,
 			      bool pinctrl);
@@ -4256,6 +4258,9 @@ int32_t ad9361_calculate_rf_clock_chain(struct ad9361_rf_phy *phy,
 int32_t ad9361_set_trx_clock_chain(struct ad9361_rf_phy *phy,
 				   const uint32_t *rx_path_clks,
 				   const uint32_t *tx_path_clks);
+int32_t ad9361_set_trx_clock_chain_with_cleanup(
+		struct ad9361_rf_phy *phy, const uint32_t *rx_path_clks,
+		const uint32_t *tx_path_clks, int32_t *cleanup_status);
 int32_t ad9361_clock_chain_transaction_start(
 	struct ad9361_rf_phy *phy, const uint32_t *rx_path_clks,
 	const uint32_t *tx_path_clks,

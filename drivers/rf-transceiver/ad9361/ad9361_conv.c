@@ -1025,14 +1025,18 @@ static int32_t ad9361_post_setup_validate(struct ad9361_rf_phy *phy)
 * @param phy The AD9361 state structure.
 * @return 0 in case of success, negative error code otherwise.
 */
-int32_t ad9361_post_setup(struct ad9361_rf_phy *phy)
+int32_t ad9361_post_setup_with_cleanup(
+		struct ad9361_rf_phy *phy, int32_t *cleanup_status_out)
 {
 	struct axiadc_converter *conv;
 	struct axi_adc *rx_adc;
 	int32_t rx2tx2;
 	uint32_t tmp, num_chan, flags, id, i;
 	uint8_t saved_skipmode;
-	int32_t ret;
+	int32_t ret, cleanup_status = 0, child_cleanup_status;
+
+	if (cleanup_status_out)
+		*cleanup_status_out = 0;
 
 	if (!phy)
 		return -EINVAL;
@@ -1111,21 +1115,33 @@ int32_t ad9361_post_setup(struct ad9361_rf_phy *phy)
 		phy->pdata->dig_interface_tune_skipmode = 2; /* SKIP_ALL */
 
 	POST_SETUP_TRY(axi_adc_read(rx_adc, ADI_REG_ID, &id));
-	ret = ad9361_dig_tune(phy, 61440000, (id) ? flags | RESTORE_DEFAULT : flags);
+	child_cleanup_status = 0;
+	ret = ad9361_dig_tune_with_cleanup(
+		phy, 61440000, (id) ? flags | RESTORE_DEFAULT : flags,
+		&child_cleanup_status);
+	if (cleanup_status == 0 && child_cleanup_status < 0)
+		cleanup_status = child_cleanup_status;
 	if (ret < 0)
 		goto out;
 
 	if (flags & (DO_IDELAY | DO_ODELAY)) {
-		ret = ad9361_dig_tune(phy, 61440000,
-				      (id) ? flags | RESTORE_DEFAULT | BE_VERBOSE
-				      : flags | BE_VERBOSE);
+		child_cleanup_status = 0;
+		ret = ad9361_dig_tune_with_cleanup(
+			phy, 61440000,
+			(id) ? flags | RESTORE_DEFAULT | BE_VERBOSE :
+			flags | BE_VERBOSE, &child_cleanup_status);
+		if (cleanup_status == 0 && child_cleanup_status < 0)
+			cleanup_status = child_cleanup_status;
 		if (ret < 0)
 			goto out;
 	}
 
-	ret = ad9361_set_trx_clock_chain(phy,
-					 phy->pdata->rx_path_clks,
-					 phy->pdata->tx_path_clks);
+	child_cleanup_status = 0;
+	ret = ad9361_set_trx_clock_chain_with_cleanup(
+		phy, phy->pdata->rx_path_clks, phy->pdata->tx_path_clks,
+		&child_cleanup_status);
+	if (cleanup_status == 0 && child_cleanup_status < 0)
+		cleanup_status = child_cleanup_status;
 	if (ret < 0)
 		goto out;
 	ret = ad9361_ensm_force_state_checked(phy, ENSM_STATE_ALERT);
@@ -1138,8 +1154,17 @@ out:
 	if (phy->pdata->bb_clk_change_dig_tune_en)
 		phy->pdata->dig_interface_tune_skipmode = saved_skipmode;
 	#undef POST_SETUP_TRY
+	if (cleanup_status_out)
+		*cleanup_status_out = cleanup_status;
+	if (ret >= 0 && cleanup_status < 0)
+		ret = cleanup_status;
 
 	return ret;
+}
+
+int32_t ad9361_post_setup(struct ad9361_rf_phy *phy)
+{
+	return ad9361_post_setup_with_cleanup(phy, NULL);
 }
 #else
 /**

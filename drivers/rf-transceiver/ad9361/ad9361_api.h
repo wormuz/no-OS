@@ -407,6 +407,8 @@ enum ad9361_ensm_mode {
  * non-NULL and ownership is returned to the caller for reset recovery. */
 int32_t ad9361_init(struct ad9361_rf_phy **ad9361_phy,
 		    AD9361_InitParam *init_param);
+int32_t ad9361_init_with_cleanup(struct ad9361_rf_phy **ad9361_phy,
+		AD9361_InitParam *init_param, int32_t *cleanup_status);
 int32_t ad9361_init_transaction_start(
 		struct ad9361_init_transaction *transaction,
 		struct ad9361_rf_phy **ad9361_phy,
