@@ -1602,8 +1602,11 @@ int32_t ad9361_status_wait_poll(struct ad9361_rf_phy *phy,
 	now_us = (uint64_t)now.s * 1000000ULL + now.us;
 	elapsed_us = now_us - wait->start_us;
 	if ((uint32_t)ret == wait->done_state)
-		return ad9361_status_wait_finish(
-			phy, wait, elapsed_us <= wait->timeout_us ? 0 : -ETIMEDOUT);
+		/* The status observation is the completion evidence. A cooperative
+		 * worker may resume after the watchdog deadline even though hardware
+		 * already reached the requested state; do not turn that confirmed
+		 * terminal state into a timeout solely because polling was delayed. */
+		return ad9361_status_wait_finish(phy, wait, 0);
 	if (elapsed_us >= wait->timeout_us ||
 	    ++wait->polls >= wait->poll_budget) {
 		/* The requested state is still absent at the watchdog boundary; the
