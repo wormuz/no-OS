@@ -7724,6 +7724,8 @@ static int32_t ad9361_clock_chain_transaction_finish(
 {
 	struct ad9361_rf_phy *phy = transaction->phy;
 
+	if (status >= 0 && transaction->cleanup_status < 0)
+		status = transaction->cleanup_status;
 	if (phy && phy->clock_chain_transaction == transaction)
 		phy->clock_chain_transaction = NULL;
 	transaction->active = false;
@@ -7911,7 +7913,9 @@ int32_t ad9361_clock_chain_transaction_poll(
 		if (!phy->pdata->dig_interface_tune_fir_disable &&
 		    !(phy->bypass_tx_fir && phy->bypass_rx_fir)) {
 			phy->clock_chain_transaction = NULL;
-			ret = ad9361_dig_tune(phy, 0, SKIP_STORE_RESULT);
+			ret = ad9361_dig_tune_with_cleanup(
+				phy, 0, SKIP_STORE_RESULT,
+				&transaction->cleanup_status);
 			phy->clock_chain_transaction = transaction;
 			if (ret < 0)
 				goto mutated_failure;
@@ -7977,7 +7981,9 @@ int32_t ad9361_clock_chain_transaction_poll(
 			if (phy->pdata->bb_clk_change_dig_tune_en) {
 #ifndef AXI_ADC_NOT_PRESENT
 				phy->clock_chain_transaction = NULL;
-				ret = ad9361_dig_tune(phy, 0, RESTORE_DEFAULT);
+				ret = ad9361_dig_tune_with_cleanup(
+					phy, 0, RESTORE_DEFAULT,
+					&transaction->cleanup_status);
 				phy->clock_chain_transaction = transaction;
 				if (ret < 0)
 					goto mutated_failure;
@@ -9660,6 +9666,10 @@ static int32_t ad9361_setup_transaction_finish(
 	struct ad9361_rf_phy *phy = transaction->phy;
 
 	if (transaction->cleanup_status >= 0 &&
+	    transaction->clock_chain_job.cleanup_status < 0)
+		transaction->cleanup_status =
+			transaction->clock_chain_job.cleanup_status;
+	if (transaction->cleanup_status >= 0 &&
 	    transaction->calibration_job.cleanup_status < 0)
 		transaction->cleanup_status =
 			transaction->calibration_job.cleanup_status;
@@ -10219,6 +10229,10 @@ int32_t ad9361_setup_transaction_poll(
 		phy->setup_transaction = transaction;
 		if (ret == 1)
 			return 1;
+		if (transaction->cleanup_status >= 0 &&
+		    transaction->clock_chain_job.cleanup_status < 0)
+			transaction->cleanup_status =
+				transaction->clock_chain_job.cleanup_status;
 		if (ret < 0)
 			return ad9361_setup_transaction_finish(transaction, ret);
 		transaction->stage =

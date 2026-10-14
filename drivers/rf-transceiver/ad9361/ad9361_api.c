@@ -1340,6 +1340,16 @@ static int32_t ad9361_sample_rate_transaction_finish(
 		if (transaction->clock_chain_job.active)
 			status = -EIO;
 	}
+	if (transaction->cleanup_status >= 0 &&
+	    transaction->clock_chain_job.cleanup_status < 0)
+		transaction->cleanup_status =
+			transaction->clock_chain_job.cleanup_status;
+	if (transaction->cleanup_status >= 0 &&
+	    transaction->bandwidth_job.tracking_restore_status < 0)
+		transaction->cleanup_status =
+			transaction->bandwidth_job.tracking_restore_status;
+	if (status >= 0 && transaction->cleanup_status < 0)
+		status = transaction->cleanup_status;
 	transaction->active = false;
 	transaction->terminal = true;
 	transaction->terminal_status = status;

@@ -833,8 +833,9 @@ tx_cleanup:
  * @param flags Flags: BE_VERBOSE, BE_MOREVERBOSE, DO_IDELAY, DO_ODELAY.
  * @return 0 in case of success, negative error code otherwise.
  */
-int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
-			enum dig_tune_flags flags)
+int32_t ad9361_dig_tune_with_cleanup(
+		struct ad9361_rf_phy *phy, uint32_t max_freq,
+		enum dig_tune_flags flags, int32_t *cleanup_status_out)
 {
 	struct axi_adc *rx_adc;
 	uint32_t loopback, bist;
@@ -844,6 +845,8 @@ int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 	bool tx_muted = false;
 	uint32_t tuned_rx_delay, tuned_tx_delay;
 	int32_t ret = 0, cleanup_ret, cleanup_status = 0;
+	if (cleanup_status_out)
+		*cleanup_status_out = 0;
 
 #define TUNE_CLEANUP(_expr) do { \
 	if (ad9361_calibration_state_unknown(phy)) { \
@@ -999,7 +1002,15 @@ int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 #undef TUNE_CLEANUP
 	if (ad9361_calibration_state_unknown(phy) && cleanup_status == 0)
 		cleanup_status = -EIO;
+	if (cleanup_status_out)
+		*cleanup_status_out = cleanup_status;
 	return ret < 0 ? ret : cleanup_status;
+}
+
+int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
+			enum dig_tune_flags flags)
+{
+	return ad9361_dig_tune_with_cleanup(phy, max_freq, flags, NULL);
 }
 
 static int32_t ad9361_post_setup_validate(struct ad9361_rf_phy *phy)

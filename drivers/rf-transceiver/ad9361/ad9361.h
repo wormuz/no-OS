@@ -3734,6 +3734,7 @@ struct ad9361_clock_chain_transaction {
 	uint8_t post_change_stage;
 	uint16_t post_change_cursor;
 	uint32_t post_change_bbpll_freq;
+	int32_t cleanup_status;
 	bool tx_divider_pending;
 	bool active;
 	bool terminal;
@@ -3985,6 +3986,7 @@ struct ad9361_sample_rate_transaction {
 	bool rollback_clock_started;
 	bool rollback_complete;
 	int32_t status;
+	int32_t cleanup_status;
 	int32_t terminal_status;
 };
 
@@ -4516,6 +4518,9 @@ int32_t ad9361_dig_interface_timing_analysis(struct ad9361_rf_phy *phy,
 		char *buf, int32_t buflen);
 int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 			enum dig_tune_flags flags);
+int32_t ad9361_dig_tune_with_cleanup(
+		struct ad9361_rf_phy *phy, uint32_t max_freq,
+		enum dig_tune_flags flags, int32_t *cleanup_status);
 int32_t ad9361_en_dis_tx(struct ad9361_rf_phy *phy, uint32_t tx_if,
 			 uint32_t enable);
 int32_t ad9361_en_dis_rx(struct ad9361_rf_phy *phy, uint32_t rx_if,
