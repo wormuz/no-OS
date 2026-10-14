@@ -4284,6 +4284,9 @@ int32_t ad9361_set_gain_ctrl_mode(struct ad9361_rf_phy *phy,
 int32_t ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
 				    enum fir_dest dest, int32_t gain_dB,
 				    uint32_t ntaps, short *coef);
+int32_t ad9361_load_fir_filter_coef_with_cleanup(
+		struct ad9361_rf_phy *phy, enum fir_dest dest, int32_t gain_dB,
+		uint32_t ntaps, short *coef, int32_t *cleanup_status);
 int32_t ad9361_validate_enable_fir(struct ad9361_rf_phy *phy);
 int32_t ad9361_set_tx_atten(struct ad9361_rf_phy *phy, uint32_t atten_mdb,
 			    bool tx1, bool tx2, bool immed);

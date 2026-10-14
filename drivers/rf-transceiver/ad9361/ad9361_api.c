@@ -2000,11 +2000,14 @@ int32_t ad9361_get_rx_gain_control_mode(struct ad9361_rf_phy *phy,
  *
  * Note: This function will/may affect the data path.
  */
-int32_t ad9361_set_rx_fir_config(struct ad9361_rf_phy *phy,
-				 AD9361_RXFIRConfig fir_cfg)
+int32_t ad9361_set_rx_fir_config_with_cleanup(
+	struct ad9361_rf_phy *phy, AD9361_RXFIRConfig fir_cfg,
+	int32_t *cleanup_status)
 {
 	int32_t ret;
 	uint8_t old_rx_fir_dec;
+	if (cleanup_status)
+		*cleanup_status = 0;
 
 	if (!phy || !phy->spi)
 		return -EINVAL;
@@ -2014,12 +2017,19 @@ int32_t ad9361_set_rx_fir_config(struct ad9361_rf_phy *phy,
 
 	phy->fir_config_valid = false;
 	phy->rx_fir_dec = fir_cfg.rx_dec;
-	ret = ad9361_load_fir_filter_coef(phy, (enum fir_dest)(fir_cfg.rx | FIR_IS_RX),
-					  fir_cfg.rx_gain, fir_cfg.rx_coef_size, fir_cfg.rx_coef);
+	ret = ad9361_load_fir_filter_coef_with_cleanup(
+		phy, (enum fir_dest)(fir_cfg.rx | FIR_IS_RX), fir_cfg.rx_gain,
+		fir_cfg.rx_coef_size, fir_cfg.rx_coef, cleanup_status);
 	if (ret < 0) {
 		phy->rx_fir_dec = old_rx_fir_dec;
 	}
 	return ret;
+}
+
+int32_t ad9361_set_rx_fir_config(struct ad9361_rf_phy *phy,
+				 AD9361_RXFIRConfig fir_cfg)
+{
+	return ad9361_set_rx_fir_config_with_cleanup(phy, fir_cfg, NULL);
 }
 
 /**
@@ -2823,11 +2833,14 @@ int32_t ad9361_set_tx_lo_int_ext(struct ad9361_rf_phy *phy, uint8_t int_ext)
  *
  * Note: This function will/may affect the data path.
  */
-int32_t ad9361_set_tx_fir_config(struct ad9361_rf_phy *phy,
-				 AD9361_TXFIRConfig fir_cfg)
+int32_t ad9361_set_tx_fir_config_with_cleanup(
+	struct ad9361_rf_phy *phy, AD9361_TXFIRConfig fir_cfg,
+	int32_t *cleanup_status)
 {
 	int32_t ret;
 	uint8_t old_tx_fir_int;
+	if (cleanup_status)
+		*cleanup_status = 0;
 
 	if (!phy || !phy->spi)
 		return -EINVAL;
@@ -2838,12 +2851,19 @@ int32_t ad9361_set_tx_fir_config(struct ad9361_rf_phy *phy,
 
 	phy->fir_config_valid = false;
 	phy->tx_fir_int = fir_cfg.tx_int;
-	ret = ad9361_load_fir_filter_coef(phy, (enum fir_dest)fir_cfg.tx,
-					  fir_cfg.tx_gain, fir_cfg.tx_coef_size, fir_cfg.tx_coef);
+	ret = ad9361_load_fir_filter_coef_with_cleanup(
+		phy, (enum fir_dest)fir_cfg.tx, fir_cfg.tx_gain,
+		fir_cfg.tx_coef_size, fir_cfg.tx_coef, cleanup_status);
 	if (ret < 0) {
 		phy->tx_fir_int = old_tx_fir_int;
 	}
 	return ret;
+}
+
+int32_t ad9361_set_tx_fir_config(struct ad9361_rf_phy *phy,
+				 AD9361_TXFIRConfig fir_cfg)
+{
+	return ad9361_set_tx_fir_config_with_cleanup(phy, fir_cfg, NULL);
 }
 
 /**

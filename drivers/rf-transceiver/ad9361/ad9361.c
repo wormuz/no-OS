@@ -12504,17 +12504,20 @@ static int32_t ad9361_verify_fir_filter_coef(struct ad9361_rf_phy *phy,
  * @param coef Pointer to filter coefficients.
  * @return 0 in case of success, negative error code otherwise.
  */
-int32_t ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
-				    enum fir_dest dest, int32_t gain_dB,
-				    uint32_t ntaps, int16_t *coef)
+int32_t ad9361_load_fir_filter_coef_with_cleanup(
+	struct ad9361_rf_phy *phy, enum fir_dest dest, int32_t gain_dB,
+	uint32_t ntaps, int16_t *coef, int32_t *cleanup_status_out)
 {
 	struct no_os_spi_desc *spi;
 	uint32_t val, offs = 0, fir_conf = 0, fir_enable = 0;
 	uint32_t fir_enable_mask;
-	int32_t ret, cleanup_ret;
+	int32_t ret, cleanup_ret, cleanup_status = 0;
 	uint8_t selected_mask = (uint8_t)dest & 0x03;
 	bool ensm_forced = false, fir_enable_saved = false, fir_clock_started = false;
 	bool is_rx = (dest & FIR_IS_RX) != 0;
+
+	if (cleanup_status_out)
+		*cleanup_status_out = 0;
 
 	if (!phy || !phy->spi)
 		return -EINVAL;
@@ -12544,10 +12547,14 @@ int32_t ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
 		/* The ALERT request may have reached the device even when its
 		 * transport reports failure. Restore the observed prior state. */
 		cleanup_ret = ad9361_ensm_restore_prev_state_checked(phy);
-		if (cleanup_ret < 0)
+		if (cleanup_ret < 0) {
+			cleanup_status = cleanup_ret;
 			dev_err(&phy->spi->dev,
 				"Unable to restore ENSM after FIR setup failure: %d",
 				cleanup_ret);
+		}
+		if (cleanup_status_out)
+			*cleanup_status_out = cleanup_status;
 		return ret;
 	}
 	ensm_forced = true;
@@ -12630,14 +12637,19 @@ int32_t ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
 			phy->tx_fir_coefficients_valid_mask = 0;
 		#undef FIR_SPI_WRITEF
 		#undef FIR_SPI_WRITE
+		if (cleanup_status_out)
+			*cleanup_status_out = cleanup_status;
 		return ret < 0 ? ret : -EIO;
 	}
 	if (fir_clock_started) {
 		fir_conf &= ~FIR_START_CLK;
 		cleanup_ret = ad9361_spi_write(spi, REG_TX_FILTER_CONF + offs,
 					       fir_conf);
-		if (cleanup_ret < 0)
+		if (cleanup_ret < 0) {
+			if (cleanup_status == 0)
+				cleanup_status = cleanup_ret;
 			ad9361_mark_calibration_state_unknown(phy);
+		}
 		if (ret >= 0 && cleanup_ret < 0)
 			ret = cleanup_ret;
 	}
@@ -12646,14 +12658,19 @@ int32_t ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
 		cleanup_ret = ad9361_spi_writef(spi,
 						(dest & FIR_IS_RX) ? REG_RX_ENABLE_FILTER_CTRL : REG_TX_ENABLE_FILTER_CTRL,
 						fir_enable_mask, fir_enable);
-		if (cleanup_ret < 0)
+		if (cleanup_ret < 0) {
+			if (cleanup_status == 0)
+				cleanup_status = cleanup_ret;
 			ad9361_mark_calibration_state_unknown(phy);
+		}
 		if (ret >= 0 && cleanup_ret < 0)
 			ret = cleanup_ret;
 	}
 	if (ensm_forced &&
 	    !ad9361_calibration_state_unknown(phy)) {
 		cleanup_ret = ad9361_ensm_restore_prev_state_checked(phy);
+		if (cleanup_ret < 0 && cleanup_status == 0)
+			cleanup_status = cleanup_ret;
 		if (ret >= 0 && cleanup_ret < 0)
 			ret = cleanup_ret;
 	}
@@ -12674,7 +12691,17 @@ int32_t ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
 		phy->tx_fir_coefficients_valid_mask = 0;
 	}
 
+	if (cleanup_status_out)
+		*cleanup_status_out = cleanup_status;
 	return ret;
+}
+
+int32_t ad9361_load_fir_filter_coef(struct ad9361_rf_phy *phy,
+				    enum fir_dest dest, int32_t gain_dB,
+				    uint32_t ntaps, int16_t *coef)
+{
+	return ad9361_load_fir_filter_coef_with_cleanup(
+		phy, dest, gain_dB, ntaps, coef, NULL);
 }
 
 /**
