@@ -54,6 +54,8 @@
 void ad9361_invalidate_tx_quad_calib(struct ad9361_rf_phy *phy);
 static void ad9361_tx_quad_history_commit(struct ad9361_rf_phy *phy);
 void ad9361_mark_calibration_state_unknown(struct ad9361_rf_phy *phy);
+static int32_t ad9361_poll_result_check(struct ad9361_rf_phy *phy,
+					int32_t status);
 static uint32_t ad9361_rfdc_job_poll_delay_us(
 		const struct ad9361_rfdc_calibration_job *job);
 
@@ -1705,6 +1707,7 @@ static int32_t ad9361_wait_status_timeout(struct ad9361_rf_phy *phy,
 		uint64_t now_us, remaining_us;
 
 		ret = ad9361_status_wait_poll(phy, &wait);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret != 1) {
 			if (ret == -ETIMEDOUT)
 				dev_err(&phy->spi->dev,
@@ -2252,6 +2255,7 @@ static int32_t ad9361_load_gt(struct ad9361_rf_phy *phy, uint64_t freq,
 		if (delay)
 			no_os_udelay(delay);
 	}
+	ret = ad9361_poll_result_check(phy, ret);
 	return ret;
 }
 
@@ -2997,6 +3001,7 @@ int32_t ad9361_ensm_transition_poll(struct ad9361_rf_phy *phy,
 			return 1;
 		}
 		ret = ad9361_status_wait_poll(phy, &job->wait);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret == 1)
 			return 1;
 		if (ret < 0)
@@ -3067,6 +3072,7 @@ int32_t ad9361_ensm_transition_poll(struct ad9361_rf_phy *phy,
 		}
 		if (job->wait.active) {
 			ret = ad9361_status_wait_poll(phy, &job->wait);
+			ret = ad9361_poll_result_check(phy, ret);
 			if (ret == 1)
 				return 1;
 			if (ret < 0) {
@@ -3111,6 +3117,7 @@ int32_t ad9361_ensm_transition_poll(struct ad9361_rf_phy *phy,
 			return 1;
 		}
 		ret = ad9361_status_wait_poll(phy, &job->wait);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret == 1)
 			return 1;
 		if (ret < 0)
@@ -3133,6 +3140,7 @@ static int32_t ad9361_ensm_transition_sync(struct ad9361_rf_phy *phy,
 		return ret;
 	for (;;) {
 		ret = ad9361_ensm_transition_poll(phy, &job);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret != 1)
 			return ret;
 		if (job.wait.active) {
@@ -4224,6 +4232,7 @@ int32_t ad9361_bbf_calibration_poll(struct ad9361_rf_phy *phy,
 	}
 
 	ret = ad9361_calibration_wait_poll(phy, &job->wait);
+	ret = ad9361_poll_result_check(phy, ret);
 	if (ret == 1)
 		return 1;
 	ret = ad9361_bbf_cleanup(phy, job, ret);
@@ -4246,6 +4255,7 @@ static int32_t ad9361_bbf_calibration_sync(struct ad9361_rf_phy *phy,
 		return ret;
 	for (;;) {
 		ret = ad9361_bbf_calibration_poll(phy, &job);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret != 1)
 			return ret;
 		no_os_udelay(job.wait.poll_delay_us);
@@ -4598,6 +4608,7 @@ int32_t ad9361_synth_cp_calibration_poll(struct ad9361_rf_phy *phy,
 	}
 
 	ret = ad9361_status_wait_poll(phy, &job->wait);
+	ret = ad9361_poll_result_check(phy, ret);
 	if (ret == 1)
 		return 1;
 	if (ret < 0)
@@ -4616,6 +4627,7 @@ static int32_t ad9361_txrx_synth_cp_calib(struct ad9361_rf_phy *phy,
 		return ret;
 	for (;;) {
 		ret = ad9361_synth_cp_calibration_poll(phy, &job);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret != 1)
 			return ret;
 		if (job.wait_started && job.wait.poll_not_before_us) {
@@ -4725,6 +4737,7 @@ int32_t ad9361_bbdc_calibration_poll(struct ad9361_rf_phy *phy,
 		return -EINVAL;
 	}
 	ret = ad9361_calibration_wait_poll(phy, &job->wait);
+	ret = ad9361_poll_result_check(phy, ret);
 	if (ret == 1)
 		return 1;
 	job->active = false;
@@ -4742,6 +4755,7 @@ static int32_t ad9361_bb_dc_offset_calib(struct ad9361_rf_phy *phy)
 		return ret;
 	for (;;) {
 		ret = ad9361_bbdc_calibration_poll(phy, &job);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret != 1)
 			return ret;
 		no_os_udelay(job.wait.poll_delay_us);
@@ -4766,6 +4780,7 @@ static int32_t ad9361_run_calibration_timeout(struct ad9361_rf_phy *phy,
 
 	for (;;) {
 		ret = ad9361_calibration_wait_poll(phy, &wait);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret != 1)
 			return ret;
 		no_os_udelay(wait.poll_delay_us);
@@ -4981,6 +4996,19 @@ int32_t ad9361_calibration_wait_poll(struct ad9361_rf_phy *phy,
 bool ad9361_calibration_state_unknown(const struct ad9361_rf_phy *phy)
 {
 	return phy && phy->calibration_state_unknown;
+}
+
+/* Retained poll APIs use one shared contract: 1=pending, 0=complete, and a
+ * negative errno=failure. Do not let a corrupt/unknown positive child status
+ * become a success event in its parent. */
+static int32_t ad9361_poll_result_check(struct ad9361_rf_phy *phy,
+					int32_t status)
+{
+	if (status > 1) {
+		ad9361_mark_calibration_state_unknown(phy);
+		return -EIO;
+	}
+	return status;
 }
 
 bool ad9361_operation_busy(const struct ad9361_rf_phy *phy)
@@ -5282,6 +5310,7 @@ int32_t ad9361_tx_quad_calibration_attempt_poll(
 		return -EINVAL;
 
 	ret = ad9361_calibration_wait_poll(phy, &attempt->wait);
+	ret = ad9361_poll_result_check(phy, ret);
 	if (ret == 1)
 		return 1;
 	if (ad9361_calibration_state_unknown(phy))
@@ -5331,6 +5360,7 @@ static int32_t __ad9361_tx_quad_calib(struct ad9361_rf_phy *phy, uint32_t phase,
 		return ret;
 	for (;;) {
 		ret = ad9361_tx_quad_calibration_attempt_poll(phy, &attempt, res);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret != 1)
 			return ret;
 		no_os_udelay(attempt.wait.poll_delay_us);
@@ -5356,6 +5386,7 @@ static int32_t ad9361_tx_quad_phase_search(struct ad9361_rf_phy *phy,
 		return ret;
 	for (;;) {
 		ret = ad9361_tx_quad_phase_search_poll(phy, &search);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret != 1)
 			return ret;
 		no_os_udelay(search.attempt.wait.poll_delay_us);
@@ -5432,6 +5463,7 @@ int32_t ad9361_tx_quad_phase_search_poll(struct ad9361_rf_phy *phy,
 
 	ret = ad9361_tx_quad_calibration_attempt_poll(
 		phy, &search->attempt, &convergence);
+	ret = ad9361_poll_result_check(phy, ret);
 	if (ret == 1)
 		return 1;
 	if (ret < 0)
@@ -5900,6 +5932,7 @@ int32_t ad9361_tx_quad_calibration_job_poll(struct ad9361_rf_phy *phy,
 
 		ret = ad9361_rf_bandwidth_filter_transaction_poll(
 			phy, &job->bandwidth_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret == 1)
 			return 1;
 		if (ret < 0) {
@@ -5928,6 +5961,7 @@ int32_t ad9361_tx_quad_calibration_job_poll(struct ad9361_rf_phy *phy,
 	if (job->stage == AD9361_TX_QUAD_JOB_SEARCH) {
 		ret = ad9361_tx_quad_phase_search_poll(phy,
 						       &job->phase_search);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret == 1)
 			return 1;
 		if (ret < 0) {
@@ -5944,6 +5978,7 @@ int32_t ad9361_tx_quad_calibration_job_poll(struct ad9361_rf_phy *phy,
 
 	ret = ad9361_tx_quad_calibration_attempt_poll(
 		phy, &job->attempt, &job->convergence);
+	ret = ad9361_poll_result_check(phy, ret);
 	if (ret == 1)
 		return 1;
 	if (ret < 0) {
@@ -6017,6 +6052,7 @@ static int ad9361_tx_quad_calib(struct ad9361_rf_phy *phy,
 		return ret;
 	for (;;) {
 		ret = ad9361_tx_quad_calibration_job_poll(phy, &job);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret != 1)
 			return ret;
 		no_os_udelay(ad9361_tx_quad_calibration_job_poll_delay_us(&job));
@@ -7843,6 +7879,7 @@ int32_t ad9361_clock_chain_transaction_poll(
 			 * divider read and does not require dropping this owner. */
 			ret = ad9361_bbpll_clock_transaction_poll(
 				phy, &transaction->bbpll_job);
+			ret = ad9361_poll_result_check(phy, ret);
 			if (ret == 1)
 				return 1;
 			if (ret < 0) {
@@ -7938,6 +7975,7 @@ int32_t ad9361_clock_chain_transaction_poll(
 				phy, 0, SKIP_STORE_RESULT,
 				&transaction->cleanup_status);
 			phy->clock_chain_transaction = transaction;
+			ret = ad9361_poll_result_check(phy, ret);
 			if (ret < 0)
 				goto mutated_failure;
 		}
@@ -7952,6 +7990,7 @@ int32_t ad9361_clock_chain_transaction_poll(
 		case AD9361_CLOCK_CHAIN_POST_CHANGE_GC_UPDATE:
 			ret = ad9361_gc_update_step(
 				phy, &transaction->post_change_cursor);
+			ret = ad9361_poll_result_check(phy, ret);
 			if (ret == 1)
 				return 1;
 			if (ret < 0)
@@ -7964,6 +8003,7 @@ int32_t ad9361_clock_chain_transaction_poll(
 			ret = ad9361_rssi_setup_step(
 				phy, &phy->pdata->rssi_ctrl, true,
 				&transaction->post_change_cursor);
+			ret = ad9361_poll_result_check(phy, ret);
 			if (ret == 1)
 				return 1;
 			if (ret < 0)
@@ -7989,6 +8029,7 @@ int32_t ad9361_clock_chain_transaction_poll(
 				phy, &phy->pdata->auxadc_ctrl,
 				transaction->post_change_bbpll_freq,
 				&transaction->post_change_cursor);
+			ret = ad9361_poll_result_check(phy, ret);
 			if (ret == 1)
 				return 1;
 			if (ret < 0)
@@ -8006,6 +8047,7 @@ int32_t ad9361_clock_chain_transaction_poll(
 					phy, 0, RESTORE_DEFAULT,
 					&transaction->cleanup_status);
 				phy->clock_chain_transaction = transaction;
+				ret = ad9361_poll_result_check(phy, ret);
 				if (ret < 0)
 					goto mutated_failure;
 #endif
@@ -8050,6 +8092,7 @@ int32_t ad9361_set_trx_clock_chain_with_cleanup(
 	}
 	for (;;) {
 		ret = ad9361_clock_chain_transaction_poll(phy, &transaction);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret != 1) {
 			if (cleanup_status)
 				*cleanup_status = transaction.cleanup_status;
@@ -9279,6 +9322,7 @@ int32_t ad9361_setup_calibration_transaction_poll(
 	case AD9361_SETUP_CAL_ENSM_ALERT:
 		phy->setup_calibration_transaction = NULL;
 		ret = ad9361_ensm_transition_poll(phy, &transaction->ensm_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->setup_calibration_transaction = transaction;
 		if (ret == 1)
 			return 1;
@@ -9302,6 +9346,7 @@ int32_t ad9361_setup_calibration_transaction_poll(
 		phy->setup_calibration_transaction = NULL;
 		ret = ad9361_rf_bandwidth_filter_transaction_poll(
 			phy, &transaction->filter_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->setup_calibration_transaction = transaction;
 		if (ret == 1)
 			return 1;
@@ -9324,6 +9369,7 @@ int32_t ad9361_setup_calibration_transaction_poll(
 		phy->setup_calibration_transaction = NULL;
 		ret = ad9361_bbdc_calibration_poll(phy,
 						   &transaction->bbdc_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->setup_calibration_transaction = transaction;
 		if (ret == 1)
 			return 1;
@@ -9346,6 +9392,7 @@ int32_t ad9361_setup_calibration_transaction_poll(
 		phy->setup_calibration_transaction = NULL;
 		ret = ad9361_rfdc_calibration_poll(phy,
 						  &transaction->rfdc_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->setup_calibration_transaction = transaction;
 		if (ret == 1)
 			return 1;
@@ -9375,6 +9422,7 @@ int32_t ad9361_setup_calibration_transaction_poll(
 		phy->setup_calibration_transaction = NULL;
 		ret = ad9361_tx_quad_calibration_transaction_poll(
 			phy, &transaction->tx_quad_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->setup_calibration_transaction = transaction;
 		if (ret == 1)
 			return 1;
@@ -9923,6 +9971,7 @@ static int32_t ad9361_setup_post_cp_mux_step(
 		phy->setup_transaction = NULL;
 		ret = ad9361_ensm_transition_poll(
 			phy, &transaction->post_cp_ensm_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->setup_transaction = transaction;
 		if (ret == 1)
 			return 1;
@@ -10022,6 +10071,7 @@ static int32_t ad9361_setup_post_cp_mux_step(
 		phy->setup_transaction = NULL;
 		ret = ad9361_rfpll_rate_transaction_poll(
 			phy, &transaction->post_cp_rfpll_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->setup_transaction = transaction;
 		if (ret == 1)
 			return 1;
@@ -10043,6 +10093,7 @@ static int32_t ad9361_setup_post_cp_mux_step(
 		phy->setup_transaction = NULL;
 		ret = ad9361_ensm_transition_poll(
 			phy, &transaction->post_cp_ensm_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->setup_transaction = transaction;
 		if (ret == 1)
 			return 1;
@@ -10312,6 +10363,7 @@ int32_t ad9361_setup_transaction_poll(
 		phy->setup_transaction = NULL;
 		ret = ad9361_clock_chain_transaction_poll(
 			phy, &transaction->clock_chain_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->setup_transaction = transaction;
 		if (ret == 1)
 			return 1;
@@ -10577,6 +10629,7 @@ int32_t ad9361_setup_transaction_poll(
 		phy->setup_transaction = NULL;
 		ret = ad9361_synth_cp_calibration_poll(
 			phy, &transaction->synth_cp_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->setup_transaction = transaction;
 		if (ret == 1)
 			return 1;
@@ -10600,6 +10653,7 @@ int32_t ad9361_setup_transaction_poll(
 		phy->setup_transaction = NULL;
 		ret = ad9361_synth_cp_calibration_poll(
 			phy, &transaction->synth_cp_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->setup_transaction = transaction;
 		if (ret == 1)
 			return 1;
@@ -10627,6 +10681,7 @@ int32_t ad9361_setup_transaction_poll(
 		phy->setup_transaction = NULL;
 		ret = ad9361_rfpll_rate_transaction_poll(
 			phy, &transaction->post_cp_rfpll_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->setup_transaction = transaction;
 		if (ret == 1)
 			return 1;
@@ -10650,6 +10705,7 @@ int32_t ad9361_setup_transaction_poll(
 		phy->setup_transaction = NULL;
 		ret = ad9361_gain_table_transaction_poll(
 			phy, &transaction->post_cp_gain_table_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->setup_transaction = transaction;
 		if (ret == 1)
 			return 1;
@@ -10672,6 +10728,7 @@ int32_t ad9361_setup_transaction_poll(
 		phy->setup_transaction = NULL;
 		ret = ad9361_ext_band_transaction_poll(
 			phy, &transaction->post_cp_rx_band_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->setup_transaction = transaction;
 		if (ret == 1)
 			return 1;
@@ -10715,6 +10772,7 @@ int32_t ad9361_setup_transaction_poll(
 		phy->setup_transaction = NULL;
 		ret = ad9361_rfpll_rate_transaction_poll(
 			phy, &transaction->post_cp_rfpll_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->setup_transaction = transaction;
 		if (ret == 1)
 			return 1;
@@ -10737,6 +10795,7 @@ int32_t ad9361_setup_transaction_poll(
 		phy->setup_transaction = NULL;
 		ret = ad9361_ext_band_transaction_poll(
 			phy, &transaction->post_cp_tx_band_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->setup_transaction = transaction;
 		if (ret == 1)
 			return 1;
@@ -10914,6 +10973,7 @@ int32_t ad9361_setup_transaction_poll(
 		phy->setup_transaction = NULL;
 		ret = ad9361_setup_calibration_transaction_poll(
 			phy, &transaction->calibration_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->setup_transaction = transaction;
 		if (ret == 1)
 			return 1;
@@ -10947,6 +11007,7 @@ int32_t ad9361_setup_transaction_poll(
 	case AD9361_SETUP_TRANSACTION_POST_CALIBRATION_WAIT:
 		ret = ad9361_status_wait_poll(
 			phy, &transaction->post_calibration_wait);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret == 1)
 			return 1;
 		if (ret < 0)
@@ -11070,6 +11131,7 @@ int32_t ad9361_setup_with_cleanup(struct ad9361_rf_phy *phy,
 		uint32_t delay_us;
 
 		ret = ad9361_setup_transaction_poll(phy, &transaction);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret != 1) {
 			if (cleanup_status)
 				*cleanup_status = transaction.cleanup_status;
@@ -11224,7 +11286,9 @@ int32_t ad9361_tx_quad_calibration_transaction_poll(
 	if (transaction->stage == AD9361_TX_QUAD_TRANSACTION_ENSM_ALERT) {
 		phy->tx_quad_transaction = NULL;
 		ret = ad9361_ensm_transition_poll(phy, &transaction->ensm_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->tx_quad_transaction = transaction;
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret == 1)
 			return 1;
 		if (ret < 0) {
@@ -11243,7 +11307,9 @@ int32_t ad9361_tx_quad_calibration_transaction_poll(
 		phy->tx_quad_transaction = NULL;
 		ret = ad9361_tx_quad_calibration_job_poll(phy,
 							 &transaction->job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->tx_quad_transaction = transaction;
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret == 1)
 			return 1;
 		transaction->status = ret;
@@ -11257,7 +11323,9 @@ int32_t ad9361_tx_quad_calibration_transaction_poll(
 	if (transaction->stage == AD9361_TX_QUAD_TRANSACTION_ENSM_RESTORE) {
 		phy->tx_quad_transaction = NULL;
 		ret = ad9361_ensm_transition_poll(phy, &transaction->ensm_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->tx_quad_transaction = transaction;
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret == 1)
 			return 1;
 		if (ret < 0) {
@@ -11353,6 +11421,7 @@ int32_t ad9361_do_calib_run_with_cleanup(
 		for (;;) {
 			ret = ad9361_tx_quad_calibration_transaction_poll(
 				phy, &transaction);
+			ret = ad9361_poll_result_check(phy, ret);
 			if (ret != 1) {
 				if (cleanup_status_out)
 					*cleanup_status_out = transaction.cleanup_status;
@@ -11533,6 +11602,7 @@ int32_t ad9361_ensure_tx_quad_calib(struct ad9361_rf_phy *phy)
 	for (;;) {
 		ret = ad9361_tx_quad_calibration_transaction_poll(
 			phy, &transaction);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret != 1)
 			return ret;
 		if (transaction.stage == AD9361_TX_QUAD_TRANSACTION_CALIBRATE) {
@@ -11688,6 +11758,7 @@ int32_t ad9361_rfdc_calibration_poll(struct ad9361_rf_phy *phy,
 		}
 		phy->rfdc_transaction = NULL;
 		ret = ad9361_ensm_transition_poll(phy, &job->ensm_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->rfdc_transaction = job;
 		if (ret == 1)
 			return 1;
@@ -11723,6 +11794,7 @@ int32_t ad9361_rfdc_calibration_poll(struct ad9361_rf_phy *phy,
 			return ad9361_rfdc_job_finish(phy, job, -EIO);
 		}
 		ret = ad9361_calibration_wait_poll(phy, &job->wait);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret == 1)
 			return 1;
 		job->status = ret;
@@ -11776,6 +11848,7 @@ int32_t ad9361_rfdc_calibration_poll(struct ad9361_rf_phy *phy,
 		}
 		phy->rfdc_transaction = NULL;
 		ret = ad9361_ensm_transition_poll(phy, &job->ensm_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->rfdc_transaction = job;
 		if (ret == 1)
 			return 1;
@@ -11815,6 +11888,7 @@ int32_t ad9361_do_calib_timeout_with_cleanup(
 	}
 	for (;;) {
 		ret = ad9361_rfdc_calibration_poll(phy, &job);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret != 1) {
 			if (cleanup_status)
 				*cleanup_status = job.cleanup_status;
@@ -11983,7 +12057,9 @@ int32_t ad9361_rf_bandwidth_filter_transaction_poll(
 
 		phy->rf_bandwidth_filter_transaction = NULL;
 		ret = ad9361_bbf_calibration_poll(phy, job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->rf_bandwidth_filter_transaction = transaction;
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret == 1)
 			return 1;
 		if (ret < 0)
@@ -12274,7 +12350,9 @@ int32_t ad9361_rf_bandwidth_transaction_poll(
 		 * only for this serialized poll call, then restore parent visibility. */
 		phy->rf_bandwidth_transaction = NULL;
 		ret = ad9361_ensm_transition_poll(phy, &transaction->ensm_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->rf_bandwidth_transaction = transaction;
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret == 1)
 			return 1;
 		if (ret < 0) {
@@ -12308,7 +12386,9 @@ int32_t ad9361_rf_bandwidth_transaction_poll(
 		phy->rf_bandwidth_transaction = NULL;
 		ret = ad9361_rf_bandwidth_filter_transaction_poll(
 			phy, &transaction->filter_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->rf_bandwidth_transaction = transaction;
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret == 1)
 			return 1;
 		if (ret < 0) {
@@ -12329,7 +12409,9 @@ int32_t ad9361_rf_bandwidth_transaction_poll(
 		phy->rf_bandwidth_transaction = NULL;
 		ret = ad9361_tx_quad_calibration_job_poll(
 			phy, &transaction->tx_quad_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->rf_bandwidth_transaction = transaction;
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret == 1)
 			return 1;
 		transaction->status = ret;
@@ -12362,7 +12444,9 @@ int32_t ad9361_rf_bandwidth_transaction_poll(
 		phy->rf_bandwidth_transaction = NULL;
 		restore_ret = ad9361_ensm_transition_poll(phy,
 							 &transaction->ensm_job);
+		restore_ret = ad9361_poll_result_check(phy, restore_ret);
 		phy->rf_bandwidth_transaction = transaction;
+		restore_ret = ad9361_poll_result_check(phy, restore_ret);
 		if (restore_ret == 1)
 			return 1;
 		if (restore_ret < 0)
@@ -12453,6 +12537,7 @@ int32_t ad9361_update_rf_bandwidth_with_cleanup(
 	}
 	for (;;) {
 		ret = ad9361_rf_bandwidth_transaction_poll(phy, &transaction);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret != 1) {
 			if (cleanup_status)
 				*cleanup_status = transaction.cleanup_status;
@@ -13493,7 +13578,9 @@ int32_t ad9361_fir_enable_transaction_poll(
 		phy->fir_enable_transaction = NULL;
 		ret = ad9361_clock_chain_transaction_poll(
 			phy, &transaction->clock_chain_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		phy->fir_enable_transaction = transaction;
+		ret = ad9361_poll_result_check(phy, ret);
 		ad9361_fir_enable_record_cleanup(
 			transaction, transaction->clock_chain_job.cleanup_status);
 		if (ret == 1)
@@ -13525,6 +13612,7 @@ int32_t ad9361_fir_enable_transaction_poll(
 		}
 		ret = ad9361_rf_bandwidth_transaction_poll(
 			phy, &transaction->bandwidth_job);
+		ret = ad9361_poll_result_check(phy, ret);
 		ad9361_fir_enable_record_cleanup(
 			transaction, transaction->bandwidth_job.cleanup_status);
 		ad9361_fir_enable_record_cleanup(
@@ -14230,6 +14318,7 @@ int32_t ad9361_bbpll_rate_transaction_poll(
 	}
 
 	ret = ad9361_status_wait_poll(phy, &transaction->wait);
+	ret = ad9361_poll_result_check(phy, ret);
 	if (ret != 1)
 		return ad9361_bbpll_rate_transaction_finish(transaction, ret);
 	return 1;
@@ -14250,6 +14339,7 @@ int32_t ad9361_bbpll_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 	for (;;) {
 		ret = ad9361_bbpll_rate_transaction_poll(
 			transaction.phy, &transaction);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret != 1)
 			return ret;
 		if (!transaction.wait_started)
@@ -14872,6 +14962,7 @@ int32_t ad9361_rfpll_rate_transaction_poll(
 		if (transaction->wait_started && transaction->wait.active &&
 		    phy->status_wait == &transaction->wait) {
 			ret = ad9361_status_wait_poll(phy, &transaction->wait);
+			ret = ad9361_poll_result_check(phy, ret);
 			if (ret == 1)
 				return 1;
 			return ad9361_rfpll_rate_transaction_finish(
@@ -14889,6 +14980,7 @@ int32_t ad9361_rfpll_rate_transaction_poll(
 
 	if (transaction->stage == AD9361_RFPLL_TRANSACTION_WAIT) {
 		ret = ad9361_status_wait_poll(phy, &transaction->wait);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret == 1)
 			return 1;
 		if (ret < 0)
@@ -14988,6 +15080,7 @@ int32_t ad9361_rfpll_int_set_rate(struct refclk_scale *clk_priv, uint32_t rate,
 	for (;;) {
 		ret = ad9361_rfpll_rate_transaction_poll(
 			transaction.phy, &transaction);
+		ret = ad9361_poll_result_check(phy, ret);
 		if (ret != 1)
 			return ret;
 		if (!transaction.wait_started || !transaction.wait.active)
