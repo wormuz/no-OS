@@ -4999,6 +4999,7 @@ bool ad9361_operation_busy(const struct ad9361_rf_phy *phy)
 		       phy->rfdc_transaction != NULL ||
 		       phy->rf_bandwidth_filter_transaction != NULL ||
 		       phy->sample_rate_transaction != NULL ||
+		       phy->fir_enable_transaction != NULL ||
 		       phy->tx_quad_transaction != NULL ||
 		       phy->setup_calibration_transaction != NULL ||
 		       phy->setup_transaction != NULL);
@@ -9053,6 +9054,7 @@ void ad9361_clear_state(struct ad9361_rf_phy *phy)
 	phy->bbpll_initialized = false;
 	phy->rfpll_rate_transaction = NULL;
 	phy->gain_table_transaction = NULL;
+	phy->fir_enable_transaction = NULL;
 	phy->rxbbf_div = 0;
 	phy->tx_fir_int = 0;
 	phy->tx_fir_ntaps = 0;
@@ -13207,6 +13209,310 @@ out:
 int32_t ad9361_validate_enable_fir(struct ad9361_rf_phy *phy)
 {
 	return ad9361_validate_enable_fir_with_cleanup(phy, NULL);
+}
+
+static void ad9361_fir_enable_record_cleanup(
+	struct ad9361_fir_enable_transaction *transaction, int32_t status)
+{
+	if (transaction->cleanup_status == 0 && status < 0)
+		transaction->cleanup_status = status;
+}
+
+static int32_t ad9361_fir_enable_finish(
+	struct ad9361_fir_enable_transaction *transaction, int32_t status)
+{
+	struct ad9361_rf_phy *phy = transaction->phy;
+	uint8_t const required_mask = phy->pdata->rx2tx2 ? 0x03 : 0x01;
+	bool const valid_coefficients =
+		(phy->rx_fir_coefficients_valid_mask & required_mask) ==
+			required_mask &&
+		(phy->tx_fir_coefficients_valid_mask & required_mask) ==
+			required_mask;
+
+	if (transaction->cleanup_status < 0) {
+		ad9361_mark_calibration_state_unknown(phy);
+		if (status >= 0)
+			status = transaction->cleanup_status;
+	}
+	if (status == 0)
+		phy->fir_config_valid = valid_coefficients;
+	else if (transaction->tx)
+		phy->bypass_tx_fir = transaction->old_bypass;
+	else
+		phy->bypass_rx_fir = transaction->old_bypass;
+
+	transaction->status = status;
+	transaction->active = false;
+	transaction->terminal = true;
+	transaction->terminal_status = status;
+	if (phy->fir_enable_transaction == transaction)
+		phy->fir_enable_transaction = NULL;
+	return status;
+}
+
+int32_t ad9361_fir_enable_transaction_start(
+	struct ad9361_rf_phy *phy, bool tx, uint8_t enable,
+	struct ad9361_fir_enable_transaction *transaction)
+{
+	uint32_t rx[NUM_RX_CLOCKS], tx_path[NUM_TX_CLOCKS];
+	uint32_t max, min, current_tx_sample_rate;
+	bool old_bypass;
+	int32_t ret;
+
+	if (!transaction)
+		return -EINVAL;
+	if (transaction->active || transaction->clock_chain_job.active ||
+	    transaction->clock_chain_job.bbpll_job.active ||
+	    transaction->clock_chain_job.bbpll_job.rate_transaction.active ||
+	    transaction->clock_chain_job.bbpll_job.rate_transaction.wait.active ||
+	    transaction->bandwidth_job.active ||
+	    transaction->bandwidth_job.ensm_job.active ||
+	    transaction->bandwidth_job.ensm_job.wait.active ||
+	    transaction->bandwidth_job.filter_job.active ||
+	    transaction->bandwidth_job.filter_job.rx_bbf_job.active ||
+	    transaction->bandwidth_job.filter_job.rx_bbf_job.wait.active ||
+	    transaction->bandwidth_job.filter_job.tx_bbf_job.active ||
+	    transaction->bandwidth_job.filter_job.tx_bbf_job.wait.active ||
+	    transaction->bandwidth_job.tx_quad_job.active ||
+	    transaction->bandwidth_job.tx_quad_job.attempt.active ||
+	    transaction->bandwidth_job.tx_quad_job.attempt.wait.active ||
+	    transaction->bandwidth_job.tx_quad_job.phase_search.active ||
+	    transaction->bandwidth_job.tx_quad_job.phase_search.attempt.active ||
+	    transaction->bandwidth_job.tx_quad_job.phase_search.attempt.wait.active ||
+	    transaction->bandwidth_job.tx_quad_job.bandwidth_job.active)
+		return -EBUSY;
+	memset(transaction, 0, sizeof(*transaction));
+	if (!phy || !phy->spi || !phy->pdata || enable > 1)
+		return -EINVAL;
+	if (ad9361_calibration_state_unknown(phy))
+		return -EIO;
+	if (ad9361_operation_busy(phy))
+		return -EBUSY;
+
+	old_bypass = tx ? phy->bypass_tx_fir : phy->bypass_rx_fir;
+	if (phy->fir_config_valid && old_bypass == !enable) {
+		transaction->phy = phy;
+		transaction->terminal = true;
+		transaction->terminal_status = 0;
+		return 0;
+	}
+
+	/* The only current cooperative caller is xA4 NIOS, whose platform data
+	 * disables digital-interface FIR tuning. Do not silently run that legacy
+	 * blocking tune from a poll callback on another platform. */
+	if (phy->pdata->bb_clk_change_dig_tune_en ||
+	    (!phy->pdata->dig_interface_tune_fir_disable &&
+	     phy->bypass_tx_fir && phy->bypass_rx_fir && !enable))
+		return -EOPNOTSUPP;
+
+	transaction->phy = phy;
+	transaction->tx = tx;
+	transaction->old_bypass = old_bypass;
+	if (tx) {
+		ad9361_invalidate_tx_quad_calib(phy);
+		phy->bypass_tx_fir = !enable;
+	} else {
+		phy->bypass_rx_fir = !enable;
+	}
+	phy->fir_config_valid = false;
+
+	if (!phy->filt_valid || phy->bypass_rx_fir || phy->bypass_tx_fir) {
+		ret = clk_get_rate_checked(phy,
+					   phy->ref_clk_scale[TX_SAMPL_CLK],
+					   &current_tx_sample_rate);
+		if (ret < 0)
+			goto preflight_fail;
+		ret = ad9361_calculate_rf_clock_chain(
+			phy, current_tx_sample_rate, phy->rate_governor,
+			rx, tx_path);
+		if (ret < 0) {
+			min = phy->rate_governor ? 1500000U : 1000000U;
+			ret = ad9361_calculate_rf_clock_chain(
+				phy, min, phy->rate_governor, rx, tx_path);
+			if (ret < 0)
+				goto preflight_fail;
+		}
+		transaction->valid = false;
+	} else {
+#ifndef ALTERA_PLATFORM
+		memcpy(rx, phy->filt_rx_path_clks, sizeof(rx));
+		memcpy(tx_path, phy->filt_tx_path_clks, sizeof(tx_path));
+#else
+		int32_t i;
+		for (i = 0; i < NO_OS_ARRAY_SIZE(rx); i++)
+			rx[i] = phy->filt_rx_path_clks[i];
+		for (i = 0; i < NO_OS_ARRAY_SIZE(tx_path); i++)
+			tx_path[i] = phy->filt_tx_path_clks[i];
+#endif
+		transaction->valid = true;
+	}
+
+	if (!phy->bypass_tx_fir) {
+		if (!(phy->tx_fir_int == 1 || phy->tx_fir_int == 2 ||
+		      phy->tx_fir_int == 4)) {
+			ret = -EINVAL;
+			goto preflight_fail;
+		}
+		if (phy->tx_fir_int == 1 && phy->tx_fir_ntaps > 64) {
+			ret = -EINVAL;
+			goto preflight_fail;
+		}
+		max = (tx_path[DAC_FREQ] / tx_path[TX_SAMPL_FREQ]) * 16;
+		if (phy->tx_fir_ntaps > max) {
+			ret = -EINVAL;
+			goto preflight_fail;
+		}
+	}
+	if (!phy->bypass_rx_fir) {
+		if (!(phy->rx_fir_dec == 1 || phy->rx_fir_dec == 2 ||
+		      phy->rx_fir_dec == 4)) {
+			ret = -EINVAL;
+			goto preflight_fail;
+		}
+		max = ((rx[ADC_FREQ] /
+			((rx[ADC_FREQ] == rx[R2_FREQ]) ? 1 : 2)) /
+		       rx[RX_SAMPL_FREQ]) * 16;
+		if (phy->rx_fir_ntaps > max) {
+			ret = -EINVAL;
+			goto preflight_fail;
+		}
+	}
+
+	transaction->rx_bw = transaction->valid
+		? phy->filt_rx_bw_Hz : phy->current_rx_bw_Hz;
+	transaction->tx_bw = transaction->valid
+		? phy->filt_tx_bw_Hz : phy->current_tx_bw_Hz;
+	ret = ad9361_clock_chain_transaction_start(
+		phy, rx, tx_path, &transaction->clock_chain_job);
+	ad9361_fir_enable_record_cleanup(
+		transaction, transaction->clock_chain_job.cleanup_status);
+	if (ret < 0)
+		goto preflight_fail;
+
+	transaction->stage = AD9361_FIR_ENABLE_TRANSACTION_CLOCK;
+	transaction->active = true;
+	phy->fir_enable_transaction = transaction;
+	return 0;
+
+preflight_fail:
+	if (transaction->cleanup_status < 0)
+		ad9361_mark_calibration_state_unknown(phy);
+	if (tx)
+		phy->bypass_tx_fir = old_bypass;
+	else
+		phy->bypass_rx_fir = old_bypass;
+	return ret;
+}
+
+int32_t ad9361_fir_enable_transaction_poll(
+	struct ad9361_rf_phy *phy,
+	struct ad9361_fir_enable_transaction *transaction)
+{
+	int32_t ret;
+
+	if (!phy || !phy->spi || !transaction)
+		return -EINVAL;
+	if (transaction->terminal) {
+		if (transaction->phy != phy)
+			return -EINVAL;
+		if (transaction->clock_chain_job.active ||
+		    transaction->clock_chain_job.bbpll_job.active ||
+		    transaction->clock_chain_job.bbpll_job.rate_transaction.active ||
+		    transaction->clock_chain_job.bbpll_job.rate_transaction.wait.active ||
+		    transaction->bandwidth_job.active ||
+		    transaction->bandwidth_job.ensm_job.active ||
+		    transaction->bandwidth_job.ensm_job.wait.active ||
+		    transaction->bandwidth_job.filter_job.active ||
+		    transaction->bandwidth_job.filter_job.rx_bbf_job.active ||
+		    transaction->bandwidth_job.filter_job.rx_bbf_job.wait.active ||
+		    transaction->bandwidth_job.filter_job.tx_bbf_job.active ||
+		    transaction->bandwidth_job.filter_job.tx_bbf_job.wait.active ||
+		    transaction->bandwidth_job.tx_quad_job.active ||
+		    transaction->bandwidth_job.tx_quad_job.attempt.active ||
+		    transaction->bandwidth_job.tx_quad_job.attempt.wait.active ||
+		    transaction->bandwidth_job.tx_quad_job.phase_search.active ||
+		    transaction->bandwidth_job.tx_quad_job.phase_search.attempt.active ||
+		    transaction->bandwidth_job.tx_quad_job.phase_search.attempt.wait.active ||
+		    transaction->bandwidth_job.tx_quad_job.bandwidth_job.active ||
+		    (transaction->phy &&
+		     (transaction->phy->fir_enable_transaction == transaction ||
+		      transaction->phy->clock_chain_transaction ==
+			  &transaction->clock_chain_job ||
+		      transaction->phy->rf_bandwidth_transaction ==
+			  &transaction->bandwidth_job ||
+		      transaction->phy->rf_bandwidth_filter_transaction ==
+			  &transaction->bandwidth_job.filter_job))) {
+			if (transaction->phy)
+				ad9361_mark_calibration_state_unknown(transaction->phy);
+			transaction->terminal_status = -EIO;
+		}
+		return transaction->terminal_status;
+	}
+	if (!transaction->active || !transaction->phy)
+		return -EINVAL;
+	if (transaction->phy != phy) {
+		ad9361_mark_calibration_state_unknown(transaction->phy);
+		return ad9361_fir_enable_finish(transaction, -EIO);
+	}
+	if (transaction->stage > AD9361_FIR_ENABLE_TRANSACTION_BW) {
+		ad9361_mark_calibration_state_unknown(transaction->phy);
+		return ad9361_fir_enable_finish(transaction, -EIO);
+	}
+
+	switch (transaction->stage) {
+	case AD9361_FIR_ENABLE_TRANSACTION_CLOCK:
+		if (phy->fir_enable_transaction != transaction) {
+			ad9361_mark_calibration_state_unknown(phy);
+			return ad9361_fir_enable_finish(transaction, -EIO);
+		}
+		phy->fir_enable_transaction = NULL;
+		ret = ad9361_clock_chain_transaction_poll(
+			phy, &transaction->clock_chain_job);
+		phy->fir_enable_transaction = transaction;
+		ad9361_fir_enable_record_cleanup(
+			transaction, transaction->clock_chain_job.cleanup_status);
+		if (ret == 1)
+			return 1;
+		if (ret < 0)
+			return ad9361_fir_enable_finish(transaction, ret);
+
+		/* Clock-chain completion is not data-path completion. The original
+		 * validator next updates both analog bandwidth filters and may run TXQ;
+		 * retain that child rather than accepting FIR enable early. */
+		phy->fir_enable_transaction = NULL;
+		ret = ad9361_rf_bandwidth_transaction_start(
+			phy, transaction->rx_bw, transaction->tx_bw,
+			&transaction->bandwidth_job);
+		phy->fir_enable_transaction = transaction;
+		if (ret < 0)
+			return ad9361_fir_enable_finish(transaction, ret);
+		transaction->stage = AD9361_FIR_ENABLE_TRANSACTION_BW;
+		/* The bandwidth child now owns the RFIC across worker turns. */
+		phy->fir_enable_transaction = NULL;
+		return 1;
+
+	case AD9361_FIR_ENABLE_TRANSACTION_BW:
+		if (phy->fir_enable_transaction != NULL ||
+		    phy->rf_bandwidth_transaction !=
+		    &transaction->bandwidth_job) {
+			ad9361_mark_calibration_state_unknown(phy);
+			return ad9361_fir_enable_finish(transaction, -EIO);
+		}
+		ret = ad9361_rf_bandwidth_transaction_poll(
+			phy, &transaction->bandwidth_job);
+		ad9361_fir_enable_record_cleanup(
+			transaction, transaction->bandwidth_job.cleanup_status);
+		ad9361_fir_enable_record_cleanup(
+			transaction,
+			transaction->bandwidth_job.tracking_restore_status);
+		if (ret == 1)
+			return 1;
+		return ad9361_fir_enable_finish(transaction, ret);
+
+	default:
+		ad9361_mark_calibration_state_unknown(phy);
+		return ad9361_fir_enable_finish(transaction, -EIO);
+	}
 }
 
 /*

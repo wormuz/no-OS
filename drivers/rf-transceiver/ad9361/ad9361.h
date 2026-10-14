@@ -3350,6 +3350,7 @@ struct ad9361_rf_bandwidth_transaction;
 struct ad9361_rf_bandwidth_filter_transaction;
 struct ad9361_rfdc_calibration_job;
 struct ad9361_sample_rate_transaction;
+struct ad9361_fir_enable_transaction;
 struct ad9361_tx_quad_calibration_transaction;
 struct ad9361_clock_chain_transaction;
 struct ad9361_setup_calibration_transaction;
@@ -3408,6 +3409,9 @@ struct ad9361_rf_phy {
 	struct ad9361_rfdc_calibration_job *rfdc_transaction;
 	struct ad9361_rf_bandwidth_filter_transaction *rf_bandwidth_filter_transaction;
 	struct ad9361_sample_rate_transaction *sample_rate_transaction;
+	/* Cooperative FIR validation retains clock-chain and RF-bandwidth/TXQ
+	 * children across NIOS worker turns. */
+	struct ad9361_fir_enable_transaction *fir_enable_transaction;
 	struct ad9361_tx_quad_calibration_transaction *tx_quad_transaction;
 	struct ad9361_clock_chain_transaction *clock_chain_transaction;
 	struct ad9361_setup_calibration_transaction *setup_calibration_transaction;
@@ -3992,6 +3996,33 @@ struct ad9361_sample_rate_transaction {
 	int32_t terminal_status;
 };
 
+/* Cooperative FIR enable/validation transaction used by the NIOS worker.
+ * Zero-initialize before first use and keep this object at a stable address
+ * until terminal poll.
+ * The transaction owns the PHY between polls, including nested clock-chain
+ * and RF-bandwidth/TXQ work. Async use requires digital-interface FIR tuning
+ * to be disabled, as it is on bladeRF xA4; legacy synchronous APIs retain
+ * their existing behavior on other platforms. */
+struct ad9361_fir_enable_transaction {
+	struct ad9361_clock_chain_transaction clock_chain_job;
+	struct ad9361_rf_bandwidth_transaction bandwidth_job;
+	struct ad9361_rf_phy *phy;
+	uint32_t rx_bw;
+	uint32_t tx_bw;
+	uint8_t stage;
+	bool tx;
+	bool old_bypass;
+	bool valid;
+	bool active;
+	bool terminal;
+	int32_t status;
+	int32_t cleanup_status;
+	int32_t terminal_status;
+};
+
+#define AD9361_FIR_ENABLE_TRANSACTION_CLOCK 0u
+#define AD9361_FIR_ENABLE_TRANSACTION_BW    1u
+
 #define AD9361_SAMPLE_RATE_TRANSACTION_NEW_CLOCK      0u
 #define AD9361_SAMPLE_RATE_TRANSACTION_NEW_BANDWIDTH  1u
 #define AD9361_SAMPLE_RATE_TRANSACTION_ROLLBACK_CLOCK 2u
@@ -4495,6 +4526,15 @@ int32_t ad9361_rf_bandwidth_transaction_start(
 int32_t ad9361_rf_bandwidth_transaction_poll(
 		struct ad9361_rf_phy *phy,
 		struct ad9361_rf_bandwidth_transaction *transaction);
+/* Start and poll one RX or TX FIR enable plus the shared clock-chain,
+ * analog-filter, and TXQ validation sequence. Returns 1 from poll while
+ * nested hardware work remains, 0 after commit, or a terminal errno. */
+int32_t ad9361_fir_enable_transaction_start(
+		struct ad9361_rf_phy *phy, bool tx, uint8_t enable,
+		struct ad9361_fir_enable_transaction *transaction);
+int32_t ad9361_fir_enable_transaction_poll(
+		struct ad9361_rf_phy *phy,
+		struct ad9361_fir_enable_transaction *transaction);
 int32_t ad9361_rfdc_calibration_start(struct ad9361_rf_phy *phy,
 		struct ad9361_rfdc_calibration_job *job);
 /* Returns 0 when calibration and tracking/ENSM restoration are complete, 1
