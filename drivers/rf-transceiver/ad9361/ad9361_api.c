@@ -1659,20 +1659,29 @@ int32_t ad9361_sample_rate_transaction_poll(
  * used by cooperative NIOS callers. This prevents host and firmware setters
  * from drifting in cache, rollback, and failure semantics. */
 static int32_t ad9361_sample_rate_transaction_run_sync(
-	struct ad9361_rf_phy *phy, uint32_t sampling_freq_hz, bool tx)
+	struct ad9361_rf_phy *phy, uint32_t sampling_freq_hz, bool tx,
+	int32_t *cleanup_status)
 {
 	struct ad9361_sample_rate_transaction transaction = {0};
 	int32_t ret;
 
+	if (cleanup_status)
+		*cleanup_status = 0;
 	ret = ad9361_sample_rate_transaction_start(
 		phy, sampling_freq_hz, tx, &transaction);
-	if (ret < 0)
+	if (ret < 0) {
+		if (cleanup_status)
+			*cleanup_status = transaction.cleanup_status;
 		return ret;
+	}
 
 	for (;;) {
 		ret = ad9361_sample_rate_transaction_poll(phy, &transaction);
-		if (ret != 1)
+		if (ret != 1) {
+			if (cleanup_status)
+				*cleanup_status = transaction.cleanup_status;
 			return ret;
+		}
 
 		if ((transaction.stage == AD9361_SAMPLE_RATE_TRANSACTION_NEW_CLOCK ||
 		     transaction.stage == AD9361_SAMPLE_RATE_TRANSACTION_ROLLBACK_CLOCK) &&
@@ -1729,7 +1738,15 @@ int32_t ad9361_set_rx_sampling_freq(struct ad9361_rf_phy *phy,
 				    uint32_t sampling_freq_hz)
 {
 	return ad9361_sample_rate_transaction_run_sync(
-		phy, sampling_freq_hz, false);
+		phy, sampling_freq_hz, false, NULL);
+}
+
+int32_t ad9361_set_rx_sampling_freq_with_cleanup(
+	struct ad9361_rf_phy *phy, uint32_t sampling_freq_hz,
+	int32_t *cleanup_status)
+{
+	return ad9361_sample_rate_transaction_run_sync(
+		phy, sampling_freq_hz, false, cleanup_status);
 }
 
 /**
@@ -2645,7 +2662,15 @@ int32_t ad9361_set_tx_sampling_freq(struct ad9361_rf_phy *phy,
 				    uint32_t sampling_freq_hz)
 {
 	return ad9361_sample_rate_transaction_run_sync(
-		phy, sampling_freq_hz, true);
+		phy, sampling_freq_hz, true, NULL);
+}
+
+int32_t ad9361_set_tx_sampling_freq_with_cleanup(
+	struct ad9361_rf_phy *phy, uint32_t sampling_freq_hz,
+	int32_t *cleanup_status)
+{
+	return ad9361_sample_rate_transaction_run_sync(
+		phy, sampling_freq_hz, true, cleanup_status);
 }
 
 /**
