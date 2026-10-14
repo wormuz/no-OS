@@ -1857,10 +1857,12 @@ static int set_rssi_gain_step_error(void *device, char *buf, uint32_t len,
 	/* Program immediately into hardware */
 	ret = ad9361_ensm_force_state_checked(ad9361_phy, ENSM_STATE_ALERT);
 	if (ret < 0) {
-		int restore_ret = ad9361_ensm_restore_prev_state_checked(ad9361_phy);
+		int restore_ret = 0;
+		if (!ad9361_calibration_state_unknown(ad9361_phy))
+			restore_ret = ad9361_ensm_restore_prev_state_checked(
+				ad9361_phy);
 		if (restore_ret < 0)
-			dev_err(&ad9361_phy->spi->dev,
-				"Unable to restore ENSM after failed RSSI table setup");
+			cleanup_status = restore_ret;
 		goto restore_tables;
 	}
 	ret = ad9361_rssi_program_lna_gain(ad9361_phy);
@@ -1869,9 +1871,15 @@ static int set_rssi_gain_step_error(void *device, char *buf, uint32_t len,
 	if (ret >= 0)
 		tables_programmed = true;
 	{
-		int restore_ret = ad9361_ensm_restore_prev_state_checked(ad9361_phy);
-		if (ret >= 0 && restore_ret < 0)
-			ret = restore_ret;
+		int restore_ret = 0;
+		if (!ad9361_calibration_state_unknown(ad9361_phy))
+			restore_ret = ad9361_ensm_restore_prev_state_checked(
+				ad9361_phy);
+		if (restore_ret < 0) {
+			cleanup_status = restore_ret;
+			if (ret >= 0)
+				ret = restore_ret;
+		}
 	}
 	if (ret < 0)
 		goto restore_tables;
@@ -1882,6 +1890,10 @@ static int set_rssi_gain_step_error(void *device, char *buf, uint32_t len,
 	return (int)len;
 
 restore_tables:
+	if (cleanup_status < 0 && ad9361_phy && ad9361_phy->spi)
+		dev_err(&ad9361_phy->spi->dev,
+			"RSSI table setup primary=%d cleanup=%"PRId32,
+			ret, cleanup_status);
 	if (tables_programmed) {
 		/* Hardware contains the new tables; keep software state aligned even
 		 * when restoring ENSM failed after the programming completed. */
@@ -2443,6 +2455,7 @@ static int set_bist_timing_analysis(void *device, char *buf, uint32_t len,
 	struct ad9361_rf_phy *ad9361_phy = (struct ad9361_rf_phy *)device;
 	int32_t val;
 	int32_t ret;
+	int32_t cleanup_status = 0;
 	char timing_report[AD9361_TIMING_ANALYSIS_BUFFER_SIZE];
 	ret = parse_i32_attr(buf, &val);
 	if (ret < 0 || (val != 0 && val != 1))
@@ -2450,8 +2463,13 @@ static int set_bist_timing_analysis(void *device, char *buf, uint32_t len,
 	if (val) {
 		/* buf contains the short incoming "1" command, not writable report
 		 * capacity. Keep the diagnostic output in its own bounded buffer. */
-		ret = ad9361_dig_interface_timing_analysis(ad9361_phy, timing_report,
-							   sizeof(timing_report));
+		ret = ad9361_dig_interface_timing_analysis_with_cleanup(
+			ad9361_phy, timing_report, sizeof(timing_report),
+			&cleanup_status);
+		if (cleanup_status < 0 && ad9361_phy && ad9361_phy->spi)
+			dev_err(&ad9361_phy->spi->dev,
+				"Timing analysis status=%d cleanup=%"PRId32,
+				ret, cleanup_status);
 		if (ret < 0)
 			return ret;
 	}

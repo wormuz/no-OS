@@ -4546,6 +4546,9 @@ int32_t ad9361_hdl_loopback(struct ad9361_rf_phy *phy, bool enable);
  * buffers are rejected before the timing-analysis sequence changes RF state. */
 int32_t ad9361_dig_interface_timing_analysis(struct ad9361_rf_phy *phy,
 		char *buf, int32_t buflen);
+int32_t ad9361_dig_interface_timing_analysis_with_cleanup(
+	struct ad9361_rf_phy *phy, char *buf, int32_t buflen,
+	int32_t *cleanup_status);
 int32_t ad9361_dig_tune(struct ad9361_rf_phy *phy, uint32_t max_freq,
 			enum dig_tune_flags flags);
 int32_t ad9361_dig_tune_with_cleanup(

@@ -454,8 +454,9 @@ static int32_t ad9361_set_intf_delay(struct ad9361_rf_phy *phy, bool tx,
  * @param buflen The buffer length.
  * @return The size in case of success, negative error code otherwise.
  */
-int32_t ad9361_dig_interface_timing_analysis(struct ad9361_rf_phy *phy,
-		char *buf, int32_t buflen)
+int32_t ad9361_dig_interface_timing_analysis_with_cleanup(
+		struct ad9361_rf_phy *phy, char *buf, int32_t buflen,
+		int32_t *cleanup_status_out)
 {
 	uint32_t loopback, bist;
 	uint32_t sample_rate;
@@ -464,12 +465,18 @@ int32_t ad9361_dig_interface_timing_analysis(struct ad9361_rf_phy *phy,
 	uint8_t field[16][16];
 	uint8_t rx;
 	int32_t ret, cleanup_ret;
+	int32_t cleanup_status = 0;
 	enum ad9361_bist_mode old_prbs_mode;
+
+	if (cleanup_status_out)
+		*cleanup_status_out = 0;
 
 #define TIMING_CLEANUP(_expr) do { \
 	if (!ad9361_calibration_state_unknown(phy)) { \
 		cleanup_ret = (_expr); \
 		if (cleanup_ret < 0) { \
+			if (cleanup_status == 0) \
+				cleanup_status = cleanup_ret; \
 			if (ret >= 0) \
 				ret = cleanup_ret; \
 			ad9361_mark_calibration_state_unknown(phy); \
@@ -562,6 +569,8 @@ cleanup:
 	TIMING_CLEANUP(ad9361_ensm_restore_state_checked(phy, ensm_state));
 	TIMING_CLEANUP(ad9361_tx_mute(phy, 0));
 	#undef TIMING_CLEANUP
+	if (cleanup_status_out)
+		*cleanup_status_out = cleanup_status;
 	if (ret < 0)
 		return ret;
 	ret = clk_get_rate_checked(phy, phy->ref_clk_scale[RX_SAMPL_CLK],
@@ -571,6 +580,13 @@ cleanup:
 
 	return ad9361_format_timing_report(buf, (size_t)buflen, sample_rate,
 					   field);
+}
+
+int32_t ad9361_dig_interface_timing_analysis(struct ad9361_rf_phy *phy,
+		char *buf, int32_t buflen)
+{
+	return ad9361_dig_interface_timing_analysis_with_cleanup(
+		phy, buf, buflen, NULL);
 }
 
 /**
