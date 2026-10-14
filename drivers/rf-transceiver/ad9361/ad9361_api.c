@@ -2130,11 +2130,13 @@ int32_t ad9361_get_rx_fir_config(struct ad9361_rf_phy *phy, uint8_t rx_ch,
  *
  * Note: This function will/may affect the data path.
  */
-int32_t ad9361_set_rx_fir_en_dis(struct ad9361_rf_phy *phy,
-				 uint8_t en_dis)
+int32_t ad9361_set_rx_fir_en_dis_with_cleanup(
+	struct ad9361_rf_phy *phy, uint8_t en_dis, int32_t *cleanup_status)
 {
 	int32_t ret = 0;
 	bool old_bypass;
+	if (cleanup_status)
+		*cleanup_status = 0;
 	if (!phy || !phy->spi)
 		return -EINVAL;
 	if (ad9361_calibration_state_unknown(phy))
@@ -2149,11 +2151,17 @@ int32_t ad9361_set_rx_fir_en_dis(struct ad9361_rf_phy *phy,
 		return ret;
 
 	phy->bypass_rx_fir = !en_dis;
-	ret = ad9361_validate_enable_fir(phy);
+	ret = ad9361_validate_enable_fir_with_cleanup(phy, cleanup_status);
 	if (ret < 0)
 		phy->bypass_rx_fir = old_bypass;
 
 	return ret;
+}
+
+int32_t ad9361_set_rx_fir_en_dis(struct ad9361_rf_phy *phy,
+				 uint8_t en_dis)
+{
+	return ad9361_set_rx_fir_en_dis_with_cleanup(phy, en_dis, NULL);
 }
 
 /**
@@ -2959,11 +2967,13 @@ int32_t ad9361_get_tx_fir_config(struct ad9361_rf_phy *phy, uint8_t tx_ch,
  *
  * Note: This function will/may affect the data path.
  */
-int32_t ad9361_set_tx_fir_en_dis(struct ad9361_rf_phy *phy,
-				 uint8_t en_dis)
+int32_t ad9361_set_tx_fir_en_dis_with_cleanup(
+	struct ad9361_rf_phy *phy, uint8_t en_dis, int32_t *cleanup_status)
 {
 	int32_t ret = 0;
 	bool old_bypass;
+	if (cleanup_status)
+		*cleanup_status = 0;
 	if (!phy || !phy->spi)
 		return -EINVAL;
 	if (ad9361_calibration_state_unknown(phy))
@@ -2979,11 +2989,17 @@ int32_t ad9361_set_tx_fir_en_dis(struct ad9361_rf_phy *phy,
 
 	ad9361_invalidate_tx_quad_calib(phy);
 	phy->bypass_tx_fir = !en_dis;
-	ret = ad9361_validate_enable_fir(phy);
+	ret = ad9361_validate_enable_fir_with_cleanup(phy, cleanup_status);
 	if (ret < 0)
 		phy->bypass_tx_fir = old_bypass;
 
 	return ret;
+}
+
+int32_t ad9361_set_tx_fir_en_dis(struct ad9361_rf_phy *phy,
+				 uint8_t en_dis)
+{
+	return ad9361_set_tx_fir_en_dis_with_cleanup(phy, en_dis, NULL);
 }
 
 /**
@@ -3641,12 +3657,14 @@ mcs_restore_ensm:
  *
  * Note: This function will/may affect the data path.
  */
-int32_t ad9361_set_trx_fir_en_dis(struct ad9361_rf_phy *phy,
-				  uint8_t en_dis)
+int32_t ad9361_set_trx_fir_en_dis_with_cleanup(
+	struct ad9361_rf_phy *phy, uint8_t en_dis, int32_t *cleanup_status)
 {
 	int32_t ret = 0;
 	bool old_rx_bypass;
 	bool old_tx_bypass;
+	if (cleanup_status)
+		*cleanup_status = 0;
 
 	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
@@ -3668,13 +3686,19 @@ int32_t ad9361_set_trx_fir_en_dis(struct ad9361_rf_phy *phy,
 
 	phy->bypass_rx_fir = !en_dis;
 	phy->bypass_tx_fir = !en_dis;
-	ret = ad9361_validate_enable_fir(phy);
+	ret = ad9361_validate_enable_fir_with_cleanup(phy, cleanup_status);
 	if (ret < 0) {
 		phy->bypass_rx_fir = old_rx_bypass;
 		phy->bypass_tx_fir = old_tx_bypass;
 	}
 
 	return ret;
+}
+
+int32_t ad9361_set_trx_fir_en_dis(struct ad9361_rf_phy *phy,
+				  uint8_t en_dis)
+{
+	return ad9361_set_trx_fir_en_dis_with_cleanup(phy, en_dis, NULL);
 }
 
 /**

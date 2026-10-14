@@ -430,6 +430,15 @@ int32_t ad9361_set_rx_fir_config_with_cleanup(
 int32_t ad9361_set_tx_fir_config_with_cleanup(
 		struct ad9361_rf_phy *phy, AD9361_TXFIRConfig fir_cfg,
 		int32_t *cleanup_status);
+int32_t ad9361_set_rx_fir_en_dis_with_cleanup(
+		struct ad9361_rf_phy *phy, uint8_t en_dis,
+		int32_t *cleanup_status);
+int32_t ad9361_set_tx_fir_en_dis_with_cleanup(
+		struct ad9361_rf_phy *phy, uint8_t en_dis,
+		int32_t *cleanup_status);
+int32_t ad9361_set_trx_fir_en_dis_with_cleanup(
+		struct ad9361_rf_phy *phy, uint8_t en_dis,
+		int32_t *cleanup_status);
 int32_t ad9361_init_transaction_start(
 		struct ad9361_init_transaction *transaction,
 		struct ad9361_rf_phy **ad9361_phy,

@@ -12910,11 +12910,16 @@ parse_out:
  * @param phy The AD9361 state structure.
  * @return 0 in case of success, negative error code otherwise.
  */
-int32_t ad9361_validate_enable_fir(struct ad9361_rf_phy *phy)
+int32_t ad9361_validate_enable_fir_with_cleanup(
+	struct ad9361_rf_phy *phy, int32_t *cleanup_status_out)
 {
 	int32_t ret;
+	int32_t cleanup_status = 0, child_cleanup_status;
 	uint32_t rx[6], tx[6];
 	uint32_t max, min, valid;
+
+	if (cleanup_status_out)
+		*cleanup_status_out = 0;
 
 	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
@@ -13032,21 +13037,33 @@ int32_t ad9361_validate_enable_fir(struct ad9361_rf_phy *phy)
 		}
 	}
 
-	ret = ad9361_set_trx_clock_chain(phy, rx, tx);
+	child_cleanup_status = 0;
+	ret = ad9361_set_trx_clock_chain_with_cleanup(
+		phy, rx, tx, &child_cleanup_status);
+	if (child_cleanup_status < 0)
+		cleanup_status = child_cleanup_status;
 	if (ret < 0)
-		return ret;
+		goto out;
 
 	/* See also: ad9361_set_trx_clock_chain() */
 	if (!phy->pdata->dig_interface_tune_fir_disable &&
 	    phy->bypass_tx_fir && phy->bypass_rx_fir) {
-		ret = ad9361_dig_tune(phy, 0, RESTORE_DEFAULT);
+		child_cleanup_status = 0;
+		ret = ad9361_dig_tune_with_cleanup(
+			phy, 0, RESTORE_DEFAULT, &child_cleanup_status);
+		if (cleanup_status == 0 && child_cleanup_status < 0)
+			cleanup_status = child_cleanup_status;
 		if (ret < 0)
-			return ret;
+			goto out;
 	}
 
-	ret = ad9361_update_rf_bandwidth(phy,
+	child_cleanup_status = 0;
+	ret = ad9361_update_rf_bandwidth_with_cleanup(phy,
 					 valid ? phy->filt_rx_bw_Hz : phy->current_rx_bw_Hz,
-					 valid ? phy->filt_tx_bw_Hz : phy->current_tx_bw_Hz);
+					 valid ? phy->filt_tx_bw_Hz : phy->current_tx_bw_Hz,
+					 &child_cleanup_status);
+	if (cleanup_status == 0 && child_cleanup_status < 0)
+		cleanup_status = child_cleanup_status;
 	if (ret >= 0) {
 		const uint8_t required_mask = phy->pdata->rx2tx2 ? 0x03 : 0x01;
 		phy->fir_config_valid =
@@ -13055,7 +13072,19 @@ int32_t ad9361_validate_enable_fir(struct ad9361_rf_phy *phy)
 			(phy->tx_fir_coefficients_valid_mask & required_mask) ==
 			required_mask;
 	}
+out:
+	if (cleanup_status < 0) {
+		ad9361_mark_calibration_state_unknown(phy);
+		ret = ret < 0 ? ret : cleanup_status;
+	}
+	if (cleanup_status_out)
+		*cleanup_status_out = cleanup_status;
 	return ret;
+}
+
+int32_t ad9361_validate_enable_fir(struct ad9361_rf_phy *phy)
+{
+	return ad9361_validate_enable_fir_with_cleanup(phy, NULL);
 }
 
 /*
