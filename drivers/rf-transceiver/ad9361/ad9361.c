@@ -9479,12 +9479,15 @@ static int32_t ad9361_setup_pre_calibration_validate(
 	return 0;
 }
 
-static int32_t ad9361_setup_post_calibration(struct ad9361_rf_phy *phy)
+static int32_t ad9361_setup_post_calibration(struct ad9361_rf_phy *phy,
+		int32_t *cleanup_status)
 {
 	struct no_os_spi_desc *spi;
 	struct ad9361_phy_platform_data *pd;
 	int32_t ret;
 
+	if (cleanup_status)
+		*cleanup_status = 0;
 	if (!phy || !phy->spi || !phy->pdata)
 		return -EINVAL;
 	spi = phy->spi;
@@ -9538,9 +9541,12 @@ static int32_t ad9361_setup_post_calibration(struct ad9361_rf_phy *phy)
 		if (ret < 0) {
 			int32_t restore_ret =
 				ad9361_ensm_restore_prev_state_checked(phy);
-			if (restore_ret < 0)
+			if (restore_ret < 0) {
+				ad9361_record_first_cleanup_status(cleanup_status,
+							   restore_ret);
 				dev_err(&phy->spi->dev,
 					"Unable to restore ENSM after RSSI table setup");
+			}
 			AD9361_SETUP_FAIL(ret);
 		}
 		ret = ad9361_rssi_program_lna_gain(phy);
@@ -9549,6 +9555,9 @@ static int32_t ad9361_setup_post_calibration(struct ad9361_rf_phy *phy)
 		{
 			int32_t restore_ret =
 				ad9361_ensm_restore_prev_state_checked(phy);
+			if (restore_ret < 0)
+				ad9361_record_first_cleanup_status(cleanup_status,
+							   restore_ret);
 			if (ret == 0 && restore_ret < 0)
 				ret = restore_ret;
 		}
@@ -10086,7 +10095,7 @@ int32_t ad9361_setup_transaction_poll(
 		struct ad9361_rf_phy *phy,
 		struct ad9361_setup_transaction *transaction)
 {
-	int32_t ret;
+	int32_t ret, post_calibration_cleanup_status = 0;
 
 	if (!phy || !transaction)
 		return -EINVAL;
@@ -10883,7 +10892,11 @@ int32_t ad9361_setup_transaction_poll(
 		if (ad9361_calibration_state_unknown(phy))
 			return ad9361_setup_transaction_finish(transaction, -EIO);
 		phy->setup_transaction = NULL;
-		ret = ad9361_setup_post_calibration(phy);
+		ret = ad9361_setup_post_calibration(
+			phy, &post_calibration_cleanup_status);
+		ad9361_record_first_cleanup_status(
+			&transaction->cleanup_status,
+			post_calibration_cleanup_status);
 		phy->setup_transaction = transaction;
 		if (ret < 0)
 			return ad9361_setup_transaction_finish(transaction, ret);
