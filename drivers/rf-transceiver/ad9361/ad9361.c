@@ -1560,12 +1560,21 @@ int32_t ad9361_status_wait_poll(struct ad9361_rf_phy *phy,
 
 	if (!phy || !phy->spi || !wait)
 		return -EINVAL;
-	if (wait->terminal)
+	if (wait->terminal) {
+		if (wait->active || phy->status_wait == wait) {
+			ad9361_mark_calibration_state_unknown(phy);
+			return -EIO;
+		}
 		return wait->terminal_status;
+	}
 	if (!wait->active || !wait->mask || !wait->timeout_us ||
 	    !wait->poll_delay_us || !wait->poll_budget) {
-		if (phy->status_wait == wait)
+		if (phy->status_wait == wait) {
 			ad9361_mark_calibration_state_unknown(phy);
+			wait->terminal = true;
+			wait->terminal_status = -EIO;
+			return -EIO;
+		}
 		return ad9361_status_wait_finish(phy, wait, -EIO);
 	}
 	if (phy->status_wait != wait) {
@@ -3801,11 +3810,22 @@ int32_t ad9361_bbf_calibration_poll(struct ad9361_rf_phy *phy,
 
 	if (!phy || !job)
 		return -EINVAL;
-	if (job->terminal)
-		return job->terminal_status;
-	if (!job->active) {
-		if (job->wait.active || phy->calibration_wait == &job->wait)
+	if (job->terminal) {
+		if (job->active || job->wait.active ||
+		    phy->calibration_wait == &job->wait) {
 			ad9361_mark_calibration_state_unknown(phy);
+			job->active = false;
+			job->terminal_status = -EIO;
+		}
+		return job->terminal_status;
+	}
+	if (!job->active) {
+		if (job->wait.active || phy->calibration_wait == &job->wait) {
+			ad9361_mark_calibration_state_unknown(phy);
+			job->terminal = true;
+			job->terminal_status = -EIO;
+			return -EIO;
+		}
 		job->terminal = true;
 		job->terminal_status = -EINVAL;
 		return -EINVAL;
@@ -4147,11 +4167,22 @@ int32_t ad9361_synth_cp_calibration_poll(struct ad9361_rf_phy *phy,
 
 	if (!phy || !job)
 		return -EINVAL;
-	if (job->terminal)
-		return job->terminal_status;
-	if (!job->active) {
-		if (job->wait.active || phy->status_wait == &job->wait)
+	if (job->terminal) {
+		if (job->active || job->wait.active ||
+		    phy->status_wait == &job->wait) {
 			ad9361_mark_calibration_state_unknown(phy);
+			job->active = false;
+			job->terminal_status = -EIO;
+		}
+		return job->terminal_status;
+	}
+	if (!job->active) {
+		if (job->wait.active || phy->status_wait == &job->wait) {
+			ad9361_mark_calibration_state_unknown(phy);
+			job->terminal = true;
+			job->terminal_status = -EIO;
+			return -EIO;
+		}
 		job->terminal = true;
 		job->terminal_status = -EINVAL;
 		return -EINVAL;
@@ -4250,11 +4281,22 @@ int32_t ad9361_bbdc_calibration_poll(struct ad9361_rf_phy *phy,
 
 	if (!phy || !job)
 		return -EINVAL;
-	if (job->terminal)
-		return job->terminal_status;
-	if (!job->active) {
-		if (job->wait.active || phy->calibration_wait == &job->wait)
+	if (job->terminal) {
+		if (job->active || job->wait.active ||
+		    phy->calibration_wait == &job->wait) {
 			ad9361_mark_calibration_state_unknown(phy);
+			job->active = false;
+			job->terminal_status = -EIO;
+		}
+		return job->terminal_status;
+	}
+	if (!job->active) {
+		if (job->wait.active || phy->calibration_wait == &job->wait) {
+			ad9361_mark_calibration_state_unknown(phy);
+			job->terminal = true;
+			job->terminal_status = -EIO;
+			return -EIO;
+		}
 		job->terminal = true;
 		job->terminal_status = -EINVAL;
 		return -EINVAL;
@@ -4387,12 +4429,19 @@ int32_t ad9361_calibration_wait_poll(struct ad9361_rf_phy *phy,
 
 	if (!phy || !phy->spi || !wait)
 		return -EINVAL;
-	if (wait->terminal)
+	if (wait->terminal) {
+		if (wait->active || phy->calibration_wait == wait) {
+			ad9361_mark_calibration_state_unknown(phy);
+			return -EIO;
+		}
 		return wait->terminal_status;
+	}
 	if (!wait->active) {
 		if (phy->calibration_wait == wait) {
 			ad9361_mark_calibration_state_unknown(phy);
-			return ad9361_calibration_wait_terminal(phy, wait, -EIO);
+			wait->terminal = true;
+			wait->terminal_status = -EIO;
+			return -EIO;
 		}
 		return -EINVAL;
 	}
@@ -4406,8 +4455,6 @@ int32_t ad9361_calibration_wait_poll(struct ad9361_rf_phy *phy,
 		wait->active = false;
 		wait->terminal = true;
 		wait->terminal_status = -EIO;
-		if (phy->calibration_wait == wait)
-			phy->calibration_wait = NULL;
 		return -EIO;
 	}
 	if (ad9361_calibration_state_unknown(phy)) {
@@ -9299,10 +9346,24 @@ int32_t ad9361_rfdc_calibration_poll(struct ad9361_rf_phy *phy,
 
 	if (!phy || !job)
 		return -EINVAL;
-	if (job->terminal)
+	if (job->terminal) {
+		if (job->active || job->wait.active ||
+		    phy->calibration_wait == &job->wait) {
+			ad9361_mark_calibration_state_unknown(phy);
+			job->active = false;
+			job->terminal_status = -EIO;
+		}
 		return job->terminal_status;
-	if (!job->active)
+	}
+	if (!job->active) {
+		if (job->wait.active || phy->calibration_wait == &job->wait) {
+			ad9361_mark_calibration_state_unknown(phy);
+			job->terminal = true;
+			job->terminal_status = -EIO;
+			return -EIO;
+		}
 		return -EINVAL;
+	}
 	if (phy->calibration_wait != &job->wait || !job->wait.active) {
 		/* Never run tracking/ENSM cleanup for a context that does not own the
 		 * active hardware calibration. A second context means ownership is
