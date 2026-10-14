@@ -9531,7 +9531,12 @@ static int32_t ad9361_setup_post_calibration(struct ad9361_rf_phy *phy,
 
 	/* skip live RSSI gain-step calib when pre-loaded tables are present */
 	if (!pd->rssi_skip_calib) {
-		ret = ad9361_rssi_gain_step_calib(phy);
+		int32_t rssi_cleanup_status = 0;
+
+		ret = ad9361_rssi_gain_step_calib_with_cleanup(
+			phy, &rssi_cleanup_status);
+		ad9361_record_first_cleanup_status(cleanup_status,
+						   rssi_cleanup_status);
 		if (ret < 0)
 			AD9361_SETUP_FAIL(ret);
 	} else if (pd->rssi_lna_err_tbl[0] || pd->rssi_mixer_err_tbl[0] ||
@@ -15120,7 +15125,8 @@ int32_t ad9361_unregister_clocks(struct ad9361_rf_phy *phy)
  * @param phy The AD9361 state structure.
  * @return 0 in case of success, negative error code otherwise.
  */
-int32_t ad9361_rssi_gain_step_calib(struct ad9361_rf_phy *phy)
+int32_t ad9361_rssi_gain_step_calib_with_cleanup(
+		struct ad9361_rf_phy *phy, int32_t *cleanup_status_out)
 {
 	uint32_t lna_error[4];
 	uint32_t mixer_error[15];
@@ -15128,10 +15134,12 @@ int32_t ad9361_rssi_gain_step_calib(struct ad9361_rf_phy *phy)
 	uint64_t lo_freq_hz;
 	uint8_t  lo_index;
 	uint8_t  i;
-	int32_t ret, cleanup_ret = 0, restore_ret;
+	int32_t ret, cleanup_ret = 0, restore_ret, cleanup_status = 0;
 	bool config_touched = false;
 	struct no_os_spi_desc *spi;
 
+	if (cleanup_status_out)
+		*cleanup_status_out = 0;
 	if (!phy || !phy->spi || !phy->pdata ||
 	    !phy->ref_clk_scale[RX_RFPLL])
 		return -EINVAL;
@@ -15276,6 +15284,8 @@ cleanup:
 	if (config_touched) {
 		cleanup_ret = ad9361_spi_write(spi, REG_CONFIG, 0x00);
 		if (cleanup_ret < 0) {
+			ad9361_record_first_cleanup_status(&cleanup_status,
+							   cleanup_ret);
 			ad9361_mark_calibration_state_unknown(phy);
 			dev_err(&phy->spi->dev,
 				"Unable to stop RSSI calibration table clock");
@@ -15285,12 +15295,22 @@ cleanup:
 	}
 restore_state:
 	restore_ret = ad9361_ensm_restore_prev_state_checked(phy);
-	if (restore_ret < 0)
+	if (restore_ret < 0) {
+		ad9361_record_first_cleanup_status(&cleanup_status,
+						   restore_ret);
 		dev_err(&phy->spi->dev, "Unable to restore ENSM after RSSI calibration");
+	}
 	if (ret == 0 && restore_ret < 0)
 		ret = restore_ret;
 #undef RSSI_CAL_WRITE
+	if (cleanup_status_out)
+		*cleanup_status_out = cleanup_status;
 	return ret;
+}
+
+int32_t ad9361_rssi_gain_step_calib(struct ad9361_rf_phy *phy)
+{
+	return ad9361_rssi_gain_step_calib_with_cleanup(phy, NULL);
 }
 
 /**

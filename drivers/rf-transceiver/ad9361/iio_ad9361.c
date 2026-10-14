@@ -1796,12 +1796,18 @@ static int set_rssi_gain_step_error(void *device, char *buf, uint32_t len,
 	struct ad9361_phy_platform_data *pd = ad9361_phy->pdata;
 	uint32_t lna[4], mix[16], cal[5];
 	uint32_t old_lna[4], old_mix[16], old_cal[5];
+	int32_t cleanup_status = 0;
 	int ret;
 	bool tables_programmed = false;
 
 	/* Allow a live calibration trigger as a convenience shortcut */
 	if (!strncmp(buf, "rssi_gain_step", 14)) {
-		ret = ad9361_rssi_gain_step_calib(ad9361_phy);
+		ret = ad9361_rssi_gain_step_calib_with_cleanup(
+			ad9361_phy, &cleanup_status);
+		if (cleanup_status < 0 && ad9361_phy && ad9361_phy->spi)
+			dev_err(&ad9361_phy->spi->dev,
+				"RSSI calibration primary=%d cleanup=%"PRId32,
+				ret, cleanup_status);
 		return ret < 0 ? ret : (int)len;
 	}
 
@@ -2147,13 +2153,12 @@ static int set_calib_mode(void *device, char *buf, uint32_t len,
 	} else if (!strcmp(buf, "rf_dc_offs")) {
 		val = RFDC_CAL;
 	} else if (!strcmp(buf, "rssi_gain_step")) {
-		ret = ad9361_rssi_gain_step_calib(ad9361_phy);
+		ret = ad9361_rssi_gain_step_calib_with_cleanup(
+			ad9361_phy, &cleanup_status);
 	} else {
 		return -ENOENT;
 	}
-	if (ret < 0)
-		return ret;
-	if (val)
+	if (ret >= 0 && val)
 		ret = ad9361_do_calib_with_cleanup(
 			ad9361_phy, val, arg, &cleanup_status);
 	if (cleanup_status < 0 && ad9361_phy && ad9361_phy->spi)
