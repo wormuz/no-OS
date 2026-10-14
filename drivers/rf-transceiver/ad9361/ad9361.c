@@ -11793,24 +11793,40 @@ int32_t ad9361_rfdc_calibration_poll(struct ad9361_rf_phy *phy,
 
 /* Preserve the existing blocking API by driving the resumable job locally.
  * NIOS can instead retain the job and poll it from its cooperative worker. */
-int32_t ad9361_do_calib_timeout(struct ad9361_rf_phy *phy, uint32_t cal,
-		int32_t arg, uint32_t timeout_us)
+int32_t ad9361_do_calib_timeout_with_cleanup(
+		struct ad9361_rf_phy *phy, uint32_t cal, int32_t arg,
+		uint32_t timeout_us, int32_t *cleanup_status)
 {
 	struct ad9361_rfdc_calibration_job job = {0};
 	int32_t ret;
 
 	(void)arg;
+	if (cleanup_status)
+		*cleanup_status = 0;
 	if (cal != RFDC_CAL)
 		return -EINVAL;
 	ret = ad9361_rfdc_calibration_start_timeout(phy, timeout_us, &job);
-	if (ret < 0)
+	if (ret < 0) {
+		if (cleanup_status)
+			*cleanup_status = job.cleanup_status;
 		return ret;
+	}
 	for (;;) {
 		ret = ad9361_rfdc_calibration_poll(phy, &job);
-		if (ret != 1)
+		if (ret != 1) {
+			if (cleanup_status)
+				*cleanup_status = job.cleanup_status;
 			return ret;
+		}
 		no_os_udelay(ad9361_rfdc_job_poll_delay_us(&job));
 	}
+}
+
+int32_t ad9361_do_calib_timeout(struct ad9361_rf_phy *phy, uint32_t cal,
+		int32_t arg, uint32_t timeout_us)
+{
+	return ad9361_do_calib_timeout_with_cleanup(
+		phy, cal, arg, timeout_us, NULL);
 }
 
 /* Execute an RFDC calibration with its completion budget derived from the

@@ -4381,6 +4381,9 @@ bool ad9361_operation_busy(const struct ad9361_rf_phy *phy);
 void ad9361_mark_calibration_state_unknown(struct ad9361_rf_phy *phy);
 int32_t ad9361_do_calib_timeout(struct ad9361_rf_phy *phy, uint32_t cal,
 				int32_t arg, uint32_t timeout_us);
+int32_t ad9361_do_calib_timeout_with_cleanup(
+		struct ad9361_rf_phy *phy, uint32_t cal, int32_t arg,
+		uint32_t timeout_us, int32_t *cleanup_status);
 int32_t ad9361_do_calib_bounded(struct ad9361_rf_phy *phy, uint32_t cal,
 		int32_t arg);
 int32_t ad9361_calibration_wait_start(struct ad9361_rf_phy *phy,
