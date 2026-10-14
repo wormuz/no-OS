@@ -88,6 +88,8 @@ static struct axiadc_chip_info axiadc_chip_info_tbl[] = {
 static int32_t ad9361_init_transaction_finish(
 		struct ad9361_init_transaction *transaction, int32_t status)
 {
+	if (status >= 0 && transaction->cleanup_status < 0)
+		status = transaction->cleanup_status;
 	transaction->active = false;
 	transaction->terminal = true;
 	transaction->terminal_status = status;
@@ -98,15 +100,16 @@ static int32_t ad9361_init_transaction_fail(
 		struct ad9361_init_transaction *transaction, int32_t status)
 {
 	bool consumed = false;
-	int32_t cleanup_status = 0;
+	int32_t remove_status = 0;
 
 	if (status >= 0)
 		status = -ENODEV;
 	transaction->status = status;
 	if (transaction->candidate) {
-		cleanup_status = ad9361_remove_ex(
+		remove_status = ad9361_remove_ex(
 			transaction->candidate, false, &consumed);
-		transaction->cleanup_status = cleanup_status;
+		if (transaction->cleanup_status >= 0 && remove_status < 0)
+			transaction->cleanup_status = remove_status;
 		if (consumed) {
 			transaction->candidate = NULL;
 		} else if (transaction->phy_out) {
@@ -115,9 +118,9 @@ static int32_t ad9361_init_transaction_fail(
 			*transaction->phy_out = transaction->candidate;
 		}
 	}
-	if (cleanup_status < 0)
+	if (transaction->cleanup_status < 0)
 		AD9361_DIAG_PRINTF("%s : cleanup failed (%d) after init error (%d)\n",
-		       __func__, cleanup_status, status);
+		       __func__, transaction->cleanup_status, status);
 	AD9361_DIAG_PRINTF("%s : AD936x initialization error\n", __func__);
 	return ad9361_init_transaction_finish(transaction, status);
 }
@@ -806,6 +809,10 @@ int32_t ad9361_init_transaction_poll(
 		ret = ad9361_setup_transaction_poll(phy, &transaction->setup_job);
 		if (ret == 1)
 			return 1;
+		if (transaction->cleanup_status >= 0 &&
+		    transaction->setup_job.cleanup_status < 0)
+			transaction->cleanup_status =
+				transaction->setup_job.cleanup_status;
 		if (ret < 0)
 			goto fail;
 		transaction->stage = AD9361_INIT_TXN_PLATFORM_POST_SETUP;

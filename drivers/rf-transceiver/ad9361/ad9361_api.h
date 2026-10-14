@@ -327,6 +327,7 @@ struct ad9361_init_transaction {
 	} stage;
 	int32_t revision;
 	int32_t status;
+	/* First cleanup failure from nested setup or candidate retirement. */
 	int32_t cleanup_status;
 	bool active;
 	bool terminal;

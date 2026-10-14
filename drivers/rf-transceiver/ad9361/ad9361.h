@@ -3924,6 +3924,7 @@ struct ad9361_tx_quad_calibration_transaction {
 	struct ad9361_rf_phy *phy;
 	uint8_t stage;
 	int32_t status;
+	/* First failed restore/cleanup from a nested calibration child. */
 	int32_t cleanup_status;
 	bool active;
 	bool terminal;
@@ -4031,6 +4032,8 @@ struct ad9361_setup_calibration_transaction {
 	uint32_t tx_bw;
 	uint8_t stage;
 	int32_t status;
+	/* First failed cleanup propagated from the nested RFDC/TXQ child. */
+	int32_t cleanup_status;
 	bool active;
 	bool terminal;
 	int32_t terminal_status;

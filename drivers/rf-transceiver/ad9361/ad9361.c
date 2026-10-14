@@ -9056,6 +9056,19 @@ static int32_t ad9361_setup_calibration_transaction_finish(
 {
 	struct ad9361_rf_phy *phy = transaction->phy;
 
+	/* The parent owns the terminal result exposed to its caller. Preserve
+	 * cleanup failures from nested RFDC/TXQ jobs before releasing that owner. */
+	if (transaction->cleanup_status >= 0) {
+		if (transaction->rfdc_job.cleanup_status < 0)
+			transaction->cleanup_status =
+				transaction->rfdc_job.cleanup_status;
+		else if (transaction->tx_quad_job.cleanup_status < 0)
+			transaction->cleanup_status =
+				transaction->tx_quad_job.cleanup_status;
+	}
+	if (status >= 0 && transaction->cleanup_status < 0)
+		status = transaction->cleanup_status;
+
 	transaction->active = false;
 	transaction->terminal = true;
 	transaction->terminal_status = status;
@@ -9317,8 +9330,10 @@ int32_t ad9361_setup_calibration_transaction_poll(
 					      phy->rfdc_track_en,
 					      phy->quad_track_en);
 		phy->setup_calibration_transaction = transaction;
-		if (ret < 0)
+		if (ret < 0) {
+			transaction->cleanup_status = ret;
 			goto fail;
+		}
 		return ad9361_setup_calibration_transaction_finish(
 			transaction, 0);
 
@@ -9643,6 +9658,13 @@ static int32_t ad9361_setup_transaction_finish(
 		struct ad9361_setup_transaction *transaction, int32_t status)
 {
 	struct ad9361_rf_phy *phy = transaction->phy;
+
+	if (transaction->cleanup_status >= 0 &&
+	    transaction->calibration_job.cleanup_status < 0)
+		transaction->cleanup_status =
+			transaction->calibration_job.cleanup_status;
+	if (status >= 0 && transaction->cleanup_status < 0)
+		status = transaction->cleanup_status;
 
 	if (phy && phy->setup_transaction == transaction)
 		phy->setup_transaction = NULL;
