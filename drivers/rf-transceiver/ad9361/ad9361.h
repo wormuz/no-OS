@@ -3889,6 +3889,7 @@ struct ad9361_tx_quad_calibration_job {
 	uint32_t txnco_freq;
 	int32_t rx_phase;
 	int32_t status;
+	int32_t cleanup_status;
 	uint8_t initial_phase;
 	uint8_t decim;
 	uint8_t convergence;
@@ -3949,6 +3950,7 @@ struct ad9361_rf_bandwidth_transaction {
 	uint32_t tx_bw;
 	uint8_t stage;
 	int32_t status;
+	int32_t cleanup_status;
 	int32_t tracking_restore_status;
 	bool tx_quad_started;
 	bool tx_quad_complete;

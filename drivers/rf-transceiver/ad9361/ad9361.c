@@ -5490,10 +5490,19 @@ int32_t ad9361_tx_quad_phase_search_poll(struct ad9361_rf_phy *phy,
 static int32_t ad9361_tx_quad_calibration_job_finish(
 		struct ad9361_tx_quad_calibration_job *job, int32_t status)
 {
+	if (job->cleanup_status < 0 && status >= 0)
+		status = job->cleanup_status;
 	job->active = false;
 	job->terminal = true;
 	job->terminal_status = status;
 	return status;
+}
+
+static void ad9361_record_first_cleanup_status(
+		int32_t *first_status, int32_t status)
+{
+	if (first_status && *first_status >= 0 && status < 0)
+		*first_status = status;
 }
 
 static int32_t ad9361_tx_quad_calibration_job_cleanup(
@@ -5514,6 +5523,8 @@ static int32_t ad9361_tx_quad_calibration_job_cleanup(
 			dev_err(dev,
 				"Failed to restore RX2 phase inversion after TX quadrature calibration (%"PRId32")",
 				restore_ret);
+			ad9361_record_first_cleanup_status(
+				&job->cleanup_status, restore_ret);
 			ad9361_mark_calibration_state_unknown(phy);
 			if (job->status >= 0)
 				job->status = restore_ret;
@@ -5526,6 +5537,8 @@ static int32_t ad9361_tx_quad_calibration_job_cleanup(
 				dev_err(dev,
 					"Failed to restore inversion bits after TX quadrature calibration (%"PRId32")",
 					restore_ret);
+				ad9361_record_first_cleanup_status(
+					&job->cleanup_status, restore_ret);
 				ad9361_mark_calibration_state_unknown(phy);
 				if (job->status >= 0)
 					job->status = restore_ret;
@@ -5556,6 +5569,8 @@ static int32_t ad9361_tx_quad_calibration_job_cleanup(
 			dev_err(dev,
 				"Failed to restore RF bandwidth after TX quadrature calibration (%"PRId32")",
 				restore_ret);
+			ad9361_record_first_cleanup_status(
+				&job->cleanup_status, restore_ret);
 			ad9361_mark_calibration_state_unknown(phy);
 			if (job->status >= 0)
 				job->status = restore_ret;
@@ -5570,6 +5585,8 @@ static int32_t ad9361_tx_quad_calibration_job_cleanup(
 			dev_err(dev,
 				"Failed to restore TX LO power state after quadrature calibration (%"PRId32")",
 				restore_ret);
+			ad9361_record_first_cleanup_status(
+				&job->cleanup_status, restore_ret);
 			if (job->status >= 0)
 				job->status = restore_ret;
 		}
@@ -5886,6 +5903,9 @@ int32_t ad9361_tx_quad_calibration_job_poll(struct ad9361_rf_phy *phy,
 			return 1;
 		if (ret < 0) {
 			ad9361_mark_calibration_state_unknown(phy);
+			if (restoring)
+				ad9361_record_first_cleanup_status(
+					&job->cleanup_status, ret);
 			if (job->status >= 0)
 				job->status = ret;
 			job->stage = AD9361_TX_QUAD_JOB_CLEANUP;
@@ -9337,7 +9357,8 @@ int32_t ad9361_setup_calibration_transaction_poll(
 					      phy->quad_track_en);
 		phy->setup_calibration_transaction = transaction;
 		if (ret < 0) {
-			transaction->cleanup_status = ret;
+			ad9361_record_first_cleanup_status(
+				&transaction->cleanup_status, ret);
 			goto fail;
 		}
 		return ad9361_setup_calibration_transaction_finish(
@@ -10968,6 +10989,10 @@ static int32_t ad9361_tx_quad_transaction_finish(
 		struct ad9361_tx_quad_calibration_transaction *transaction,
 		int32_t status)
 {
+	ad9361_record_first_cleanup_status(&transaction->cleanup_status,
+					   transaction->job.cleanup_status);
+	if (status >= 0 && transaction->cleanup_status < 0)
+		status = transaction->cleanup_status;
 	transaction->active = false;
 	transaction->terminal = true;
 	transaction->terminal_status = status;
@@ -11114,6 +11139,9 @@ int32_t ad9361_tx_quad_calibration_transaction_poll(
 		if (ret == 1)
 			return 1;
 		transaction->status = ret;
+		ad9361_record_first_cleanup_status(
+			&transaction->cleanup_status,
+			transaction->job.cleanup_status);
 		transaction->stage = AD9361_TX_QUAD_TRANSACTION_RESTORE;
 		return 1;
 	}
@@ -11125,7 +11153,8 @@ int32_t ad9361_tx_quad_calibration_transaction_poll(
 		if (ret == 1)
 			return 1;
 		if (ret < 0) {
-			transaction->cleanup_status = ret;
+			ad9361_record_first_cleanup_status(
+				&transaction->cleanup_status, ret);
 			dev_err(&phy->spi->dev,
 				"TXQ ENSM restore failed (%"PRId32") after calibration result (%"PRId32")",
 				ret, transaction->status);
@@ -11154,7 +11183,8 @@ int32_t ad9361_tx_quad_calibration_transaction_poll(
 	ret = ad9361_tracking_control(phy, phy->bbdc_track_en,
 				      phy->rfdc_track_en, phy->quad_track_en);
 	if (ret < 0) {
-		transaction->cleanup_status = ret;
+		ad9361_record_first_cleanup_status(
+			&transaction->cleanup_status, ret);
 		dev_err(&phy->spi->dev,
 			"TXQ tracking restore failed (%"PRId32") after calibration result (%"PRId32"); skipping ENSM restore",
 			ret, transaction->status);
@@ -11165,7 +11195,8 @@ int32_t ad9361_tx_quad_calibration_transaction_poll(
 	ret = ad9361_ensm_transition_start(phy, phy->prev_ensm_state, false,
 					   &transaction->ensm_job);
 	if (ret < 0) {
-		transaction->cleanup_status = ret;
+		ad9361_record_first_cleanup_status(
+			&transaction->cleanup_status, ret);
 		ad9361_mark_calibration_state_unknown(phy);
 		ad9361_invalidate_tx_quad_calib(phy);
 		return ad9361_tx_quad_transaction_finish(transaction,
@@ -11963,6 +11994,12 @@ int32_t ad9361_rf_bandwidth_filter_transaction_poll(
 static int32_t ad9361_rf_bandwidth_transaction_finish(
 		struct ad9361_rf_bandwidth_transaction *transaction, int32_t status)
 {
+	ad9361_record_first_cleanup_status(&transaction->cleanup_status,
+					   transaction->tx_quad_job.cleanup_status);
+	ad9361_record_first_cleanup_status(&transaction->cleanup_status,
+					   transaction->tracking_restore_status);
+	if (status >= 0 && transaction->cleanup_status < 0)
+		status = transaction->cleanup_status;
 	transaction->active = false;
 	transaction->terminal = true;
 	transaction->terminal_status = status;
@@ -12154,6 +12191,9 @@ int32_t ad9361_rf_bandwidth_transaction_poll(
 		if (ret == 1)
 			return 1;
 		transaction->status = ret;
+		ad9361_record_first_cleanup_status(
+			&transaction->cleanup_status,
+			transaction->tx_quad_job.cleanup_status);
 		transaction->tx_quad_complete = ret == 0;
 		transaction->stage = AD9361_RF_BANDWIDTH_TRANSACTION_RESTORE;
 		return 1;
@@ -12183,6 +12223,9 @@ int32_t ad9361_rf_bandwidth_transaction_poll(
 		phy->rf_bandwidth_transaction = transaction;
 		if (restore_ret == 1)
 			return 1;
+		if (restore_ret < 0)
+			ad9361_record_first_cleanup_status(
+				&transaction->cleanup_status, restore_ret);
 		commit_ret = ad9361_commit_rf_bandwidth_cache_if_complete(
 			phy, transaction->rx_bw, transaction->tx_bw,
 			transaction->status, transaction->tracking_restore_status,
@@ -12209,6 +12252,9 @@ int32_t ad9361_rf_bandwidth_transaction_poll(
 						       phy->rfdc_track_en,
 						       phy->quad_track_en);
 		if (tracking_ret < 0) {
+			transaction->tracking_restore_status = tracking_ret;
+			ad9361_record_first_cleanup_status(
+				&transaction->cleanup_status, tracking_ret);
 			commit_ret = ad9361_commit_rf_bandwidth_cache_if_complete(
 				phy, transaction->rx_bw, transaction->tx_bw,
 				transaction->status, tracking_ret, tracking_ret);
@@ -12230,6 +12276,8 @@ int32_t ad9361_rf_bandwidth_transaction_poll(
 			phy, phy->prev_ensm_state, false, &transaction->ensm_job);
 		phy->rf_bandwidth_transaction = transaction;
 		if (restore_ret < 0) {
+			ad9361_record_first_cleanup_status(
+				&transaction->cleanup_status, restore_ret);
 			commit_ret = ad9361_commit_rf_bandwidth_cache_if_complete(
 				phy, transaction->rx_bw, transaction->tx_bw,
 				transaction->status,
