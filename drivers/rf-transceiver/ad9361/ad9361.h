@@ -33,6 +33,7 @@
 #define IIO_FREQUENCY_AD9361_H_
 
 #include <stdint.h>
+#include "ad9361_tx_quad_cal_policy.h"
 #include "no_os_gpio.h"
 #include "common.h"
 #include "ad9361_ext_band_ctrl.h"
@@ -3339,6 +3340,9 @@ enum ad9361_bist_mode {
 	BIST_INJ_RX,
 };
 
+struct ad9361_calibration_wait;
+struct ad9361_status_wait;
+
 enum synth_pd_ctrl {
 	LO_DONTCARE,
 	LO_OFF,
@@ -3354,6 +3358,20 @@ enum dev_id {
 struct ad9361_rf_phy {
 	enum dev_id		dev_sel;
 	struct no_os_spi_desc 	*spi;
+	/* Optional board-routed completion signal for the calibration engine.
+	 * Return the current asserted/done level. When absent, the driver polls
+	 * REG_CALIBRATION_CTRL over SPI. */
+	int32_t (*read_cal_done)(struct ad9361_rf_phy *phy, uint32_t mask,
+				 bool *done);
+	/* Latched when a started calibration cannot be proven idle. In this
+	 * state, calibration callers must not issue cleanup/configuration SPI
+	 * writes; recovery requires a complete AD9361 reset and re-init. */
+	bool			calibration_state_unknown;
+	/* Identity of the sole active resumable calibration wait. This prevents a
+	 * second context from observing or completing the first one's operation. */
+	struct ad9361_calibration_wait *calibration_wait;
+	/* Status-register jobs share the same single-owner boundary. */
+	struct ad9361_status_wait *status_wait;
 	struct no_os_gpio_desc 	*gpio_desc_resetb;
 	struct no_os_gpio_desc 	*gpio_desc_sync;
 	struct no_os_gpio_desc 	*gpio_desc_cal_sw1;
@@ -3390,7 +3408,13 @@ struct ad9361_rf_phy {
 
 	bool			auto_cal_en;
 	bool			manual_tx_quad_cal_en;
-	uint64_t			last_tx_quad_cal_freq;
+	/* TX quadrature calibration is specific to the selected TX output and
+	 * enabled TX channel mode. Index [0..1] is TXA/TXB; [0..2] is unused,
+	 * TX1-only, TX2-only, or 2x2 respectively. */
+	uint64_t			tx_quad_cal_freq[AD9361_TX_QUAD_PORT_COUNT]
+					[AD9361_TX_QUAD_MODE_COUNT];
+	bool				tx_quad_cal_valid[AD9361_TX_QUAD_PORT_COUNT]
+					[AD9361_TX_QUAD_MODE_COUNT];
 	uint32_t			last_tx_quad_cal_phase;
 	uint64_t		current_tx_lo_freq;
 	uint64_t		current_rx_lo_freq;
@@ -3464,6 +3488,208 @@ struct ad9361_rf_phy {
 	uint32_t				bist_tone_mask;
 	bool			bbpll_initialized;
 	struct ad9361_ext_band_ctl	*ext_band_ctl;
+};
+
+/* Resumable wait state for a single AD9361 calibration engine operation.
+ * start() performs the register write that starts calibration; poll() performs
+ * one bounded status observation and never sleeps. The caller must retain
+ * exclusive ownership of the PHY until poll() returns a terminal result. */
+struct ad9361_calibration_wait {
+	uint32_t mask;
+	uint32_t timeout_us;
+	uint32_t poll_delay_us;
+	uint64_t start_us;
+	uint64_t poll_not_before_us;
+	uint64_t poll_budget;
+	uint64_t polls;
+	bool active;
+	bool terminal;
+	bool use_ctrl_out;
+	bool saw_busy;
+	int32_t terminal_status;
+};
+
+/* Resumable wait for a non-calibration status field (for example the RF
+ * synthesizer charge-pump calibration-done bit). start() records the
+ * monotonic deadline; poll() performs at most one register observation and
+ * never delays. The caller retains exclusive PHY ownership until terminal. */
+struct ad9361_status_wait {
+	uint32_t reg;
+	uint32_t mask;
+	uint32_t done_state;
+	uint32_t timeout_us;
+	uint32_t poll_delay_us;
+	uint64_t start_us;
+	uint64_t poll_not_before_us;
+	uint64_t poll_budget;
+	uint64_t polls;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
+
+/* One RF synthesizer charge-pump calibration. Zero-initialize before first
+ * start. Start configures the selected synthesizer and begins calibration;
+ * poll observes its documented status bit without sleeping. Retain this
+ * object and exclusive PHY ownership through its terminal result. */
+struct ad9361_synth_cp_calibration_job {
+	struct ad9361_status_wait wait;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
+
+/* One RX or TX baseband-filter calibration. Zero-initialize before start.
+ * The wait and tune-circuit state remain owned until poll() completes the
+ * existing ordered cleanup. */
+struct ad9361_bbf_calibration_job {
+	struct ad9361_calibration_wait wait;
+	bool tx;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
+
+/* One resumable TX quadrature calibration attempt. The higher-level phase
+ * search must retain its cursor and this object at a stable address until a
+ * terminal poll. This primitive performs one attempt only; the caller owns
+ * the surrounding temporary setup and ordered cleanup. */
+struct ad9361_tx_quad_calibration_attempt {
+	struct ad9361_calibration_wait wait;
+	uint32_t rxnco_word;
+	uint8_t phase;
+	uint8_t decim;
+	uint8_t convergence;
+	bool capture_convergence;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
+
+/* Resumable TX quadrature phase sweep, including the selected-phase
+ * verification attempt. Retain this object at a stable address until poll()
+ * returns a terminal result; the caller continues to own the PHY throughout. */
+struct ad9361_tx_quad_phase_search {
+	struct ad9361_tx_quad_calibration_attempt attempt;
+	uint8_t field[64];
+	uint8_t phase_cursor;
+	uint8_t selected_phase;
+	uint8_t rxnco_word;
+	uint8_t decim;
+	uint8_t stage;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
+
+#define AD9361_TX_QUAD_PHASE_SEARCH_SWEEP   0u
+#define AD9361_TX_QUAD_PHASE_SEARCH_VERIFY  1u
+
+/* Full TX quadrature setup/attempt/search/restore transaction. This API
+ * retains the temporary RFIC state across poll calls; the caller must keep
+ * this object at a stable address and retain exclusive PHY ownership until a
+ * terminal result. */
+struct ad9361_tx_quad_calibration_job {
+	struct ad9361_tx_quad_calibration_attempt attempt;
+	struct ad9361_tx_quad_phase_search phase_search;
+	uint32_t bw_rx;
+	uint32_t bw_tx;
+	/* Full RF bandwidths to restore after the temporary TXQ observation
+	 * bandwidth. They can differ from the last committed cache while a
+	 * larger bandwidth transaction is in progress. */
+	uint32_t restore_bw_rx;
+	uint32_t restore_bw_tx;
+	uint32_t rxnco_word;
+	uint32_t txnco_freq;
+	int32_t rx_phase;
+	int32_t status;
+	uint8_t initial_phase;
+	uint8_t decim;
+	uint8_t convergence;
+	uint8_t reg_inv_bits;
+	uint8_t selected_phase;
+	uint8_t original_phase;
+	uint8_t stage;
+	bool phase_inversion_touched;
+	bool reg_inv_bits_valid;
+	bool bandwidth_changed;
+	bool power_override_touched;
+	bool commit_phase;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
+
+#define AD9361_TX_QUAD_JOB_INITIAL  0u
+#define AD9361_TX_QUAD_JOB_CACHED   1u
+#define AD9361_TX_QUAD_JOB_SEARCH   2u
+#define AD9361_TX_QUAD_JOB_CLEANUP  3u
+
+/* Full TXQ transaction including tracking/ENSM ownership and history commit. */
+struct ad9361_tx_quad_calibration_transaction {
+	struct ad9361_tx_quad_calibration_job job;
+	uint8_t stage;
+	int32_t status;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
+
+#define AD9361_TX_QUAD_TRANSACTION_CALIBRATE  0u
+#define AD9361_TX_QUAD_TRANSACTION_RESTORE    1u
+
+/* Full RX/TX bandwidth update. The job holds tracking disabled and ENSM in
+ * ALERT while TXQ is polled. Keep it at a stable address and retain exclusive
+ * PHY ownership until poll() returns a terminal result. */
+struct ad9361_rf_bandwidth_transaction {
+	struct ad9361_tx_quad_calibration_job tx_quad_job;
+	uint32_t rx_bw;
+	uint32_t tx_bw;
+	uint8_t stage;
+	int32_t status;
+	bool tx_quad_started;
+	bool tx_quad_complete;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
+};
+
+#define AD9361_RF_BANDWIDTH_TRANSACTION_TX_QUAD  0u
+#define AD9361_RF_BANDWIDTH_TRANSACTION_RESTORE  1u
+
+/* Shared RX/TX sample-rate change with asynchronous RF-bandwidth/TXQ
+ * completion. Zero-initialize before first start; retain this object at a
+ * stable address and exclusive PHY ownership until terminal poll. A second
+ * start on an active object returns -EBUSY. Failed new plans are rolled back
+ * through a second bandwidth job. */
+struct ad9361_sample_rate_transaction {
+	struct ad9361_rf_bandwidth_transaction bandwidth_job;
+	uint32_t old_rx_path_clks[NUM_RX_CLOCKS];
+	uint32_t old_tx_path_clks[NUM_TX_CLOCKS];
+	uint32_t old_rx_bw;
+	uint32_t old_tx_bw;
+	uint32_t requested_rate;
+	uint8_t stage;
+	bool tx;
+	bool active;
+	bool terminal;
+	bool rollback_complete;
+	int32_t status;
+	int32_t terminal_status;
+};
+
+#define AD9361_SAMPLE_RATE_TRANSACTION_NEW_BANDWIDTH  0u
+#define AD9361_SAMPLE_RATE_TRANSACTION_ROLLBACK_CLOCK 1u
+#define AD9361_SAMPLE_RATE_TRANSACTION_ROLLBACK_BW    2u
+
+/* Resumable high-level RX RF DC calibration. The job owns the PHY in ALERT
+ * with tracking disabled until poll() reaches a terminal result and restores
+ * both. Keep the job at a stable address until that result is returned. */
+struct ad9361_rfdc_calibration_job {
+	struct ad9361_calibration_wait wait;
+	bool active;
+	bool terminal;
+	int32_t terminal_status;
 };
 
 struct refclk_scale {
@@ -3590,8 +3816,95 @@ int32_t ad9361_rf_port_setup(struct ad9361_rf_phy *phy, bool is_out,
 int32_t ad9361_mcs(struct ad9361_rf_phy *phy, int32_t step);
 int32_t ad9361_do_calib_run(struct ad9361_rf_phy *phy, uint32_t cal,
 			    int32_t arg);
+bool ad9361_calibration_state_unknown(const struct ad9361_rf_phy *phy);
+void ad9361_mark_calibration_state_unknown(struct ad9361_rf_phy *phy);
 int32_t ad9361_do_calib_timeout(struct ad9361_rf_phy *phy, uint32_t cal,
 				int32_t arg, uint32_t timeout_us);
+int32_t ad9361_do_calib_bounded(struct ad9361_rf_phy *phy, uint32_t cal,
+		int32_t arg);
+int32_t ad9361_calibration_wait_start(struct ad9361_rf_phy *phy,
+		uint32_t mask, uint32_t timeout_us,
+		struct ad9361_calibration_wait *wait);
+/* Returns 0 when complete, 1 while in progress, or a negative errno on
+ * terminal failure. No delay is performed; a cooperative owner schedules the
+ * next poll and must not issue another RFIC mutation meanwhile. Keep `wait`
+ * at a stable address from start through terminal poll. */
+int32_t ad9361_calibration_wait_poll(struct ad9361_rf_phy *phy,
+		struct ad9361_calibration_wait *wait);
+int32_t ad9361_status_wait_start(struct ad9361_rf_phy *phy,
+		uint32_t reg, uint32_t mask, uint32_t done_state,
+		uint32_t timeout_us, uint32_t poll_delay_us,
+		struct ad9361_status_wait *wait);
+/* `done_state` is the normalized field value returned by ad9361_spi_readf,
+ * not the raw masked register bits. */
+/* Returns 0 when the requested status is observed, 1 while pending, or a
+ * terminal negative errno. Does not sleep or mutate the RFIC. */
+int32_t ad9361_status_wait_poll(struct ad9361_rf_phy *phy,
+		struct ad9361_status_wait *wait);
+int32_t ad9361_synth_cp_calibration_start(struct ad9361_rf_phy *phy,
+		uint32_t scaled_ref_clk_hz, bool tx,
+		struct ad9361_synth_cp_calibration_job *job);
+/* Returns 1 while pending, 0 on completion, or a latched negative error. */
+int32_t ad9361_synth_cp_calibration_poll(struct ad9361_rf_phy *phy,
+		struct ad9361_synth_cp_calibration_job *job);
+/* `bandwidth_hz` is the BBF bandwidth (half the complex RF bandwidth), as
+ * used by the ADI RX/TX analog-filter calibration equations. */
+int32_t ad9361_bbf_calibration_start(struct ad9361_rf_phy *phy,
+		bool tx, uint32_t bandwidth_hz, uint32_t bbpll_freq_hz,
+		struct ad9361_bbf_calibration_job *job);
+/* Returns 1 while pending, 0 after tune-circuit cleanup, or a latched error. */
+int32_t ad9361_bbf_calibration_poll(struct ad9361_rf_phy *phy,
+		struct ad9361_bbf_calibration_job *job);
+int32_t ad9361_tx_quad_calibration_attempt_start(
+		struct ad9361_rf_phy *phy, uint32_t phase, uint32_t rxnco_word,
+		uint32_t decim, bool capture_convergence,
+		struct ad9361_tx_quad_calibration_attempt *attempt);
+/* Returns 1 while hardware calibration is in progress, 0 on completion, or a
+ * terminal negative errno. `convergence` is valid only when requested at
+ * start and the poll returns 0. Terminal outcomes are latched and repeatable. */
+int32_t ad9361_tx_quad_calibration_attempt_poll(
+		struct ad9361_rf_phy *phy,
+		struct ad9361_tx_quad_calibration_attempt *attempt,
+		uint8_t *convergence);
+int32_t ad9361_tx_quad_phase_search_start(struct ad9361_rf_phy *phy,
+		uint32_t rxnco_word, uint32_t decim,
+		struct ad9361_tx_quad_phase_search *search);
+/* Returns 1 while an attempt or another phase remains, 0 after the selected
+ * phase has passed verification, or a latched negative terminal error. */
+int32_t ad9361_tx_quad_phase_search_poll(struct ad9361_rf_phy *phy,
+		struct ad9361_tx_quad_phase_search *search);
+int32_t ad9361_tx_quad_calibration_job_start(struct ad9361_rf_phy *phy,
+		uint32_t bw_rx, uint32_t bw_tx, int32_t rx_phase,
+		struct ad9361_tx_quad_calibration_job *job);
+int32_t ad9361_tx_quad_calibration_job_start_with_restore_bw(
+		struct ad9361_rf_phy *phy, uint32_t bw_rx, uint32_t bw_tx,
+		int32_t rx_phase, uint32_t restore_bw_rx, uint32_t restore_bw_tx,
+		struct ad9361_tx_quad_calibration_job *job);
+/* Returns 1 while the calibration/phase search is pending, 0 on success,
+ * or a latched negative error after ordered temporary-state restoration. */
+int32_t ad9361_tx_quad_calibration_job_poll(struct ad9361_rf_phy *phy,
+		struct ad9361_tx_quad_calibration_job *job);
+int32_t ad9361_tx_quad_calibration_transaction_start(
+		struct ad9361_rf_phy *phy, int32_t rx_phase,
+		struct ad9361_tx_quad_calibration_transaction *transaction);
+/* Includes tracking/ENSM restoration and TXQ-history commit. */
+int32_t ad9361_tx_quad_calibration_transaction_poll(
+		struct ad9361_rf_phy *phy,
+		struct ad9361_tx_quad_calibration_transaction *transaction);
+int32_t ad9361_rf_bandwidth_transaction_start(
+		struct ad9361_rf_phy *phy, uint32_t rf_rx_bw, uint32_t rf_tx_bw,
+		struct ad9361_rf_bandwidth_transaction *transaction);
+/* Returns 1 while TXQ is active, 0 after bandwidth/cache/tracking/ENSM commit,
+ * or a terminal error. */
+int32_t ad9361_rf_bandwidth_transaction_poll(
+		struct ad9361_rf_phy *phy,
+		struct ad9361_rf_bandwidth_transaction *transaction);
+int32_t ad9361_rfdc_calibration_start(struct ad9361_rf_phy *phy,
+		struct ad9361_rfdc_calibration_job *job);
+/* Returns 0 when calibration and tracking/ENSM restoration are complete, 1
+ * while hardware calibration remains active, or a terminal negative errno. */
+int32_t ad9361_rfdc_calibration_poll(struct ad9361_rf_phy *phy,
+		struct ad9361_rfdc_calibration_job *job);
 /* Leave a fastlock mode that was entered outside this driver; see the
  * definition for the measurement that motivates it. */
 int32_t ad9361_fastlock_exit_foreign(struct ad9361_rf_phy *phy, bool tx);
